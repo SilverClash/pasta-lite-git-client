@@ -9,7 +9,7 @@
 // errors are shown (toast or dialog) unless store.actions.write already toasted them. While the
 // repo is busy (state.busy) or another flow of this store is still running (including its
 // dialogs), a flow does nothing and returns false. Exceptions: PLPolicy.FREE_FLOWS (openTerminal,
-// cancel, cancelInteractiveRebase and openWorktree) work while busy.
+// cancel, cancelInteractiveRebase, openWorktree, revealWorktree and copyWorktreePath) work while busy.
 // In a bare repository (repo.bare) the flows that need a working tree
 // (PLPolicy.WORKTREE_FLOWS, and pull in any mode but Fetch All) refuse with a notice
 // ("Checkout — needs a working tree (bare repository)") before doing anything; so do the flows that
@@ -30,6 +30,8 @@
 //   flows-stash.js    stashSave, stashPop, stashApply, stashDrop
 //   flows-worktree.js stage, unstage, stageAll, unstageAll, discard, markResolved, commit and the hunk /
 //                     line selections (the WIP panel and the diff view)
+//   flows-linked-worktrees.js  removeWorktree, pruneWorktrees, lockWorktree, unlockWorktree, revealWorktree,
+//                     copyWorktreePath (the LINKED worktrees of the sidebar section; not the working tree)
 //   flows-op.js       a rebase / merge in progress (R1, keep-a-side) and what merge / rebase starts share
 //   flows-merge.js    merge (R2)          flows-rebase.js   rebase from the menus (R2), interactive rebase (R3)
 // Each file's header lists its flows (flows-op.js / flows-merge.js / flows-rebase.js: their own).

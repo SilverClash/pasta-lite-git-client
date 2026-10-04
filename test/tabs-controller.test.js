@@ -27,13 +27,13 @@ class FakeView {
 }
 
 function setup({ saved = { roots: [], active: 0 } } = {}) {
-  const calls = { created: 0, saves: [] };
+  const calls = { created: 0, saves: [], titles: [], strip: [] };
   let win = null;
   const makeWin = () => ({
     destroyed: false,
     contentView: { addChildView() {}, removeChildView() {} },
     getContentSize: () => [1000, 700],
-    setTitle() {},
+    setTitle: (title) => calls.titles.push(title),
     isFocused: () => false,
     isDestroyed() { return this.destroyed; },
     isFullScreen: () => false,
@@ -43,7 +43,7 @@ function setup({ saved = { roots: [], active: 0 } } = {}) {
     get: () => win,
     alive: () => !!win && !win.destroyed,
     create: () => { calls.created++; win = makeWin(); return win; },
-    sendStrip() {},
+    sendStrip: (channel, payload) => calls.strip.push([channel, payload]),
     isFullScreen: () => false,
     close: () => { win.destroyed = true; win = null; },
   };
@@ -142,5 +142,27 @@ describe('restoreTabs', () => {
     r2();
     t.controller.addTab();
     assert.equal(t.calls.saves.length, n + 1);
+  });
+});
+
+describe('titles', () => {
+  test('a linked worktree\'s tab: the strip gets its "project · folder" title and the tree icon flag, the window title the same', () => {
+    const { controller, calls } = setup();
+    const a = controller.addTab();
+    controller.setRepo(a, { root: '/src/monorepo', name: 'monorepo', bare: false, linkedWorktree: null });
+    const b = controller.addTab();
+    controller.setRepo(b, {
+      root: '/src/monorepo-feat', name: 'monorepo-feat', bare: false,
+      linkedWorktree: { mainPath: '/src/monorepo', mainName: 'monorepo', title: 'monorepo · monorepo-feat' },
+    });
+    assert.equal(calls.titles.at(-1), 'monorepo · monorepo-feat — Pasta Lite Git client');
+    const [channel, payload] = calls.strip.at(-1);
+    assert.equal(channel, 'tabs-changed');
+    assert.deepEqual(payload.tabs.map((t) => [t.title, t.linked]), [['monorepo', false], ['monorepo · monorepo-feat', true]]);
+    assert.match(payload.tabs[1].tooltip, /\nLinked worktree of /);
+    controller.activateTab(a.id);
+    assert.equal(calls.titles.at(-1), 'monorepo — Pasta Lite Git client', 'the main worktree\'s tab keeps its title');
+    const pages = b.webContents.sent.filter(([ch]) => ch === 'tabs-changed');
+    assert.deepEqual(pages.at(-1)[1].tabs.map((t) => t.linked), [false, true], 'the pages get the flag too');
   });
 });

@@ -2,7 +2,8 @@
 // Repository tabs: the pure parts of main's tab handling, free of Electron so they can
 // be unit-tested with plain node:test. main's tabs controller keeps one session per tab
 // (src/tab-session.js plus its view) in a registry from createTabRegistry and decides where an
-// open goes (pickOpenTarget). The sender routing is src/ipc-contract.js, tabs.json
+// open goes (pickOpenTarget). Titles: a linked worktree's tab reads 'project · folder' and is
+// flagged `linked` for the strip's tree icon (repo.linkedWorktree, src/repo-open.js). The sender routing is src/ipc-contract.js, tabs.json
 // src/tabs-store.js.
 const path = require('node:path');
 
@@ -119,23 +120,49 @@ function pickOpenTarget(tabs, { root, fromId = null, newTab = false, preferExist
 
 // ---------------------------------------------------------------- titles, the tabs-changed event
 
-/** A tab's title: its repo's name (ops.repoName; the root's basename only when it has none), or 'New Tab'. */
-const tabTitle = (repo) => (repo && repo.root ? repo.name || path.basename(repo.root) : NEW_TAB_TITLE);
-
-/** A tab's tooltip: the repo's full path with the home folder as '~', or 'New Tab'. */
-function tabTooltip(repo, home = '') {
+/**
+ * A tab's title (also the window title's): a linked worktree's 'project · folder'
+ * (repo.linkedWorktree.title, src/repo-open.js), else its repo's name (ops.repoName; the root's
+ * basename only when it has none), or 'New Tab'. Folder names are used raw, as repo.name always
+ * was: main has no display sanitiser, and the strip sets the title with textContent.
+ */
+function tabTitle(repo) {
   if (!repo || !repo.root) return NEW_TAB_TITLE;
-  const root = repo.root;
-  if (home && (root === home || root.startsWith(home.endsWith(path.sep) ? home : home + path.sep))) {
-    return `~${root.slice(home.replace(/[\\/]+$/, '').length)}`;
-  }
-  return root;
+  if (isLinked(repo) && repo.linkedWorktree.title) return repo.linkedWorktree.title;
+  return repo.name || path.basename(repo.root);
 }
 
-/** One tab as the pages see it: {id, title, root|null, active}. */
-const pageTab = (tabs, t) => ({ id: t.id, title: tabTitle(t.repo), root: t.repo ? t.repo.root : null, active: t.id === tabs.activeId });
+/** The tab's repo is a linked worktree (main decided it: summary's linkedWorktree). */
+const isLinked = (repo) => !!(repo && repo.root && repo.linkedWorktree);
 
-/** The pages' 'tabs-changed' list: [{id, title, root|null, active}], in strip order. */
+/** `p` with the home folder as '~'. */
+function homeShort(p, home) {
+  if (home && (p === home || p.startsWith(home.endsWith(path.sep) ? home : home + path.sep))) {
+    return `~${p.slice(home.replace(/[\\/]+$/, '').length)}`;
+  }
+  return p;
+}
+
+/**
+ * A tab's tooltip: the repo's full path with the home folder as '~' (a linked worktree's adds
+ * 'Linked worktree of <main worktree>'), or 'New Tab'.
+ */
+function tabTooltip(repo, home = '') {
+  if (!repo || !repo.root) return NEW_TAB_TITLE;
+  const where = homeShort(repo.root, home);
+  const main = isLinked(repo) && repo.linkedWorktree.mainPath;
+  return main ? `${where}\nLinked worktree of ${homeShort(main, home)}` : where;
+}
+
+/**
+ * One tab as the pages see it: {id, title, root|null, active, linked}. linked: its repo is a linked
+ * worktree (the strip shows a tree icon).
+ */
+const pageTab = (tabs, t) => ({
+  id: t.id, title: tabTitle(t.repo), root: t.repo ? t.repo.root : null, active: t.id === tabs.activeId, linked: isLinked(t.repo),
+});
+
+/** The pages' 'tabs-changed' list: [{id, title, root|null, active, linked}], in strip order. */
 const pageTabs = (tabs) => tabs.list().map((t) => pageTab(tabs, t));
 
 /**
@@ -154,4 +181,4 @@ const ownerView = (runner, owner) => ({
   settled: () => runner.settled({ owner }),
 });
 
-module.exports = { createTabRegistry, pickOpenTarget, tabTitle, tabTooltip, pageTabs, stripTabs, ownerView };
+module.exports = { createTabRegistry, pickOpenTarget, tabTitle, isLinked, tabTooltip, pageTabs, stripTabs, ownerView };

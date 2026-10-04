@@ -18,7 +18,8 @@
 // set per index in graph-view.css.
 // Context menu on a commit row (right-click, Shift+F10 / ContextMenu key on the selected row), on a
 // ref pill (right-click: the ref's own menu, Components.actions.refMenuItems) and double-click on a
-// local branch pill run window.PLFlows actions.
+// local branch pill run window.PLFlows actions; a branch checked out in another worktree is not
+// checked out (its menu item is disabled with the reason, Components.actions.checkoutRefusal).
 // The pure pieces (refPills, rowView, commitMenuItems, pillAction) are top-level and exported for tests when loaded by node.
 (function () {
   const { el, util } = window.Components;
@@ -194,11 +195,13 @@
 
   /**
    * Double-click on pill p (refPills item): check out a local branch that isn't current, else null
-   * (also while busy and in a bare repository, which has nothing to check out into: bareBlocked).
+   * (also while busy, for a branch checked out in another worktree (checkoutRefusal) and in a bare
+   * repository, which has nothing to check out into: bareBlocked).
    * While a rebase / merge / … is in progress the flow itself refuses with the reason (PLPolicy.opBlocked).
    */
   function pillAction(p, state) {
     if (!p || p.kind !== 'local' || p.current || !p.ref || (state && state.busy)) return null;
+    if (A.checkoutRefusal(p.ref, state)) return null; // checked out in another worktree
     const d = { flow: 'checkout', args: [{ target: p.ref, kind: 'local' }] };
     return bareBlocked(state, d.flow, d.args) ? null : d;
   }

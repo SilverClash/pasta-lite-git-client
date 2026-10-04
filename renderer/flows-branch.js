@@ -142,9 +142,10 @@
   const nameList = (store, names) => dialog(store).pathListText(names, names.length);
 
   /**
-   * store.state with state.worktrees re-read: the store keeps them for bare repositories only, and a
-   * branch checked out in a linked worktree of a normal repository can't be deleted either. A failed
-   * read keeps the store's list (git still refuses such a branch, and the flow reports it).
+   * store.state with state.worktrees re-read: the store keeps them for every repository (read with each
+   * full refresh), but a worktree added from a terminal since then may hold the branch, so the delete
+   * flows re-read them for freshness. A failed read keeps the store's list (git still refuses such a
+   * branch, and the flow reports it).
    */
   async function withWorktrees(store) {
     const { value } = await settle(store.invoke('worktrees'));

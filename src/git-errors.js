@@ -46,6 +46,18 @@ const RULES = Object.freeze({
   mirrorPush: { re: /--mirror can't be combined with refspecs/, from: 'stderr', kind: 'mirror-repo' },
   // setUpstream: no fetch refspec of the remote maps a branch to refs/remotes/<remote>/.
   noTrackingRefspec: { re: /is not a branch/, from: 'stderr', kind: 'unsupported' },
+  // `git worktree remove` / `lock` / `unlock` (src/git.js). Dirty: modified or untracked files,
+  // or submodules (both only go with --force). Locked: with or without a reason ("cannot remove a
+  // locked working tree, lock reason: x" / "...;"); the app never passes -f -f. Main: `remove`
+  // ("'<path>' is a main working tree") and `lock` / `unlock`. A path git doesn't list:
+  // "'<path>' is not a working tree".
+  worktreeDirty: {
+    re: [/contains modified or untracked files/i, /containing submodules cannot be moved or removed/i],
+    from: 'stderr', kind: 'worktree-dirty',
+  },
+  worktreeLocked: { re: /cannot (?:remove|move) a locked working tree/i, from: 'stderr', kind: 'worktree-locked' },
+  mainWorktree: { re: /is a main working tree|main working tree cannot be locked or unlocked/i, from: 'stderr', kind: 'main-worktree' },
+  notAWorktree: { re: /is not a working tree/i, from: 'stderr', kind: 'not-found' },
   // `stash apply --index` that can only apply without the index.
   applyWithoutIndex: { re: /try without --index/i, from: 'stderr' },
   // git prints these on stdout (hook output always goes to stderr, so a hook can't fake them).

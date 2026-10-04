@@ -15,10 +15,14 @@ const abortedError = () => kindError('aborted', 'Operation was cancelled');
 
 /**
  * @param {{ops: object, writeOps: Set<string>, gate?: (repo, name, args) => Promise<Error|null>,
- *   log?: object, now?: () => number}} o the registry (name -> op), the names of the writes, the
- *   refusal asked before anything runs (bare-gate.js; ops.createRunner passes the registry's),
- *   a logger (src/log.js child) that gets one record per op (default: the shared logger's 'ops'
- *   scope) and the clock (tests).
+ *   vet?: (repo, name, checked, info) => Promise<Error|null>, log?: object, now?: () => number}} o
+ *   the registry (name -> op), the names of the writes, the refusal asked before anything runs
+ *   (bare-gate.js; ops.createRunner passes the registry's), the refusal asked of every op just
+ *   before it starts, once its check passed, with its checked arguments (null for an op without
+ *   a check) and info {write, settled: a promise that resolves when the op settles, whatever the
+ *   outcome} (ops.createRunner: a write running in the folder an op is about to delete, or a
+ *   write in a folder being deleted), a logger (src/log.js child) that gets one record per op
+ *   (default: the shared logger's 'ops' scope) and the clock (tests).
  * Returns an EventEmitter with run(repo, op, args, {opId}), cancel(opId), and for quitting
  * running(), cancelAll() and settled() (see there). Events (writes only,
  * and only for a write that passed validation and actually started):
@@ -29,7 +33,7 @@ const abortedError = () => kindError('aborted', 'Operation was cancelled');
  * processes and their hooks are killed and it rejects with kind 'aborted'.
  */
 function createRunner({
-  ops, writeOps, gate = async () => null, log = logger.child('ops'), now = Date.now,
+  ops, writeOps, gate = async () => null, vet = async () => null, log = logger.child('ops'), now = Date.now,
 } = {}) {
   const events = new EventEmitter();
   const queues = new Map(); // repo -> tail promise of its write queue
@@ -38,13 +42,14 @@ function createRunner({
 
   /** Validate, then run `name` with every git command it spawns bound to `signal`. */
   // Ops built with op() get the runner's signal as act's last argument (the renderer's args never
-  // reach act unchecked); plain ops just run under it (exec.withSignal).
+  // reach act unchecked); plain ops just run under it (exec.withSignal). Every op is vetted after
+  // its check (`vet`), still before onStart: a refusal emits no events either.
   // Bare repositories (bareGate): an op that needs a working tree (for these args), or
   // a fetch into a mirror, is refused first, before validation and before onStart, so it changes
   // nothing and a write emits no busy / changed events. Here rather than before the queue: a write
   // is enqueued synchronously, so writes keep their call order. repo-dirs.isBare is cached, so a normal
   // repo pays nothing.
-  function invoke(repo, name, args, signal, onStart) {
+  function invoke(repo, name, args, signal, onStart, entry) {
     const fn = ops[name];
     return exec.withSignal(signal, async () => {
       const refused = await gate(repo, name, args);
@@ -57,6 +62,8 @@ function createRunner({
           throw signal.aborted ? abortedError() : err;
         }
       }
+      const vetoed = await vet(repo, name, checked, { write: entry.write, settled: entry.done });
+      if (vetoed) throw vetoed;
       const act = checked ? () => fn.act(repo, ...checked, signal) : () => fn(repo, ...args);
       if (signal.aborted) throw abortedError();
       if (onStart) onStart();
@@ -80,7 +87,7 @@ function createRunner({
         started = true;
         entry.started = true;
         events.emit('busy', { repo, op: name, running: true });
-      });
+      }, entry);
       ok = true;
       return value;
     } finally {
@@ -142,10 +149,11 @@ function createRunner({
     state.ctrl = ctrl;
     if (opId) controllers.set(opId, ctrl);
     const write = writeOps.has(name);
-    const entry = { repo, op: name, write, owner, ctrl, started: !write, done: null };
+    let settle;
+    const entry = { repo, op: name, write, owner, ctrl, started: !write, done: new Promise((r) => { settle = r; }) };
     active.add(entry);
-    const p = write ? enqueue(repo, () => runWrite(repo, name, args, ctrl.signal, entry)) : invoke(repo, name, args, ctrl.signal);
-    entry.done = p.then(() => {}, () => {});
+    const p = write ? enqueue(repo, () => runWrite(repo, name, args, ctrl.signal, entry)) : invoke(repo, name, args, ctrl.signal, null, entry);
+    p.then(settle, settle);
     try {
       return await p;
     } finally {

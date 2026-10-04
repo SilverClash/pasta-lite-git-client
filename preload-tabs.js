@@ -33,7 +33,7 @@ function sendLog(level, msg, fields) {
 contextBridge.exposeInMainWorld('tabsApi', {
   /** macOS: the strip leaves room for the traffic lights. */
   isMac: process.platform === 'darwin',
-  /** {tabs: [{id, title, root|null, active, tooltip, busy}], fullscreen}. */
+  /** {tabs: [{id, title, root|null, active, linked, tooltip, busy}], fullscreen}; linked: a linked worktree's tab (tree icon). */
   list: () => call('tabs:list'),
   /** cb({tabs, fullscreen}) on every change; returns an unsubscribe function. */
   subscribe: (cb) => {

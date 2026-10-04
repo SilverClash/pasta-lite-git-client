@@ -11,10 +11,24 @@
 //   - render git-derived text with textContent / createTextNode only, never innerHTML
 //
 // State keys:
-//   repo         {root, name, head:{sha, branch}, bare} | null   bare: a bare repository, whose status is
-//                main's synthetic clean one, so there is no WIP row and the selection falls back to HEAD
-//   worktrees    ops 'worktrees' result [{path, head, branch, bare, detached, locked, prunable}] for a bare
-//                repository (read with every full refresh; the last list is kept when reading fails), else null
+//   repo         {root, name, head:{sha, branch}, bare, linkedWorktree} | null   bare: a bare repository, whose
+//                status is main's synthetic clean one, so there is no WIP row and the selection falls back to
+//                HEAD; linkedWorktree: {mainPath, mainName, title} when the folder is a linked worktree, else
+//                null (decided in main, src/repo-open.js: the renderer never compares paths)
+//   worktrees    ops 'worktrees' result [{path, head, branch, bare, detached, locked, lockReason, prunable,
+//                prunableReason, missing, main, current}] | null until first read; read for every repository
+//                with every full refresh (the last list is kept when reading fails)
+//   worktreeDirty {[path]: true | false | null} | null: whether each linked worktree (not bare, not prunable,
+//                not missing, not current) has changes; null for one main couldn't check. Read lazily,
+//                only while wanted (actions.setWorktreeDirtyWanted: the sidebar's Worktrees section is
+//                open), with each worktrees read, at most once per DIRTY_TTL_MS (from the end of the
+//                last read) for the same paths and never while a read of them is still running
+//                the last value is kept when reading
+//                fails. The current worktree is absent: use store.isDirty().
+//   worktreeReveal a counter: actions.revealWorktree() bumps it (the toolbar's linked-worktree chip), and
+//                the sidebar then opens its Worktrees section and focuses the current worktree's row. A
+//                click event kept as state on purpose: the store has no event bus, only keyed subscriptions,
+//                so a changing counter is how one component asks another to act
 //   status       git.status() result | null
 //   refs         git.refs() result | null
 //   refsBySha    Map sha -> [{type:'head'|'local'|'remote'|'tag', name, current?, upstream?, remote?, branch?}]
@@ -105,7 +119,7 @@
       stashError: null, commits: [], hasMore: false, next: null, graph: { width: 0, rows: [] }, rows: [],
       selection: null, commitFiles: null, diff: null, undo: null, undoError: null, busy: false, loading: false,
       loadError: null, remotes: null, remotesError: null, remoteOp: null, pullMode: null, continueDraft: null,
-      rebaseEditor: null, worktrees: null, centre: 'graph',
+      rebaseEditor: null, worktrees: null, worktreeDirty: null, worktreeReveal: 0, centre: 'graph',
     };
     let loadSeq = 0; // guards against out-of-order loads (repo switch, rapid refreshes)
     // History bookkeeping for state.commits: hashes loaded (paging de-dup), the ref-tips signature
@@ -263,11 +277,14 @@
       layouter = null;
       layoutKey = null;
       watchNoticed = null;
+      dirtyAt = 0;
+      dirtyKey = '';
+      dirtyInFlight = null;
       set({
         repo, loading: true, status: null, refs: null, refsBySha: new Map(), stashes: [], stashError: null,
         commits: [], hasMore: false, next: null, rows: [], graph: { width: 0, rows: [] }, selection: null,
         commitFiles: null, diff: null, undo: null, undoError: null, loadError: null, remotes: null, remotesError: null,
-        remoteOp: null, continueDraft: null, rebaseEditor: null, worktrees: null,
+        remoteOp: null, continueDraft: null, rebaseEditor: null, worktrees: null, worktreeDirty: null,
       });
       try {
         await refresh({ first: true });
@@ -451,9 +468,9 @@
       // Remotes rarely change: read them with the first load and when refs moved (a new remote shows
       // up as new remote branches after its first fetch; flows re-read them before choosing one).
       if (first || patch.refs) loadRemotes();
-      // The bare banner's "Open worktree" buttons: a worktree added or removed from a terminal shows up
-      // with the next full refresh (window focus, a refs change).
-      if (plan.full && window.PLPolicy.isBare(state)) loadWorktrees();
+      // The sidebar's Worktrees section and the bare banner's "Open worktree" buttons: a worktree added,
+      // removed or locked from a terminal shows up with the next full refresh (window focus, the watcher).
+      if (plan.full) loadWorktrees();
       if (patch.selection && patch.selection.kind === 'commit') loadCommitFiles(patch.selection.sha);
       if (state.diff && diffNeedsReload(state.diff.spec, plan.full ? FULL : scope, !!patch.diff)) reloadDiff();
     }
@@ -523,7 +540,10 @@
 
     let worktreesSeq = 0; // latest worktrees read; an older one never lands after it
 
-    /** Re-read state.worktrees (bare repositories); never rejects, a failure is logged and keeps the last list. */
+    /**
+     * Re-read state.worktrees, then their dirty state when it is wanted; never rejects, a failure is
+     * logged and keeps the last list.
+     */
     async function loadWorktrees() {
       const seq = loadSeq;
       const mine = ++worktreesSeq;
@@ -531,7 +551,63 @@
         logError('[store] could not read the worktrees:', e);
         return null;
       });
-      if (list && seq === loadSeq && mine === worktreesSeq && !sameJSON(state.worktrees, list)) set({ worktrees: list });
+      if (!list || seq !== loadSeq || mine !== worktreesSeq) return;
+      if (!sameJSON(state.worktrees, list)) set({ worktrees: list });
+      if (dirtyWanted) loadWorktreeDirty();
+    }
+
+    const DIRTY_TTL_MS = 5000;
+    let dirtyWanted = false; // the sidebar's Worktrees section is open
+    let dirtySeq = 0; // latest dirty read; an older one never lands after it
+    let dirtyAt = 0; // when the last dirty read for dirtyKey finished (0: none, or it failed)
+    let dirtyKey = ''; // JSON of the sorted paths that read checked
+    let dirtyInFlight = null; // {key, promise} of the dirty read still running, else null
+
+    /**
+     * Re-read state.worktreeDirty (ops worktreeDirty) unless the same linked worktrees were checked
+     * < DIRTY_TTL_MS ago or are being checked right now (that read's promise is returned, so a slow
+     * read is never overlapped by another for the same paths). Never rejects.
+     */
+    function loadWorktreeDirty() {
+      if (!state.repo || !Array.isArray(state.worktrees)) return Promise.resolve();
+      const paths = state.worktrees.filter((w) => !w.bare && !w.prunable && !w.missing && !w.current).map((w) => w.path).sort();
+      const key = JSON.stringify(paths);
+      if (!paths.length) {
+        dirtySeq++; // an older read must not land over this
+        dirtyInFlight = null;
+        dirtyKey = key;
+        dirtyAt = Date.now();
+        if (!sameJSON(state.worktreeDirty, {})) set({ worktreeDirty: {} });
+        return Promise.resolve();
+      }
+      if (dirtyInFlight && dirtyInFlight.key === key) return dirtyInFlight.promise;
+      if (key === dirtyKey && Date.now() - dirtyAt < DIRTY_TTL_MS) return Promise.resolve();
+      const seq = loadSeq;
+      const mine = ++dirtySeq;
+      dirtyKey = key;
+      dirtyAt = 0;
+      const flight = { key, promise: null };
+      flight.promise = (async () => {
+        const list = await invoke('worktreeDirty').then((l) => (Array.isArray(l) ? l : []), (e) => {
+          logError('[store] could not read the worktrees\' state:', e);
+          return null;
+        });
+        if (dirtyInFlight === flight) dirtyInFlight = null;
+        if (seq !== loadSeq || mine !== dirtySeq) return;
+        if (!list) return; // a failure: dirtyAt stays 0, so the next read retries
+        dirtyAt = Date.now();
+        const dirty = {};
+        for (const e of list) if (e && typeof e.path === 'string') dirty[e.path] = e.dirty === true || e.dirty === false ? e.dirty : null;
+        if (!sameJSON(state.worktreeDirty, dirty)) set({ worktreeDirty: dirty });
+      })();
+      dirtyInFlight = flight;
+      return flight.promise;
+    }
+
+    /** The sidebar's Worktrees section opened (true) or closed: the dirty dots are read only while it is open. */
+    function setWorktreeDirtyWanted(on) {
+      dirtyWanted = !!on;
+      if (dirtyWanted) loadWorktreeDirty();
     }
 
     let loadingMore = null; // {seq, next, promise}
@@ -768,13 +844,26 @@
       setToast: (fn) => { toastFn = fn; },
       actions: {
         loadRepo, refresh: () => refresh().catch(toast), loadMore: () => loadMore().catch(toast),
-        reloadDiff, watchEvent,
+        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty,
         select, selectRelative, openDiff, closeDiff, toast, write, loadRemotes, cancelRemote,
         notify: (message) => toastFn({ message: String(message), level: 'info' }),
         openRebaseEditor, closeRebaseEditor, editRebase, undoRebaseEdit, redoRebaseEdit, resetRebaseEditor, patchRebaseEditor,
         setBusy: (busy) => set({ busy: !!busy }),
         setPullMode: (mode) => set({ pullMode: mode == null ? null : mode }),
         setContinueDraft: (draft) => set({ continueDraft: draft || null }),
+        revealWorktree: () => set({ worktreeReveal: state.worktreeReveal + 1 }),
+        /**
+         * Main's fresh summary of the open repo (app.js, from app:getState): only what main may have
+         * re-decided for the same root, linkedWorktree (the toolbar's chip and tooltip). Another root,
+         * or nothing changed: no-op (no 'repo' notification, so nothing re-renders).
+         */
+        updateRepoInfo: (repo) => {
+          const cur = state.repo;
+          if (!repo || !cur || repo.root !== cur.root) return;
+          const lw = repo.linkedWorktree || null;
+          if (JSON.stringify(lw) === JSON.stringify(cur.linkedWorktree || null)) return;
+          set({ repo: { ...cur, linkedWorktree: lw } });
+        },
       },
     };
   }

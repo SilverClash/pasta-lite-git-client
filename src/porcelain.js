@@ -135,9 +135,10 @@ function parseStageEntries(raw) {
 
 /**
  * `git worktree list --porcelain -z`, main one first: [{path, head, branch, bare, detached,
- * locked, prunable}]. `path` as git prints it; `head` the checked-out commit (null for the bare
- * entry or an unborn branch); `branch` the short name (null when detached or bare); locked /
- * prunable: booleans (git's reasons are left out).
+ * locked, lockReason, prunable, prunableReason}]. `path` as git prints it; `head` the checked-out
+ * commit (null for the bare entry or an unborn branch); `branch` the short name (null when
+ * detached or bare); locked / prunable: booleans, with git's reason as the text after the key
+ * (lockReason / prunableReason; null when git gives none). Unknown keys are ignored.
  */
 function parseWorktrees(raw) {
   const list = [];
@@ -151,15 +152,24 @@ function parseWorktrees(raw) {
     const [key, value = ''] = splitN(f, ' ', 2);
     if (key === 'worktree') {
       if (cur) list.push(cur);
-      cur = { path: value, head: null, branch: null, bare: false, detached: false, locked: false, prunable: false };
+      cur = {
+        path: value, head: null, branch: null, bare: false, detached: false,
+        locked: false, lockReason: null, prunable: false, prunableReason: null,
+      };
     } else if (!cur) {
       continue;
     } else if (key === 'HEAD') {
       cur.head = OID.test(value) && !isZero(value) ? value : null;
     } else if (key === 'branch') {
       cur.branch = branchOf(value) ?? value;
-    } else if (key === 'bare' || key === 'detached' || key === 'locked' || key === 'prunable') {
+    } else if (key === 'bare' || key === 'detached') {
       cur[key] = true;
+    } else if (key === 'locked') {
+      cur.locked = true;
+      cur.lockReason = value || null;
+    } else if (key === 'prunable') {
+      cur.prunable = true;
+      cur.prunableReason = value || null;
     }
   }
   if (cur) list.push(cur);

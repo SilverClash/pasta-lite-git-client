@@ -17,6 +17,26 @@ minor versions may contain breaking changes.
   the checked-out branch and branches checked out in other worktrees are left out. Branches that
   aren't fully merged can be force-deleted together, and any that fail are listed without stopping
   the rest. Undo restores the deleted branches one at a time, newest first.
+- Worktrees section in the sidebar. It lists the repository's worktrees, the main one included, with
+  their branch or short SHA, marks the main and current worktrees, and shows locked (with the
+  reason), missing and dirty states; dirty dots load while the section is open. Right-click a
+  worktree to open it, reveal it in the file manager, copy its path, lock or unlock it (with an
+  optional reason), or delete it; **Prune** previews what will be removed first. Deleting a worktree
+  with changes asks for a force confirmation, and the main, current and locked worktrees are never
+  deleted, nor one with a rebase or merge stopped in it, another worktree inside it or a git
+  operation running there. Deleting a detached worktree warns how many of its commits no branch or
+  tag keeps. The dirty check skips a worktree whose own config could run a command the repository
+  wasn't trusted for. Changes made in a terminal show up automatically.
+- A tab with a linked worktree open says so. Its tab shows a tree icon and reads `project · folder`
+  (the window title too), and a **worktree** chip next to the repository name shows the worktree's
+  folder and its main worktree; click it to jump to the worktree in the sidebar. Branches checked
+  out in another worktree can't be checked out from the branch switcher, the sidebar or the graph;
+  their Checkout is disabled with the worktree's path.
+
+### Changed
+
+- A repository trusted earlier under another spelling of its path (another letter case on a
+  case-insensitive disk) is recognised, instead of asking again.
 
 ### Fixed
 

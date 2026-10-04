@@ -61,14 +61,14 @@ function loadComponentHelpers() {
 
 /**
  * loadComponentHelpers() plus menu.js and the flows (flows-kit.js, flows-sync.js, flows-branch.js, flows-stash.js,
- * flows-worktree.js, flows-op.js, flows-merge.js, flows-rebase.js:
+ * flows-worktree.js, flows-linked-worktrees.js, flows-op.js, flows-merge.js, flows-rebase.js:
  * window.Components.menu, window.PLFlows; the global
  * shortcuts read Components.actions, which a test may replace).
  * Pass `dom` (from fakeDom()) first to get working dialogs and menus.
  */
 function loadFlows() {
   const win = loadComponentHelpers();
-  for (const f of ['menu.js', 'flows-kit.js', 'flows-sync.js', 'flows-branch.js', 'flows-stash.js', 'flows-worktree.js', 'flows-op.js', 'flows-merge.js', 'flows-rebase.js']) {
+  for (const f of ['menu.js', 'flows-kit.js', 'flows-sync.js', 'flows-branch.js', 'flows-stash.js', 'flows-worktree.js', 'flows-linked-worktrees.js', 'flows-op.js', 'flows-merge.js', 'flows-rebase.js']) {
     delete require.cache[require.resolve(R(f))];
     require(R(f));
   }
@@ -568,7 +568,8 @@ function scriptedApi(data, handlers = {}) {
   const defaults = {
     status: () => data.status, refs: () => data.refs, stashes: () => data.stashes,
     undoState: () => data.undoState, log: () => data.log, remotes: () => data.remotes || ['origin'],
-    commitFiles: () => [], worktrees: () => data.worktrees || [],
+    commitFiles: () => [], worktrees: () => data.worktrees || [], worktreeDirty: () => data.worktreeDirty || [],
+    worktreeUnreachable: () => data.worktreeUnreachable || { count: 0 },
   };
   const run = (op, args, opId) => {
     calls.push({ op, args, opId });

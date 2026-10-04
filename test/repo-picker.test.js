@@ -490,8 +490,9 @@ test('toolbar: repository › branch breadcrumb; the repository stack toggles th
   assert.equal(b.title, `~/src/git-clients\nSwitch or open a repository (${t.IS_MAC ? '⌘P' : 'Ctrl+P'})`);
   const left = t.root.querySelector('.tb-left');
   const cls = (c) => c.className || c.getAttribute('class') || '';
-  assert.deepEqual(left.children.map(cls), ['tb-stack tb-repo', 'icon icon-chevron-right tb-crumb-sep', 'tb-stack tb-branch', 'tb-pills'],
-    'repository › branch, then the ahead / behind pills');
+  assert.deepEqual(left.children.map(cls), ['tb-stack tb-repo', 'tb-pill muted tb-wt-chip', 'icon icon-chevron-right tb-crumb-sep', 'tb-stack tb-branch', 'tb-pills'],
+    'repository (+ the linked-worktree chip, hidden here) › branch, then the ahead / behind pills');
+  assert.equal(left.children[1].hidden, true, 'not a linked worktree: no chip');
   assert.equal(t.root.querySelector('.tb-open'), null, 'Open… moved into the picker');
   b.click();
   assert.equal(t.P.isOpen(), true);

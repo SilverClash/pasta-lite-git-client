@@ -22,3 +22,8 @@ coverage/
 
 # Demo repositories from scripts/demo-repo.js (default: ./demo-repo and ./demo-repo.origin.git)
 demo-repo*/
+
+# Local tool and editor state
+.repograph/
+.idea/
+.vscode/

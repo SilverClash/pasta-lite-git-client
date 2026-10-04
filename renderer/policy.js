@@ -5,7 +5,7 @@
 // Components.actions re-exports all of it (renderer/actions.js).
 //
 //   BUSY_TITLE                      'Working…'
-//   FREE_FLOWS                      flows that also run while busy (openTerminal, cancel, …); the flow
+//   FREE_FLOWS                      flows that also run while busy (openTerminal, cancel, openWorktree, revealWorktree, copyWorktreePath, …); the flow
 //                                   wrapper (flows-kit.js) takes no lock for them
 //   START_FLOWS                     flow -> action name of the flows that start a conflicting op
 //   WORKTREE_FLOWS                  flow -> action name of the flows that need a working tree: refused
@@ -41,7 +41,7 @@
   const Op = window.PLOp || (typeof module !== 'undefined' && typeof require === 'function' ? require('./op-model.js') : null);
 
   const BUSY_TITLE = 'Working…';
-  const FREE_FLOWS = new Set(['openTerminal', 'cancel', 'cancelInteractiveRebase', 'openWorktree']);
+  const FREE_FLOWS = new Set(['openTerminal', 'cancel', 'cancelInteractiveRebase', 'openWorktree', 'revealWorktree', 'copyWorktreePath']);
   const PULL_MODES = Object.freeze(['fetch', 'ff-if-possible', 'ff-only', 'rebase']);
   const DEFAULT_PULL_MODE = 'ff-if-possible';
 

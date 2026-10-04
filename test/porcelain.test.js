@@ -81,19 +81,42 @@ test('parseStageEntries: ls-files -s / -u records, stage and path (a tab in the 
   ]);
 });
 
-test('parseWorktrees: main entry first, bare / detached / locked / prunable, zero HEAD is null', () => {
+test('parseWorktrees: main entry first, bare / detached / locked / prunable with their reasons, zero HEAD is null', () => {
   const raw = [
     '/r/.bare', 'bare', '',
     '/r/main', `HEAD ${SHA}`, 'branch refs/heads/main', '',
-    '/r/det', `HEAD ${SHA}`, 'detached', 'locked reason', '',
+    '/r/det', `HEAD ${SHA}`, 'detached', 'locked on a stick: keep', '',
     '/r/new', `HEAD ${'0'.repeat(40)}`, 'branch refs/heads/new', 'prunable gitdir file points to non-existent location', '',
   ].map((l) => (l.startsWith('/') ? `worktree ${l}` : l)).join('\0');
+  const entry = (o) => ({
+    head: null, branch: null, bare: false, detached: false, locked: false, lockReason: null, prunable: false, prunableReason: null, ...o,
+  });
   assert.deepEqual(p.parseWorktrees(raw), [
-    { path: '/r/.bare', head: null, branch: null, bare: true, detached: false, locked: false, prunable: false },
-    { path: '/r/main', head: SHA, branch: 'main', bare: false, detached: false, locked: false, prunable: false },
-    { path: '/r/det', head: SHA, branch: null, bare: false, detached: true, locked: true, prunable: false },
-    { path: '/r/new', head: null, branch: 'new', bare: false, detached: false, locked: false, prunable: true },
+    entry({ path: '/r/.bare', bare: true }),
+    entry({ path: '/r/main', head: SHA, branch: 'main' }),
+    entry({ path: '/r/det', head: SHA, detached: true, locked: true, lockReason: 'on a stick: keep' }),
+    entry({ path: '/r/new', branch: 'new', prunable: true, prunableReason: 'gitdir file points to non-existent location' }),
   ]);
+});
+
+test('parseWorktrees: a lock without a reason, a prunable locked entry, an unborn branch, unknown keys, a trailing record', () => {
+  const raw = [
+    'worktree /r/m', 'HEAD ' + SHA, 'branch refs/heads/main', 'future-key some value', '',
+    'worktree /r/l', 'HEAD ' + SHA, 'detached', 'locked', '',
+    'worktree /r/both', 'HEAD ' + SHA, 'branch refs/heads/b', 'locked why', 'prunable gone', '',
+    'worktree /r/unborn', 'HEAD ' + '0'.repeat(40), 'branch refs/heads/orphan', 'locked ', '',
+    // No closing empty field: the last record still counts.
+    'worktree /r/last', 'HEAD ' + SHA, 'branch refs/heads/last',
+  ].join('\0');
+  const list = p.parseWorktrees(raw);
+  assert.deepEqual(list.map((w) => w.path), ['/r/m', '/r/l', '/r/both', '/r/unborn', '/r/last']);
+  assert.equal(Object.hasOwn(list[0], 'future-key'), false, 'unknown keys are ignored');
+  assert.deepEqual([list[1].locked, list[1].lockReason], [true, null], 'no reason: null');
+  assert.deepEqual([list[2].locked, list[2].lockReason, list[2].prunable, list[2].prunableReason], [true, 'why', true, 'gone']);
+  assert.deepEqual([list[3].head, list[3].branch, list[3].locked, list[3].lockReason], [null, 'orphan', true, null], 'an empty reason is null');
+  assert.deepEqual([list[4].branch, list[4].head], ['last', SHA]);
+  assert.deepEqual(p.parseWorktrees(''), []);
+  assert.deepEqual(p.parseWorktrees('HEAD ' + SHA + '\0\0'), [], 'fields before any worktree line are ignored');
 });
 
 test('parseNameStatus: renames and copies carry their source', () => {

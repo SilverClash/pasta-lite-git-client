@@ -108,7 +108,7 @@
     picker.close(); // a picker left open belongs to the previous repo
     renderBusy(); // the previous repo's busy state must not stick
     document.body.dataset.ready = '0';
-    document.title = `${repo.name} — Pasta Lite Git client`;
+    document.title = `${repo.name} — Pasta Lite Git client`; // main titles the window (src/tabs.js tabTitle)
     setView('repo');
     try {
       await store.actions.loadRepo(repo);
@@ -119,6 +119,16 @@
   }
 
   const refreshRepo = () => store.actions.refresh();
+
+  /**
+   * Main's fresh summary of the repo already shown (app:getState, same root): main re-decides
+   * linkedWorktree there and updates the strip and the window title itself; the page takes it too,
+   * so the toolbar's worktree chip and tooltip follow without a reopen.
+   */
+  function adoptRepo(repo) {
+    state.repo = repo;
+    store.actions.updateRepoInfo(repo);
+  }
 
   // Global shortcuts: the Components.actions.KEYS entries with a flow (⌘Z undo, ⌘⇧Z
   // redo, ⌘L fetch, ⌘B new branch; Ctrl elsewhere), from any focus, run as PLFlows[entry.flow](store,
@@ -184,6 +194,7 @@
     if (state.repo && e && e.repo === state.repo.root && Array.isArray(e.kinds) && e.kinds.includes('gone')) {
       appCall('getState').then((s) => {
         state.recent = s.recent;
+        if (s.repo && state.repo && s.repo.root === state.repo.root) adoptRepo(s.repo);
         share();
         if (!s.repo) showWelcome();
       }, toast);

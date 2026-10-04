@@ -60,6 +60,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 
 **Worktrees and bare repositories**
 - Open linked worktrees and bare repositories. A bare repository shows its history and offers its worktrees.
+- A Worktrees section in the sidebar lists linked worktrees with their branch, locked and dirty state. Open one, reveal it in the file manager, copy its path, lock or unlock it, delete it (with a force confirmation if it has changes), or prune stale ones after a preview.
 
 **Tabs and repositories**
 - One repository per tab, with reorderable tabs and tabs restored on the next launch.

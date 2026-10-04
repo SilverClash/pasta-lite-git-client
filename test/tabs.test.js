@@ -133,17 +133,88 @@ describe('titles and the tabs-changed payload', () => {
     assert.equal(t.tabTooltip(null, '/Users/me'), 'New Tab');
   });
 
-  test('pageTabs: {id, title, root, active}; stripTabs: plus tooltip and busy', () => {
+  test('pageTabs: {id, title, root, active, linked}; stripTabs: plus tooltip and busy', () => {
     const r = registry(['/h/a', null]);
     r.activate(2);
     assert.deepEqual(t.pageTabs(r), [
-      { id: 1, title: 'a', root: '/h/a', active: false },
-      { id: 2, title: 'New Tab', root: null, active: true },
+      { id: 1, title: 'a', root: '/h/a', active: false, linked: false },
+      { id: 2, title: 'New Tab', root: null, active: true, linked: false },
     ]);
     assert.deepEqual(t.stripTabs(r, { home: '/h', busy: (x) => x.id === 1 }), [
-      { id: 1, title: 'a', root: '/h/a', active: false, tooltip: '~/a', busy: true },
-      { id: 2, title: 'New Tab', root: null, active: true, tooltip: 'New Tab', busy: false },
+      { id: 1, title: 'a', root: '/h/a', active: false, linked: false, tooltip: '~/a', busy: true },
+      { id: 2, title: 'New Tab', root: null, active: true, linked: false, tooltip: 'New Tab', busy: false },
     ]);
+  });
+
+  test('a linked worktree (repo.linkedWorktree, from main): title "project · folder", linked, tooltip names the main worktree', () => {
+    const lw = { mainPath: '/h/src/monorepo', mainName: 'monorepo', title: 'monorepo · monorepo-feat' };
+    const linked = { ...repo('/h/src/monorepo-feat'), linkedWorktree: lw };
+    assert.equal(t.tabTitle(linked), 'monorepo · monorepo-feat');
+    assert.equal(t.isLinked(linked), true);
+    assert.equal(t.tabTooltip(linked, '/h'), '~/src/monorepo-feat\nLinked worktree of ~/src/monorepo');
+    // The main worktree, a plain repo or bare repo (linkedWorktree null or absent) keep their title.
+    const mainWt = { ...repo('/h/src/monorepo'), linkedWorktree: null };
+    assert.deepEqual([t.tabTitle(mainWt), t.isLinked(mainWt), t.tabTooltip(mainWt, '/h')], ['monorepo', false, '~/src/monorepo']);
+    assert.equal(t.isLinked(null), false);
+    const r = t.createTabRegistry();
+    r.add({ id: 1, repo: mainWt });
+    r.add({ id: 2, repo: linked });
+    r.add({ id: 3, repo: null });
+    assert.deepEqual(t.stripTabs(r, { home: '/h' }).map((x) => [x.title, x.linked, x.tooltip]), [
+      ['monorepo', false, '~/src/monorepo'],
+      ['monorepo · monorepo-feat', true, '~/src/monorepo-feat\nLinked worktree of ~/src/monorepo'],
+      ['New Tab', false, 'New Tab'],
+    ], 'other tabs\' titles are unchanged');
+  });
+});
+
+describe('the strip page (renderer/tabs.js)', () => {
+  /** renderer/tabs.js on the fake DOM with a fake window.tabsApi; returns {apply(state), tabEl(id)}. */
+  function loadStrip() {
+    const H = require('./renderer-harness');
+    const dom = H.componentDom();
+    const tablist = dom.doc.createElement('div');
+    const newTab = dom.doc.createElement('button');
+    dom.doc.body.append(tablist, newTab);
+    dom.doc.getElementById = (id) => ({ tablist, 'new-tab': newTab }[id] || null);
+    let listener = null;
+    const prev = { window: globalThis.window, document: globalThis.document };
+    globalThis.window = {
+      PLIcons: require('../renderer/icons.js'), // tabs.html loads icons.js first
+      tabsApi: {
+        isMac: true, list: () => new Promise(() => {}), subscribe: (cb) => { listener = cb; return () => {}; },
+        activate: async () => {}, close: async () => {}, newTab: async () => {}, move: async () => {}, menu: async () => {}, log() {},
+      },
+    };
+    Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
+    const file = require.resolve('../renderer/tabs.js');
+    delete require.cache[file];
+    require(file);
+    const restore = () => {
+      globalThis.window = prev.window;
+      Object.defineProperty(globalThis, 'document', { value: prev.document, configurable: true, writable: true });
+    };
+    return { apply: (state) => listener(state), tabEl: (id) => tablist.children.find((c) => c.dataset.id === String(id)), restore };
+  }
+  const tab = (o) => ({ root: '/r', active: false, linked: false, tooltip: '', busy: false, ...o });
+
+  test('a linked-worktree tab shows the tree icon and main\'s "project · folder" title; the others keep the branch icon', (tc) => {
+    const strip = loadStrip();
+    tc.after(strip.restore);
+    strip.apply({ tabs: [
+      tab({ id: 1, title: 'monorepo', active: true }),
+      tab({ id: 2, title: 'monorepo · monorepo-feat', linked: true, tooltip: '~/monorepo-feat\nLinked worktree of ~/monorepo' }),
+    ] });
+    const [a, b] = [strip.tabEl(1), strip.tabEl(2)];
+    assert.deepEqual([a.firstChild.dataset.icon, a.querySelector('.tab-title').textContent], ['branch', 'monorepo']);
+    assert.deepEqual([b.firstChild.dataset.icon, b.querySelector('.tab-title').textContent], ['worktree', 'monorepo · monorepo-feat']);
+    assert.equal(b.title, '~/monorepo-feat\nLinked worktree of ~/monorepo');
+    assert.match(b.firstChild.getAttribute('class'), /\bicon-worktree\b.*\btab-icon\b/, 'icons.js\'s tree, styled as a tab icon');
+    // The tab switches to the main worktree: the icon goes back, in place (still the first child).
+    strip.apply({ tabs: [tab({ id: 1, title: 'monorepo', active: true }), tab({ id: 2, title: 'monorepo' })] });
+    assert.equal(strip.tabEl(2), b, 'the element is kept');
+    assert.equal(b.firstChild.dataset.icon, 'branch');
+    assert.equal(b.children.filter((c) => c.dataset.icon).length, 1, 'one icon');
   });
 });
 

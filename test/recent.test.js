@@ -148,6 +148,36 @@ test('trust store: a root is trusted only for the keys accepted, persisted by re
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), [{ root: a, keys: ['core.sshcommand', 'filter.x.clean'] }]);
 });
 
+const caseInsensitiveFs = (() => {
+  const [d] = dirs(1);
+  return fs.existsSync(path.join(path.dirname(d), path.basename(d).toUpperCase()));
+})();
+
+test('trust store: an entry saved under another spelling (a symlink, another letter case) is the same repo; trust rewrites it once', () => {
+  const [a] = dirs(1);
+  const link = path.join(h.tmpDir(), 'link');
+  fs.symlinkSync(a, link);
+  // Saved by an older version that kept a non-canonical spelling.
+  const upper = path.join(path.dirname(a), path.basename(a).toUpperCase());
+  const saved = caseInsensitiveFs ? upper : link;
+  const file = path.join(h.tmpDir(), 'trusted.json');
+  fs.writeFileSync(file, JSON.stringify([{ root: saved, keys: ['filter.x.clean'] }]));
+  const store = createTrustStore(file);
+  assert.equal(store.isTrusted(a, ['filter.x.clean']), true, 'no second prompt');
+  store.trust(a, ['core.sshcommand']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), [{ root: a, keys: ['core.sshcommand', 'filter.x.clean'] }], 'one entry, by its real path');
+});
+
+test('recent store: an entry saved under another letter case is not listed twice', { skip: !caseInsensitiveFs && 'case-sensitive file system' }, async () => {
+  const [a] = dirs(1);
+  const upper = path.join(path.dirname(a), path.basename(a).toUpperCase());
+  const file = path.join(h.tmpDir(), 'recent.json');
+  fs.writeFileSync(file, JSON.stringify([{ root: upper, name: 'x', openedAt: 1 }]));
+  const store = createRecentStore(file);
+  store.add(a);
+  assert.deepEqual(roots(await store.list()), [a]);
+});
+
 test('trust store tolerates a corrupt or wrongly shaped file', () => {
   const [a] = dirs(1);
   const file = path.join(h.tmpDir(), 'trusted.json');

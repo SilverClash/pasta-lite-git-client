@@ -298,6 +298,29 @@ test('pillAction: double-click checks out a non-current local pill only', () => 
   assert.equal(pillAction(null, {}), null);
 });
 
+test('graph: a branch checked out in another worktree: no double-click on its pill, its Checkout items disabled (pill and commit menus)', () => {
+  const { mod: { refPills, pillAction, pillMenuItems, commitMenuItems } } = loadComponent('graph-view.js');
+  const wt = (o) => ({ head: SHA('b'), bare: false, detached: false, locked: false, prunable: false, main: false, current: false, ...o });
+  const worktrees = [wt({ path: '/r', branch: 'main', main: true, current: true }), wt({ path: '/w/feat', branch: 'feat/x' })];
+  const [cur, feat] = refPills([{ type: 'local', name: 'main', current: true }, { type: 'local', name: 'feat/x', current: false }], new Map());
+  const s = { repo: { root: '/r', name: 'r' }, worktrees };
+  assert.equal(pillAction(feat, s), null);
+  assert.equal(pillAction(cur, s), null, 'current: as before');
+  assert.deepEqual(pillAction(feat, { ...s, worktrees: [worktrees[0]] }).flow, 'checkout');
+  const flows = { checkout() {}, createBranch() {}, push() {}, deleteBranch() {}, merge() {}, rebase() {}, interactiveRebase() {} };
+  const state = {
+    ...s, busy: false,
+    refs: H.refs({ head: { branch: 'main', oid: SHA('a'), detached: false }, local: [{ name: 'main', oid: SHA('a'), current: true }, { name: 'feat/x', oid: SHA('b') }] }),
+    refsBySha: new Map([[SHA('b'), [{ type: 'local', name: 'feat/x', current: false }]]]),
+    commits: [{ hash: SHA('a'), parents: [SHA('b')] }, { hash: SHA('b'), parents: [] }],
+  };
+  const row = { kind: 'commit', commit: { hash: SHA('b') } };
+  const fromPill = pillMenuItems(feat, row, state, flows).find((d) => d.flow === 'checkout');
+  assert.deepEqual([fromPill.disabled, fromPill.title], [true, 'Checked out in worktree /w/feat']);
+  const fromRow = commitMenuItems(row, state, flows).find((d) => d.label === 'Checkout feat/x');
+  assert.deepEqual([fromRow.disabled, fromRow.title], [true, 'Checked out in worktree /w/feat']);
+});
+
 // ------------------------------------------------------------------ mounted (local fake DOM)
 //
 // The fake DOM is H.componentDom (test/renderer-harness.js).
@@ -1340,6 +1363,20 @@ test('selectionMenuItems: only "Delete N branches"; disabled when only the check
   const worktrees = [{ path: '/w', branch: 'chore/a', bare: false }];
   const both = selectionMenuItems(new Set(['local:main', 'local:chore/a']), { ...s, worktrees }, flows)[0];
   assert.deepEqual([both.disabled, both.title], [true, 'None of these branches can be deleted']);
+});
+
+test('branchMenuItems: in a normal repository the store\'s worktrees disable Delete up front for a branch checked out in a linked worktree', async () => {
+  const { mod: { branchMenuItems, rowTarget } } = loadComponent('sidebar.js');
+  const s = sampleState();
+  const { api, store } = await H.loadedStore(H.repoData({ commits: H.chain([SHA('a')]), refs: s.refs }));
+  assert.equal(store.state.repo.bare, undefined, 'a normal repository');
+  api.take('worktrees').resolve([
+    { path: '/r', head: SHA('a'), branch: 'main', bare: false, detached: false, main: true, current: true },
+    { path: '/w/x', head: SHA('b'), branch: 'feat/x', bare: false, detached: false, main: false, current: false },
+  ]);
+  await H.flush();
+  const del = byLabel(branchMenuItems(rowTarget('local:feat/x', store.state), store.state, fakeFlows()), 'Delete');
+  assert.deepEqual([del.disabled, del.title], [true, 'feat/x is checked out in the worktree /w/x: it can’t be deleted']);
 });
 
 function bulkData() {

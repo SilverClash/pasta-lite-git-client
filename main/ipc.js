@@ -8,7 +8,7 @@
 // Main holds each tab's repo and injects it into every operation, so a compromised renderer can
 // only run the fixed ops in src/ops.js (which validate their arguments) against the repo the user
 // opened in that tab. The paths a page may name are matched against lists main holds (the recent
-// list it showed, `git worktree list`; src/repo-opening.js).
+// list it showed, `git worktree list`; src/repo-opening.js), for revealing in the file manager too.
 //
 // Every call resolves {ok: true, value} | {ok: false, error} (ops.serializeError): nothing throws
 // across IPC. Arguments are coerced by the table's coercers and needsRepo is checked before the
@@ -17,6 +17,7 @@
 const os = require('node:os');
 const ops = require('../src/ops');
 const { kindError } = require('../src/exec');
+const { freshWorktreeEntry } = require('../src/repo-opening');
 const { CHANNELS, SMOKE_ONLY_CHANNELS, routeSender, isIndexUrl, ownedOpId } = require('../src/ipc-contract');
 
 /**
@@ -102,9 +103,11 @@ function registerChannels({ ipcMain, senderContext, handlers, hasTab, log, smoke
  *   summary: (root: string) => Promise<object>, shouldForgetRecent: (err: unknown) => boolean,
  *   git: () => {gitVersion: string|null, gitPath: string|null}, log: {warn: Function},
  *   clipboard: {writeText: (text: string) => void},
- * }} d  clipboard: Electron's clipboard (tests pass a fake).
+ *   listWorktrees: (root: string) => Promise<{path: string, prunable: boolean}[]>,
+ *   shell: {showItemInFolder: (fullPath: string) => void},
+ * }} d  clipboard, shell: Electron's (tests pass fakes). listWorktrees: git.worktrees.
  */
-function createHandlers({ runner, controller, opening, recentView, rendererLog, openTerminal, summary, shouldForgetRecent, git, log, clipboard }) {
+function createHandlers({ runner, controller, opening, recentView, rendererLog, openTerminal, summary, shouldForgetRecent, git, log, clipboard, listWorktrees, shell }) {
   const { tabs } = controller;
   return {
     // The tab's opId, namespaced: tabs can't collide, and app:cancel reaches only its own ops.
@@ -134,6 +137,15 @@ function createHandlers({ runner, controller, opening, recentView, rendererLog, 
     'app:openRecent': ({ session: s }, root, o) => opening().openShownRecent(s, root, o),
     // A worktree of the tab's repo: only a path `git worktree list` gives for it now.
     'app:openWorktree': ({ session: s }, wtPath) => opening().openWorktreeOf(s, wtPath),
+    // Show a worktree of the tab's repo in the file manager: only a path `git worktree list`
+    // gives for it now (the bare entry included; not one whose folder is gone: not-found), and
+    // only if the tab still has that repo (else false).
+    async 'app:revealWorktree'({ session: s }, wtPath) {
+      const entry = await freshWorktreeEntry(listWorktrees, s, wtPath, { allowBare: true });
+      if (!entry) return false;
+      shell.showItemInFolder(entry.path);
+      return true;
+    },
     'app:cancel': ({ session: s }, opId) => runner.cancel(ownedOpId(s.id, opId)),
     // A terminal window in the tab's repo root (never a renderer-supplied path).
     'app:openTerminal': ({ session: s }) => openTerminal(s.repo.root),

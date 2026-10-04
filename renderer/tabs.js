@@ -2,7 +2,8 @@
 // Tab strip (renderer/tabs.html): one tab per open repository, drawn from main's
 // 'tabs-changed' state (window.tabsApi, preload-tabs.js). Main owns the tabs: every action here
 // (activate, close, new, move, context menu) is a call, and the strip redraws from the event that
-// follows. All text is set with textContent.
+// follows. All text is set with textContent. Each tab shows a branch icon, or a tree icon when
+// main flags its repo a linked worktree (t.linked; its title is then main's 'project · folder').
 //
 // Mouse: click (press) shows a tab, the × or a middle click closes it, dragging reorders, right
 // click opens its menu, "+" adds a New Tab. Keyboard (role tablist / tab, roving tabindex): Left /
@@ -17,7 +18,7 @@
   const SVG = 'http://www.w3.org/2000/svg';
   const DRAG_PX = 4; // pointer travel before a press on a tab becomes a drag
 
-  let tabs = []; // [{id, title, root, active, tooltip, busy}] from main
+  let tabs = []; // [{id, title, root, active, linked, tooltip, busy}] from main
   let focusId = null; // the tab holding the roving tabindex
   let drag = null; // {id, el, startX, pointerId, active, marker, index}
   const els = new Map(); // tab id -> its element (kept across redraws: focus and hover survive)
@@ -26,23 +27,40 @@
   const mod = api.isMac ? '⌘' : 'Ctrl+';
   newBtn.title = `New Tab (${mod}T)`;
 
-  /** The branch icon every tab shows (a New Tab's is dimmed). */
-  function branchIcon() {
+  /**
+   * A tab's icon: the branch, or for a linked worktree (t.linked, main's repo.linkedWorktree) a
+   * tree, the sidebar's worktree icon from renderer/icons.js (tabs.html loads it), drawn a little
+   * bolder at the tab's 14px (a New Tab's is dimmed). data-icon says which.
+   */
+  function tabIcon(linked) {
+    if (linked) {
+      const tree = window.PLIcons.icon('worktree', 14, 'tab-icon');
+      tree.setAttribute('stroke-width', '2.1');
+      tree.dataset.icon = 'worktree';
+      return tree;
+    }
     const svg = document.createElementNS(SVG, 'svg');
     svg.setAttribute('class', 'tab-icon');
-    svg.setAttribute('viewBox', '0 0 16 16');
     svg.setAttribute('aria-hidden', 'true');
+    svg.dataset.icon = 'branch';
     const shape = (name, attrs) => {
       const n = document.createElementNS(SVG, name);
       for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
       svg.append(n);
     };
+    svg.setAttribute('viewBox', '0 0 16 16');
     const stroke = { fill: 'none', stroke: 'currentColor', 'stroke-width': '1.5', 'stroke-linecap': 'round' };
     shape('circle', { cx: '4.5', cy: '3.5', r: '1.75', ...stroke });
     shape('circle', { cx: '4.5', cy: '12.5', r: '1.75', ...stroke });
     shape('circle', { cx: '11.5', cy: '4.5', r: '1.75', ...stroke });
     shape('path', { d: 'M4.5 5.25v5.5M11.5 6.25c0 3-7 2-7 4.5', ...stroke });
     return svg;
+  }
+
+  /** Swap tab element el's icon (always its first child) when its kind changed (a tab can switch repos). */
+  function setIcon(el, linked) {
+    const cur = el.firstChild;
+    if (cur.dataset.icon !== (linked ? 'worktree' : 'branch')) cur.replaceWith(tabIcon(linked));
   }
 
   function tabElement(id) {
@@ -64,7 +82,7 @@
       e.stopPropagation();
       closeTab(id);
     });
-    el.append(branchIcon(), title, close);
+    el.append(tabIcon(false), title, close);
     els.set(id, el);
     return el;
   }
@@ -74,6 +92,7 @@
     const order = tabs.map((t) => {
       seen.add(t.id);
       const el = tabElement(t.id);
+      setIcon(el, !!t.linked);
       el.querySelector('.tab-title').textContent = t.title;
       el.title = t.tooltip || t.title;
       el.setAttribute('aria-selected', t.active ? 'true' : 'false');

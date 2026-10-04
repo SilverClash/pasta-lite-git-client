@@ -2344,9 +2344,10 @@ test('deleteBranches: more than the backend accepts in one write -> an alert bef
 test('deleteBranches: a branch checked out in a linked worktree of a normal repository is left out (the worktrees are re-read)', async () => {
   const worktrees = [{ path: '/r', branch: 'main', bare: false }, { path: '/w/b', branch: 'chore/b', bare: false }];
   const { F, store, api, dialogs } = await setup({ local: bulkLocal(), worktrees }, { deleteBranches: bulkDelete() }, [true]);
-  assert.equal(store.state.worktrees, null, 'the store keeps them for bare repositories only');
+  assert.deepEqual(store.state.worktrees, worktrees, 'the store keeps them for every repository');
+  const before = api.calls.length;
   assert.equal(await F.deleteBranches(store, ['chore/a', 'chore/b']), true);
-  assert.equal(api.calls.filter((c) => c.op === 'worktrees').length, 1);
+  assert.equal(api.calls.slice(before).filter((c) => c.op === 'worktrees').length, 1, 'the flow re-reads them');
   assert.equal(dialogs[0].opts.detail, 'chore/a');
   assert.match(dialogs[0].opts.message, /Not deleted: chore\/b \(checked out in the worktree \/w\/b\)/);
   assert.deepEqual(api.writes().map((c) => [c.op, ...c.args]), [['deleteBranches', ['chore/a'], {}]]);

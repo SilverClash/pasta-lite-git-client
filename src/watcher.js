@@ -19,26 +19,34 @@
 // ships Node 24.21) implements it in JS: at start it walks the whole tree synchronously and adds
 // one inotify watch per file and per directory, then more as entries appear. So on Linux the
 // watch gets Node's `ignore` option, which prunes that walk: .git/objects, .git/logs (except the
-// stash log), .git/modules, .git/worktrees, every node_modules, nested .git folders, and the
+// stash log), .git/modules, the noisy parts of .git/worktrees (see "Linked worktrees"), every node_modules, nested .git folders, and the
 // ignored entries `git ls-files -o -i --exclude-standard --directory` listed at start (re-listed
 // when the ignore rules change). Limitation: a folder that stops being ignored is only watched
 // once something changes in its parent folder (Node re-reads the parent then); one that becomes
 // ignored stays watched (its events are then filtered by check-ignore) until the repo is reopened.
 // Running out of fs.inotify.max_user_watches still surfaces as an 'error' event.
 //
+// Linked worktrees (any repository: normal, linked or bare): the worktree list and each entry's
+// lock and branch show in the UI, so worktrees (the folder), worktrees/<name>, worktrees/<name>/HEAD
+// and worktrees/<name>/locked are 'refs' changes (a full refresh, which re-reads the worktrees);
+// the rest of worktrees/<name> (index, logs...) is ignored. A linked worktree's own gitdir is
+// worktrees/<name> in the common dir: its HEAD stays 'full', its `locked` is 'refs', and the
+// sibling entries are mapped to `.git/worktrees/...` so it sees them too. On Linux the walk prunes
+// the noisy parts of worktrees/ (everything but those paths) in every mode.
+//
 // A bare repository (option `bare`): the root is the git dir itself and there is no
 // working folder. Every path is a git-internal one (classified as `.git/<path>`), so there is
 // nothing to filter: no check-ignore, no submodule or ignored-entry listing, no rev-parse. Its
 // linked worktrees are listed in the bare repo's banner, so a worktree added or removed
 // (worktrees/<name>), locked, or switched to another branch (worktrees/<name>/HEAD) is a 'refs'
-// change (a full refresh, which re-reads the worktrees); the rest of worktrees/<name> (index,
-// logs...) is ignored. On Linux the walk prunes the git dir's noisy parts (objects, logs, and the
-// same parts of worktrees/) as for `.git`.
+// change as in any repository (see above). On Linux the walk prunes the git dir's noisy parts
+// (objects, logs, and the same parts of worktrees/) as for `.git`.
 const fs = require('node:fs');
 const path = require('node:path');
 const { out } = require('./exec');
 const { parseStageEntries } = require('./porcelain');
 const { logger } = require('./log');
+const { realPathSync, isAtOrUnder } = require('./fs-paths');
 
 const watcherLog = logger.child('watcher');
 /** Default `log` for createWatcher: a warning in the shared logger. */
@@ -57,13 +65,14 @@ const SHARED = ['refs', 'objects', 'packed-refs', 'logs/refs', 'info', 'config']
 
 const under = (p, dir) => p === dir || p.startsWith(`${dir}/`);
 
-// Bare repositories: a linked worktree's folder in the git dir, and the files of it the banner shows.
+// A linked worktree's folder in the common dir, and the files of it the UI shows (list, branch, lock).
 const WORKTREE_ENTRY = /^worktrees(\/[^/]+(\/(HEAD|locked))?)?$/;
 
-/** Classify a path relative to the gitdir ('/'-separated); `bare`: the gitdir is a bare repo's. */
-function classifyGit(p, bare = false) {
+/** Classify a path relative to the gitdir ('/'-separated). */
+function classifyGit(p) {
   if (!p || p.endsWith('.lock')) return null;
-  if (bare && WORKTREE_ENTRY.test(p)) return 'refs';
+  if (WORKTREE_ENTRY.test(p)) return 'refs';
+  if (p === 'locked') return 'refs'; // a linked worktree's own gitdir: worktrees/<this>/locked
   if (p === 'index') return 'status';
   if (FULL_FILES.has(p) || FULL_DIRS.some((d) => under(p, d))) return 'full';
   if (p === 'refs/stash' || p === 'logs/refs/stash') return 'stashes';
@@ -85,21 +94,21 @@ function classifyGit(p, bare = false) {
  *             .git/info/exclude (drops the ignore cache): then status
  *   'status'  .git/index
  *   'full'    HEAD, refs/heads/*, MERGE_HEAD / REBASE_HEAD / rebase-merge/ and other operation state
- *   'refs'    refs/remotes/*, refs/tags/*, packed-refs, config
+ *   'refs'    refs/remotes/*, refs/tags/*, packed-refs, config, and linked worktrees: worktrees,
+ *             worktrees/<name>, worktrees/<name>/HEAD, worktrees/<name>/locked (and, in a linked
+ *             worktree's own gitdir, `locked`)
  *   'stashes' refs/stash, logs/refs/stash
  *   null      ignored: *.lock inside .git, objects/*, other logs, anything else under .git, nested
  *             .git folders
  * A null / empty name (fs.watch did not say which file) counts as a working-folder change.
  * `*.lock` is ignored only inside .git: yarn.lock or Cargo.lock in the worktree are real files.
- * `bare` (a bare repo's git dir is watched): .git/worktrees, .git/worktrees/<name> and its HEAD /
- * locked are 'refs' too.
  */
-function classify(relPath, { bare = false } = {}) {
+function classify(relPath) {
   if (relPath == null) return 'work';
   const p = String(relPath).replace(/\\/g, '/').replace(/^(\.\/)+/, '');
   if (p === '') return 'work';
   if (p === '.git') return null;
-  if (p.startsWith('.git/')) return classifyGit(p.slice(5), bare);
+  if (p.startsWith('.git/')) return classifyGit(p.slice(5));
   const parts = p.split('/');
   if (parts.includes('.git')) return null; // a nested repo's or submodule's own git data
   return parts[parts.length - 1] === '.gitignore' ? 'ignores' : 'work';
@@ -107,12 +116,12 @@ function classify(relPath, { bare = false } = {}) {
 
 /**
  * Gitdir-relative paths the Linux walk never watches (a lot of entries, nothing classify uses).
- * `bare`: worktrees/ and each worktrees/<name> folder with its HEAD / locked are watched.
+ * worktrees/ and each worktrees/<name> folder with its HEAD / locked are watched, in every mode.
  */
-function noisyGit(r, bare = false) {
+function noisyGit(r) {
   if (under(r, 'logs')) return !['logs', 'logs/refs', 'logs/refs/stash'].includes(r);
-  if (bare && under(r, 'worktrees')) return !WORKTREE_ENTRY.test(r);
-  return ['objects', 'modules', 'worktrees', 'lfs'].some((d) => under(r, d));
+  if (under(r, 'worktrees')) return !WORKTREE_ENTRY.test(r);
+  return ['objects', 'modules', 'lfs'].some((d) => under(r, d));
 }
 
 // More distinct working-folder paths than this in one batch (a node_modules install, a build) are
@@ -159,13 +168,8 @@ async function listIgnored(root) {
   return raw.split('\0').filter(Boolean).map((p) => p.replace(/\/$/, ''));
 }
 
-const realpath = (p) => {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    return p; // missing (the root went away) or unreadable: compare the resolved spelling
-  }
-};
+// Missing (the root went away) or unreadable: the resolved spelling is compared.
+const realpath = realPathSync;
 
 const isRuleFile = (p) => p === '.gitignore' || p.endsWith('/.gitignore');
 
@@ -240,7 +244,7 @@ function createWatcher(root, {
   let flushAgain = false;
   let closed = false;
 
-  const inside = (abs, dir) => abs === dir || abs.startsWith(dir + path.sep);
+  const inside = isAtOrUnder;
   const posixRel = (from, abs) => path.relative(from, abs).split(path.sep).join('/');
 
   function logOnce(message, err) {
@@ -261,7 +265,7 @@ function createWatcher(root, {
     if (inside(abs, dirs.git)) return abs === dirs.git ? '.git' : `.git/${posixRel(dirs.git, abs)}`;
     if (dirs.common !== dirs.git && inside(abs, dirs.common)) {
       const rel = posixRel(dirs.common, abs);
-      return SHARED.some((s) => under(rel, s)) ? `.git/${rel}` : undefined;
+      return SHARED.some((s) => under(rel, s)) || WORKTREE_ENTRY.test(rel) ? `.git/${rel}` : undefined;
     }
     if (inside(abs, rootAbs)) return posixRel(rootAbs, abs);
     return undefined;
@@ -271,7 +275,7 @@ function createWatcher(root, {
   function skipWatch(abs) {
     if (inside(dirs.git, abs)) return false; // the gitdir or one of its parents
     for (const dir of [dirs.git, dirs.common]) {
-      if (inside(abs, dir)) return noisyGit(posixRel(dir, abs), bare);
+      if (inside(abs, dir)) return noisyGit(posixRel(dir, abs));
     }
     if (!inside(abs, rootAbs)) return false;
     const rel = posixRel(rootAbs, abs);
@@ -294,7 +298,7 @@ function createWatcher(root, {
     if (closed || starting) return;
     const rel = mapPath(base, name);
     if (rel === undefined) return;
-    const kind = classify(rel, { bare });
+    const kind = classify(rel);
     if (kind === null) return;
     const gitInternal = rel !== null && rel.startsWith('.git/');
     // Side effects first: they hold even for a change that emits nothing.

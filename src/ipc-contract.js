@@ -83,6 +83,8 @@ const CHANNELS = Object.freeze({
   'app:openRecent': { from: ['view'], args: [asIs, openOptions] },
   // A worktree of the page's own repo, checked against `git worktree list`.
   'app:openWorktree': { from: ['view'], args: [asIs], needsRepo: true },
+  // Show a worktree of the page's own repo in the file manager, checked against `git worktree list`.
+  'app:revealWorktree': { from: ['view'], args: [asIs], needsRepo: true },
   'app:cancel': { from: ['view'], args: [opId] },
   'app:openTerminal': { from: ['view'], needsRepo: true },
   'app:log': { from: ['view', 'strip'], send: true },

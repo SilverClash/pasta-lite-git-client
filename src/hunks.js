@@ -16,7 +16,7 @@ const { headState, resolveRoot } = require('./repo-dirs');
 const git = require('./git');
 const { parseStageEntries } = require('./porcelain');
 const { workdirDiff } = require('./diff-args');
-const { worktreeGuard, readNoFollow, writeNoFollow, isUnder } = require('./worktree-fs');
+const { worktreeGuard, readNoFollow, writeNoFollow } = require('./worktree-fs');
 
 const utf8Fatal = new TextDecoder('utf-8', { fatal: true });
 
@@ -526,5 +526,5 @@ module.exports = {
   stageSelection, unstageSelection, discardSelection,
   testHooks,
   // src/worktree-fs.js, re-exported for existing callers (tests).
-  worktreeGuard, readNoFollow, writeNoFollow, isUnder,
+  worktreeGuard, readNoFollow, writeNoFollow,
 };

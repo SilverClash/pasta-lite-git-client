@@ -18,14 +18,24 @@
 //   commitItems(hash, state, flows?) -> finished descriptors of a graph commit row: check out the commit,
 //                                   create a branch there, commitOpItems, check out each local branch at it
 //   stashMenuItems(entry, state, flows?) -> finished Apply / Pop / Drop of a stash (git.stashes() item)
-//   checkoutItem({target, kind, label?, title?, current?}) -> the one checkout descriptor (current:
-//                                   disabled, "Already checked out"); createHere(ref) -> "Create branch here…"
+//   checkoutItem({target, kind, label?, title?, current?, state?}) -> the one checkout descriptor (current:
+//                                   disabled, "Already checked out"; with state, a branch checked out in
+//                                   another worktree: disabled with checkoutRefusal's title)
+//   checkoutRefusal(name, state, {kind?}) -> {title} | null   "Checked out in worktree <path>" when another
+//                                   worktree (state.worktrees, not the current one) has the branch (a remote
+//                                   branch: its local one); the checkout double-clicks check it too
+//   createHere(ref) -> "Create branch here…"
 //   upstreamTarget(state, name), behindOf(state, name), deleteItem(ref, state), fullRef(kind, name)
 //   deleteRefusal(name, state, {current?}) -> {why, title} | null   why a local branch can't be deleted
 //                                   (deleteItem, deletableBranches and the delete flows)
 //   deletableBranches(names, state) -> {names, skipped: [{name, why, title}]}   what a bulk delete removes
 //   deleteBranchesItem(names, state, {label?(n), flows?}) -> the finished "Delete N branches" descriptor
 //                                   (sidebar multi-selection and folder menus; N: the deletable ones)
+//   worktreeRefusal(w, action) -> {title} | null   why linked-worktree entry `w` (a state.worktrees
+//                                   item) can't be opened / revealed / locked / unlocked / deleted / pruned
+//   worktreeMenuItems(w, state, flows?, {platform?}?) -> finished descriptors of a sidebar worktree row: Open,
+//                                   Reveal (Finder / Explorer / File Manager), Copy Path, Lock… / Unlock,
+//                                   Prune… (a prunable one), Delete…
 // "Finished": gated (PLPolicy.gateItems) and disabled while busy or without their flow
 // (Components.actions.finishItems, looked up when a menu is built: actions.js loads after this script).
 (function () {
@@ -44,10 +54,49 @@
   /** Gate, then finish (busy, missing flow: Components.actions.finishItems). */
   const finish = (descs, state, flows) => C.actions.finishItems(gateItems(descs, state), state, flows);
 
-  /** The checkout descriptor: of a local / remote branch (name) or a commit (full sha); `current`: already there. */
-  function checkoutItem({ target, kind, label = 'Checkout', title, current = false }) {
+  /**
+   * The checkout descriptor: of a local / remote branch (name) or a commit (full sha); `current`:
+   * already there. With `state` (store state), a branch checked out in another worktree is disabled
+   * with checkoutRefusal's reason.
+   */
+  function checkoutItem({ target, kind, label = 'Checkout', title, current = false, state = null }) {
     const d = { label, flow: 'checkout', args: [{ target, kind }], ...(title ? { title } : {}) };
-    return current ? { ...d, disabled: true, title: 'Already checked out' } : d;
+    if (current) return { ...d, disabled: true, title: 'Already checked out' };
+    const no = state ? checkoutRefusal(target, state, { kind }) : null;
+    return no ? { ...d, disabled: true, title: no.title } : d;
+  }
+
+  /**
+   * The state.worktrees entry (kept by the store for every repository) of another worktree that has
+   * local branch `name` checked out, or null: never the bare entry, nor this tab's own worktree
+   * (current: decided in main), whose branch is the checked-out one. deleteRefusal and
+   * checkoutRefusal share it. A branch mid-rebase or mid-bisect in another worktree is listed as
+   * detached there (no `branch`), so it isn't found: git's refusal is the backstop for it.
+   */
+  function worktreeHolding(name, state) {
+    const list = state && Array.isArray(state.worktrees) ? state.worktrees : [];
+    return list.find((w) => w && !w.bare && !w.current && w.branch === name) || null;
+  }
+
+  /**
+   * Why branch `name` can't be checked out here, or null: {title} 'Checked out in worktree <path>'
+   * (display-safe) when another worktree has it (git refuses: kind 'checked-out-elsewhere' stays
+   * the backstop when state.worktrees is stale). kind 'remote' ('origin/x'): its local branch
+   * ('x', which the checkout would switch to) is checked, when state.refs lists the remote branch
+   * (a remote name may contain '/', so the name is never split; unlisted: null, git decides); a
+   * commit never is. Used by checkoutItem
+   * (the menus, the branch switcher) and the double-clicks (sidebar rows, graph ref pills).
+   */
+  function checkoutRefusal(name, state, { kind = 'local' } = {}) {
+    if (typeof name !== 'string' || !name || kind === 'commit') return null;
+    let branch = name;
+    if (kind === 'remote') {
+      const r = ((state && state.refs && state.refs.remote) || []).find((x) => x.name === name);
+      if (!r || !r.branch) return null;
+      branch = r.branch;
+    }
+    const wt = worktreeHolding(branch, state);
+    return wt ? { title: `Checked out in worktree ${displayName(wt.path)}` } : null;
   }
 
 
@@ -181,7 +230,7 @@
       if (!ref.current) ops = [mergeItem(t, state), rebaseItem(t, state), interactiveItem(t, state), { separator: true }];
       else if (up) ops = [gone(rebaseItem(up, state)), gone(interactiveItem(up, state)), { separator: true }];
       return [
-        checkoutItem({ target: ref.name, kind: 'local', current: ref.current }),
+        checkoutItem({ target: ref.name, kind: 'local', current: ref.current, state }),
         { label: 'Push', flow: 'push', args: [ref.current ? {} : { branch: ref.name }] },
         createHere(ref),
         ...(flows && typeof flows.setUpstream === 'function' ? [{ label: 'Set upstream…', flow: 'setUpstream', args: [ref.name] }] : []),
@@ -193,7 +242,7 @@
     remote(ref, state) {
       const t = { arg: fullRef('remote', ref.name), oid: ref.oid, label: displayName(ref.name) };
       return [
-        checkoutItem({ target: ref.name, kind: 'remote' }),
+        checkoutItem({ target: ref.name, kind: 'remote', state }),
         createHere(ref),
         ...(ref.remote ? [{ label: `Fetch ${displayName(ref.remote)}`, flow: 'fetch', args: [{ remote: ref.remote }] }] : []),
         { separator: true },
@@ -222,7 +271,7 @@
    * ('checked out', 'HEAD of the bare repository', 'checked out in the worktree <path>'), `title` the
    * menu item's reason. Refused: the checked-out branch (in a bare repository: the branch HEAD points
    * at; `current` also counts the caller's ref as it) and a branch checked out in a linked worktree
-   * (state.worktrees: kept by the store for bare repositories, re-read by the delete flows; git
+   * (state.worktrees: kept by the store for every repository, re-read by the delete flows; git
    * refuses to delete it). The one source for deleteItem and deletableBranches.
    */
   function deleteRefusal(name, state, { current = false } = {}) {
@@ -233,7 +282,7 @@
         ? { why: 'HEAD of the bare repository', title: 'HEAD of the bare repository points at this branch: it can’t be deleted' }
         : { why: 'checked out', title: 'The checked-out branch can’t be deleted: check out another branch first' };
     }
-    const wt = (Array.isArray(s.worktrees) ? s.worktrees : []).find((w) => w && !w.bare && w.branch === name);
+    const wt = worktreeHolding(name, s);
     if (!wt) return null;
     const why = `checked out in the worktree ${displayName(wt.path)}`;
     return { why, title: `${displayName(name)} is ${why}: it can’t be deleted` };
@@ -320,7 +369,7 @@
     if (ops.length) items.push({ separator: true }, ...ops);
     const locals = ((state && state.refsBySha && state.refsBySha.get(hash)) || []).filter((r) => r.type === 'local');
     if (locals.length) items.push({ separator: true });
-    for (const r of locals) items.push(checkoutItem({ target: r.name, kind: 'local', label: `Checkout ${displayName(r.name)}`, current: r.current }));
+    for (const r of locals) items.push(checkoutItem({ target: r.name, kind: 'local', label: `Checkout ${displayName(r.name)}`, current: r.current, state }));
     return finish(items, state, flows);
   }
 
@@ -335,8 +384,74 @@
     ], state, flows);
   }
 
+  const dn = displayName;
+
+  /**
+   * Why worktree `w` (a state.worktrees entry) can't take `action` ('open', 'reveal', 'lock', 'unlock'
+   * or 'delete'), or null: {title} (display-safe). The renderer's mirror of main's safety checks (main
+   * re-checks them; a rebase or merge in progress there is refused by main alone: worktree-busy).
+   * `missing` (the folder is gone; git marks only unlocked ones prunable) counts like prunable for
+   * Open and Reveal.
+   */
+  function worktreeRefusal(w, action) {
+    if (!w) return null;
+    const gone = !!(w.prunable || w.missing);
+    switch (action) {
+      case 'open':
+        if (w.current) return { title: 'This tab has this worktree open' };
+        if (w.bare) return { title: 'The bare repository has no working tree to open' };
+        if (w.prunable) return { title: 'Its folder is gone: prune it' };
+        if (w.missing) return { title: 'Its folder is gone' };
+        return null;
+      case 'reveal':
+        return gone ? { title: 'Its folder is gone' } : null;
+      case 'lock':
+      case 'unlock':
+        if (w.bare) return { title: 'The bare repository has no worktree folder to lock' };
+        return w.main ? { title: "The main worktree can't be locked" } : null;
+      case 'delete':
+        if (w.bare) return { title: "The bare repository can't be deleted here" };
+        if (w.main) return { title: "The main worktree can't be deleted" };
+        if (w.current) return { title: 'This tab has this worktree open: open another worktree and delete it from there' };
+        if (w.locked) return { title: `Locked${w.lockReason ? ` (${dn(w.lockReason)})` : ''}: unlock it first` };
+        if (w.prunable) return { title: 'Its folder is already gone: use Prune' };
+        if (w.missing) return { title: 'Its folder is gone: Prune is offered once git marks it prunable' };
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  /** The reveal item's label for `platform` ('darwin' | 'win32' | other); default: the running one. */
+  function revealLabel(platform) {
+    const p = platform || (C.util.IS_MAC ? 'darwin' : (typeof navigator !== 'undefined' && /Win/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.userAgent || '') ? 'win32' : 'linux'));
+    if (p === 'darwin') return 'Reveal in Finder';
+    return p === 'win32' ? 'Show in Explorer' : 'Show in File Manager';
+  }
+
+  /** The finished context menu of worktree entry `w` (see the header). */
+  function worktreeMenuItems(w, state, flows = flowsOf(), { platform } = {}) {
+    if (!w) return [];
+    const off = (d, no) => (no ? { ...d, disabled: true, title: no.title } : d);
+    const open = off({ label: 'Open', flow: 'openWorktree', args: [w.path], title: 'Show the tab that has it open, else open it in a new tab' }, worktreeRefusal(w, 'open'));
+    const reveal = off({ label: revealLabel(platform), flow: 'revealWorktree', args: [w.path] }, worktreeRefusal(w, 'reveal'));
+    const items = [
+      open,
+      reveal,
+      { label: 'Copy Path', flow: 'copyWorktreePath', args: [w.path] },
+      { separator: true },
+      off(w.locked
+        ? { label: 'Unlock', flow: 'unlockWorktree', args: [w.path] }
+        : { label: 'Lock…', flow: 'lockWorktree', args: [w.path] }, worktreeRefusal(w, w.locked ? 'unlock' : 'lock')),
+    ];
+    if (w.prunable) items.push({ label: 'Prune…', flow: 'pruneWorktrees', args: [] });
+    items.push({ separator: true }, off({ label: 'Delete…', flow: 'removeWorktree', args: [w.path], danger: true }, worktreeRefusal(w, 'delete')));
+    return finish(items, state || {}, flows);
+  }
+
   const api = {
-    refMenuItems, commitOpItems, commitItems, stashMenuItems, checkoutItem, createHere, upstreamTarget, behindOf, deleteItem, fullRef,
+    worktreeRefusal, worktreeMenuItems,
+    refMenuItems, commitOpItems, commitItems, stashMenuItems, checkoutItem, checkoutRefusal, createHere, upstreamTarget, behindOf, deleteItem, fullRef,
     deleteRefusal, deletableBranches, deleteBranchesItem,
   };
   if (typeof window !== 'undefined') window.PLMenus = api;

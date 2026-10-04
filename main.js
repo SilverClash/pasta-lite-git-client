@@ -16,7 +16,7 @@
 // injects it into every operation (main/ipc.js), so a compromised renderer can only run the
 // fixed ops in src/ops.js (which validate their arguments) against the repo the user opened in
 // that tab.
-const { app, ipcMain, session, crashReporter, dialog, clipboard } = require('electron');
+const { app, ipcMain, session, crashReporter, dialog, clipboard, shell } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -278,7 +278,7 @@ function registerIpc() {
     }),
     handlers: {
       ...createHandlers({
-        runner, controller, opening: () => opening, recentView, rendererLog, openTerminal, summary: ops.summary, shouldForgetRecent, git: gitInfo, log, clipboard,
+        runner, controller, opening: () => opening, recentView, rendererLog, openTerminal, summary: ops.summary, shouldForgetRecent, git: gitInfo, log, clipboard, listWorktrees: git.worktrees, shell,
       }),
       ...(harness ? harness.handlers : {}),
     },

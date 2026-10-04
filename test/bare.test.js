@@ -25,17 +25,20 @@ function runnerWithEvents() {
 
 test('openRepo: the layout folder, the bare git dir and a folder inside it all open the bare repo; the worktree opens as a worktree', async () => {
   const { top, bare, wt } = h.bareWithWorktree();
-  const want = { root: bare, name: `${path.basename(top)}/.bare`, head: { sha: rev(bare, 'main'), branch: 'main' }, bare: true };
+  const want = { root: bare, name: `${path.basename(top)}/.bare`, head: { sha: rev(bare, 'main'), branch: 'main' }, bare: true, linkedWorktree: null };
   for (const dir of [top, bare, path.join(bare, 'refs'), path.join(bare, 'refs', 'heads')]) {
     assert.deepEqual(await ops.openRepo(dir), want, dir);
   }
   const w = await ops.openRepo(wt);
-  assert.deepEqual(w, { root: wt, name: 'main', head: { sha: rev(wt, 'HEAD'), branch: 'main' }, bare: false });
+  assert.deepEqual(w, {
+    root: wt, name: 'main', head: { sha: rev(wt, 'HEAD'), branch: 'main' }, bare: false,
+    linkedWorktree: { mainPath: bare, mainName: path.basename(top), title: `${path.basename(top)} · main` },
+  });
   // summary (app:getState's fresh head) agrees.
   assert.deepEqual(await ops.summary(bare), want);
   // An unborn bare repo: HEAD names its branch, no commit.
   const unborn = h.initRepo({ bare: true, commits: false });
-  assert.deepEqual(await ops.openRepo(unborn), { root: unborn, name: path.basename(unborn), head: { sha: null, branch: 'main' }, bare: true });
+  assert.deepEqual(await ops.openRepo(unborn), { root: unborn, name: path.basename(unborn), head: { sha: null, branch: 'main' }, bare: true, linkedWorktree: null });
   // A .git folder of a normal repo is not bare: still not-a-repo.
   const normal = h.initRepo();
   await assert.rejects(ops.openRepo(path.join(normal, '.git')), { kind: 'not-a-repo' });
@@ -159,11 +162,12 @@ test('reads work in a bare repo: refs, log, commit files and diffs, stashes, rem
   assert.deepEqual(await run(bare, 'remotes'), ['origin']);
   assert.equal((await run(bare, 'lastCommitMessage')).sha, rev(bare, 'main'));
   const wts = await run(bare, 'worktrees');
+  const none = { detached: false, locked: false, lockReason: null, prunable: false, prunableReason: null, missing: false };
   assert.deepEqual(wts, [
-    { path: bare, head: null, branch: null, bare: true, detached: false, locked: false, prunable: false },
-    { path: wt, head: rev(wt, 'HEAD'), branch: 'main', bare: false, detached: false, locked: false, prunable: false },
+    { path: bare, head: null, branch: null, bare: true, ...none, main: true, current: true },
+    { path: wt, head: rev(wt, 'HEAD'), branch: 'main', bare: false, ...none, main: false, current: false },
   ]);
-  assert.deepEqual(await run(wt, 'worktrees'), wts, 'the same list from the worktree');
+  assert.deepEqual(await run(wt, 'worktrees'), wts.map((w) => ({ ...w, current: !w.current })), 'the same list from the worktree, where it is current');
   assert.equal(path.dirname(bare), top);
 });
 
@@ -177,13 +181,51 @@ test('git.worktrees: detached, locked and prunable entries', async () => {
   fs.rmSync(gone, { recursive: true, force: true });
   const list = await git.worktrees(bare);
   const by = Object.fromEntries(list.map((w) => [w.path, w]));
-  assert.deepEqual(by[det], { path: det, head: rev(bare, 'main'), branch: null, bare: false, detached: true, locked: true, prunable: false });
+  assert.deepEqual(by[det], {
+    path: det, head: rev(bare, 'main'), branch: null, bare: false, detached: true,
+    locked: true, lockReason: 'on a stick', prunable: false, prunableReason: null, main: false, current: false, missing: false,
+  });
   assert.equal(by[gone].prunable, true);
+  assert.equal(by[gone].missing, true);
+  assert.equal(by[gone].prunableReason, 'gitdir file points to non-existent location');
   assert.equal(by[gone].branch, 'side');
   assert.equal(by[wt].locked, false);
   // A normal repo: one entry, its own.
   const normal = h.initRepo();
-  assert.deepEqual(await git.worktrees(normal), [{ path: normal, head: rev(normal, 'HEAD'), branch: 'main', bare: false, detached: false, locked: false, prunable: false }]);
+  assert.deepEqual(await git.worktrees(normal), [{
+    path: normal, head: rev(normal, 'HEAD'), branch: 'main', bare: false, detached: false,
+    locked: false, lockReason: null, prunable: false, prunableReason: null, main: true, current: true, missing: false,
+  }]);
+});
+
+test('linked worktrees from the bare repo: lock, unlock, remove and prune work; the bare entry is main-worktree', async () => {
+  const { bare, wt } = h.bareWithWorktree();
+  const other = path.join(path.dirname(bare), 'other');
+  const gone = path.join(path.dirname(bare), 'gone');
+  h.git(bare, 'worktree', 'add', '-q', '-b', 'other', other, 'main');
+  h.git(bare, 'worktree', 'add', '-q', '-b', 'gone', gone, 'main');
+  fs.rmSync(gone, { recursive: true, force: true });
+  const { run } = runnerWithEvents();
+  for (const name of ['removeWorktree', 'lockWorktree', 'unlockWorktree']) {
+    await assert.rejects(run(bare, name, bare), { kind: 'main-worktree' }, name);
+  }
+  // From the worktree too: the bare entry is the main one.
+  await assert.rejects(run(wt, 'removeWorktree', bare), { kind: 'main-worktree' });
+  await run(bare, 'lockWorktree', other, { reason: 'busy' });
+  await assert.rejects(run(bare, 'removeWorktree', other), { kind: 'worktree-locked', reason: 'busy' });
+  await run(bare, 'unlockWorktree', other);
+  assert.deepEqual(await run(bare, 'removeWorktree', other), { path: other });
+  assert.equal(fs.existsSync(other), false);
+  assert.deepEqual((await run(bare, 'worktreePrunePreview')).entries.map((e) => e.id), ['worktrees/gone']);
+  assert.deepEqual((await run(bare, 'pruneWorktrees')).entries.map((e) => e.id), ['worktrees/gone']);
+  assert.deepEqual((await run(bare, 'worktrees')).map((w) => w.path), [bare, wt]);
+  assert.deepEqual(await run(bare, 'worktreeDirty'), [{ path: wt, dirty: false }], 'the bare entry is never checked');
+  assert.equal(h.git(bare, 'branch', '--list', 'other').trim(), 'other', 'the branch is kept');
+  assert.deepEqual((await run(bare, 'worktrees')).map((w) => w.missing), [false, false], 'the bare entry is never missing');
+  assert.deepEqual(await run(bare, 'worktreeUnreachable', bare), { count: 0 }, 'the bare entry has no HEAD to lose');
+  h.git(wt, 'checkout', '-q', '--detach');
+  h.commitFile(wt, 'lost.txt', 'x\n', 'on a detached HEAD');
+  assert.deepEqual(await run(bare, 'worktreeUnreachable', wt), { count: 1 });
 });
 
 test('createBranch (no checkout) and deleteBranch work in a bare repo; undo recreates the branch, redo deletes it again', async () => {
@@ -508,7 +550,7 @@ test('stale caches: a normal repo made where a bare one was opens as normal (ope
   remake(true);
   assert.equal((await ops.openRepo(dir)).bare, true);
   remake(false);
-  assert.deepEqual(await ops.openRepo(path.join(dir, 'sub')), { root: dir, name: 'x', head: { sha: rev(dir, 'HEAD'), branch: 'main' }, bare: false });
+  assert.deepEqual(await ops.openRepo(path.join(dir, 'sub')), { root: dir, name: 'x', head: { sha: rev(dir, 'HEAD'), branch: 'main' }, bare: false, linkedWorktree: null });
   // app:getState's summary of a tab whose folder changed underneath it.
   remake(true);
   assert.equal((await ops.openRepo(dir)).bare, true);

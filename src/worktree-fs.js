@@ -7,13 +7,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { out, kindError } = require('./exec');
 const { resolveRoot } = require('./repo-dirs');
+const { isAtOrUnder } = require('./fs-paths');
 
 // O_NOFOLLOW is POSIX only; elsewhere (Windows) it is 0 and only the lstat walk protects.
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 const realpath = (p) => fs.realpathSync.native(p); // native: canonical case on case-insensitive fs
-
-/** `p` is `dir` itself or inside it (absolute paths). */
-const isUnder = (p, dir) => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
 
 // Real path of `abs`, which may not exist yet: realpath of the deepest existing ancestor plus the rest.
 function realpathOfMaybeMissing(abs) {
@@ -68,8 +66,8 @@ async function worktreeGuard(cwd) {
     const abs = path.join(realRoot, ...parts);
     // A permitted final link is judged by where it sits, not where it points.
     const real = finalLink ? path.join(realpathOfMaybeMissing(path.dirname(abs)), path.basename(abs)) : realpathOfMaybeMissing(abs);
-    if (!isUnder(real, realRoot)) throw kindError('outside', `${rel}: path resolves outside the worktree`);
-    if (gitDirs.some((g) => isUnder(real, g))) throw kindError('outside', `${rel}: path is inside the git directory`);
+    if (!isAtOrUnder(real, realRoot)) throw kindError('outside', `${rel}: path resolves outside the worktree`);
+    if (gitDirs.some((g) => isAtOrUnder(real, g))) throw kindError('outside', `${rel}: path is inside the git directory`);
     return abs;
   }
   return { root: realRoot, check };
@@ -122,4 +120,4 @@ function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec } = {}) {
   }
 }
 
-module.exports = { worktreeGuard, readNoFollow, writeNoFollow, isUnder, realpathOfMaybeMissing };
+module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing };

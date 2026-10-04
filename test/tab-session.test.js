@@ -90,6 +90,16 @@ describe('refresh (app:getState\'s fresh summary)', () => {
     assert.equal(s.repo.name, 'renamed');
   });
 
+  test('a folder that became (or stopped being) a linked worktree reports a change (the strip\'s title and icon)', () => {
+    const { s } = setup();
+    const lw = { mainPath: '/r/main', mainName: 'main', title: 'main · a' };
+    s.setRepo(repo('/r/a', { linkedWorktree: null }));
+    assert.equal(s.refresh(repo('/r/a', { linkedWorktree: lw })), true);
+    assert.equal(s.refresh(repo('/r/a', { linkedWorktree: { ...lw } })), false, 'equal content: unchanged');
+    assert.equal(s.refresh(repo('/r/a', { linkedWorktree: { ...lw, mainPath: '/r/other' } })), true);
+    assert.equal(s.refresh(repo('/r/a')), true, 'no longer linked');
+  });
+
   test('another root, no repo, or a closed tab: ignored', () => {
     const { s } = setup();
     assert.equal(s.refresh(repo('/r/a')), false);

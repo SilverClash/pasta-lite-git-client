@@ -1,7 +1,9 @@
 'use strict';
 // Inline SVG icons (plain script; exposes window.PLIcons, and module.exports under node for the tests;
 // loads after components.js, before the components). Built with createElementNS: no innerHTML, no
-// external assets. Used by the toolbar, the sidebar, the repository picker and the WIP file lists.
+// external assets. Used by the toolbar, the sidebar (its Worktrees section: worktree, home, lock),
+// the repository picker and the WIP file lists; the tab strip (tabs.html, on its own: it needs
+// nothing else) takes its linked-worktree tree icon from here.
 //   PLIcons.icon(name, size = 18, className = '') -> <svg class="icon icon-<name> <className>">
 (function () {
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -33,6 +35,9 @@
     remote: [C(12, 12, 8.5), P('M3.5 12h17'), P('M12 3.5c2.5 2.3 3.5 5.2 3.5 8.5s-1 6.2-3.5 8.5c-2.5-2.3-3.5-5.2-3.5-8.5s1-6.2 3.5-8.5z')],
     detached: [C(12, 12, 3.5), P('M12 3v5.5'), P('M12 15.5V21')],
     trash: [P('M4 7h16'), P('M10 11v6'), P('M14 11v6'), P('M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12'), P('M9 7V4h6v3')],
+    worktree: [C(12, 8.5, 5.5), P('M12 14v7'), P('M8.5 21h7'), P('M12 17l-3-2.5')],
+    home: [P('M4 11 12 4l8 7'), P('M6 9.5V20h12V9.5'), P('M10 20v-5h4v5')],
+    lock: [R(5, 11, 14, 9, 1.5), P('M8 11V8a4 4 0 0 1 8 0v3')],
   };
 
   /** <svg> icon built with createElementNS (no innerHTML, no external assets). */

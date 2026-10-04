@@ -133,7 +133,11 @@ const STATE_FILES = [
  * sequencer | bisecting. Every file it looks for is per worktree, so it lives in the git dir.
  */
 async function repoState(cwd) {
-  const gd = await gitDir(cwd);
+  return stateAt(await gitDir(cwd));
+}
+
+/** repoState for the git dir `gd` itself (a linked worktree's admin folder), from the file system only. */
+function stateAt(gd) {
   for (const [p, state] of STATE_FILES) {
     if (fs.existsSync(path.join(gd, p))) return state;
   }
@@ -164,5 +168,5 @@ async function gitDir(cwd) {
 }
 
 module.exports = {
-  resolveRoot, forgetRoot, gitDirKey, bareGitDir, isBare, repoDirs, gitDir, headState, STATE_FILES, repoState,
+  resolveRoot, forgetRoot, gitDirKey, bareGitDir, isBare, repoDirs, gitDir, headState, STATE_FILES, repoState, stateAt,
 };

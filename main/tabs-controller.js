@@ -74,8 +74,8 @@ function createTabsController({
 
   /**
    * The tabs, their order, titles or the active one changed: tell every page ('tabs-changed'
-   * {tabs: [{id, title, root, active}]}) and the strip (with tooltips and busy), retitle the window
-   * and save tabs.json.
+   * {tabs: [{id, title, root, active, linked}]}) and the strip (with tooltips and busy), retitle the
+   * window (src/tabs.js tabTitle: a linked worktree's 'project · folder', as its tab) and save tabs.json.
    */
   function tabsChanged() {
     if (!alive()) return;

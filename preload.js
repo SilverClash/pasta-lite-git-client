@@ -7,7 +7,7 @@
 // the renderer turns it back into an Error (Components.util.toError, via renderer/store.js).
 const { contextBridge, ipcRenderer } = require('electron');
 
-// 'tabs-changed' {tabs: [{id, title, root|null, active}]}: the window's tabs, on every
+// 'tabs-changed' {tabs: [{id, title, root|null, active, linked}]}: the window's tabs, on every
 // change (opened, closed, moved, switched, a tab's repo changed).
 const EVENTS = new Set(['changed', 'busy', 'watch', 'repo-opened', 'recent-changed', 'menu-command', 'tabs-changed']);
 
@@ -84,6 +84,12 @@ contextBridge.exposeInMainWorld('api', {
      * entry, not a prunable one), then shows the tab that has it open, else opens it in a new tab.
      */
     openWorktree: (wtPath) => call('app:openWorktree', String(wtPath)),
+    /**
+     * Show a worktree of the current repo in the file manager (Finder on macOS), by path. Main
+     * accepts only a path `git worktree list` gives for this tab's repo right now (the bare
+     * entry included, a prunable one not). Resolves true; false if the tab changed repo meanwhile.
+     */
+    revealWorktree: (wtPath) => call('app:revealWorktree', String(wtPath)),
     cancel: (opId) => call('app:cancel', String(opId)),
     /** Open a terminal window in the current repo's root. */
     openTerminal: () => call('app:openTerminal'),

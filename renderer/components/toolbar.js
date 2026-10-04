@@ -14,6 +14,12 @@
 // pinned (always shown).
 // A bare repository (repo.bare): a "bare" pill, Pull runs as Fetch All (the other modes are
 // disabled in its menu), the switcher's checkouts are disabled (Components.actions.gateItems).
+// A linked worktree (repo.linkedWorktree, decided in main): a "worktree" chip with a tree icon
+// right of the repository stack (worktreeChipModel; tooltip: its folder and the main worktree);
+// clicking it opens the sidebar's Worktrees section on the current worktree's row
+// (store.actions.revealWorktree). None for a main worktree, a normal or a bare repository.
+// The switcher's branches checked out in another worktree are disabled (checkoutItem with state:
+// Components.actions.checkoutRefusal).
 // Icons: window.PLIcons (renderer/icons.js).
 (function () {
   const { el, util } = window.Components;
@@ -65,6 +71,17 @@
     const p = el('span', `tb-pill ${cls}`, text);
     p.title = title;
     return p;
+  }
+
+  /**
+   * The linked-worktree chip of repo `r` (store repo): {text: 'worktree', title} when main says it is
+   * a linked worktree (r.linkedWorktree), else null (main worktree, normal or bare repository).
+   * The title: the worktree's folder, then the main worktree it belongs to (display-safe).
+   */
+  function worktreeChipModel(r) {
+    const lw = r && !r.bare && r.linkedWorktree;
+    if (!lw) return null;
+    return { text: 'worktree', title: `${displayName(r.root)}\nLinked worktree of ${displayName(lw.mainPath)}` };
   }
 
   /** The repository stack's tooltip: the repo's folder (home-relative with the picker), or "Open". */
@@ -175,9 +192,16 @@
       branch.b.setAttribute('aria-haspopup', 'dialog'); // the switcher: a search field over a listbox
       branch.b.setAttribute('aria-expanded', 'false');
       const setBranchExpanded = (on) => branch.b.setAttribute('aria-expanded', on ? 'true' : 'false');
+      // The linked-worktree chip (worktreeChipModel), hidden unless the repo is one.
+      const wtChip = el('button', 'tb-pill muted tb-wt-chip');
+      wtChip.type = 'button';
+      wtChip.dataset.action = 'worktreeChip';
+      wtChip.append(icon('worktree', 12), el('span', 'tb-wt-chip-text', 'worktree'));
+      wtChip.hidden = true;
+      listen(wtChip, () => store.actions.revealWorktree());
       const sep = icon('chevron-right', 14, 'tb-crumb-sep');
       const pills = el('div', 'tb-pills');
-      left.append(repo.b, sep, branch.b, pills);
+      left.append(repo.b, wtChip, sep, branch.b, pills);
 
       // ---- centre: actions
       const center = el('div', 'tb-center');
@@ -263,7 +287,7 @@
         // The checkouts go through gateItems: disabled in a bare repository.
         const items = branchMenuModel(store.state).map((b) => (b.current
           ? { label: b.label, checked: true, title: bare ? `HEAD of the bare repository points at ${b.label}` : `${b.label} is checked out`, action: () => {} }
-          : toMenuItems(gateItems([{ ...checkoutItem({ target: b.name, kind: 'local', label: b.label, title: `Check out ${b.label}` }), checked: false }], store.state), store)[0]));
+          : toMenuItems(gateItems([{ ...checkoutItem({ target: b.name, kind: 'local', label: b.label, title: `Check out ${b.label}`, state: store.state }), checked: false }], store.state), store)[0]));
         if (items.length) items.push({ separator: true });
         // New branch… stays in the list whatever the query (pinned).
         items.push(...toMenuItems([{ label: 'New branch…', disabled: m.branch.disabled, title: m.branch.title, flow: 'createBranch', args: [{}] }], store).map((x) => ({ ...x, pinned: true })));
@@ -299,6 +323,10 @@
         const r = s.repo;
         repo.text.textContent = r ? displayName(r.name) : '—';
         repo.b.title = repoTitle(r);
+        const chip = worktreeChipModel(r);
+        wtChip.hidden = !chip;
+        wtChip.title = chip ? chip.title : '';
+        wtChip.setAttribute('aria-label', chip ? chip.title.replace(/\n/g, ', ') : 'worktree');
 
         const head = headView(s);
         branch.b.classList.toggle('detached', head.detached);
@@ -336,6 +364,6 @@
   });
 
   if (typeof module !== 'undefined') {
-    module.exports = { pullMenuModel, branchMenuModel, PULL_LABELS, BRANCH_SEARCH, cancelTitle };
+    module.exports = { pullMenuModel, branchMenuModel, worktreeChipModel, PULL_LABELS, BRANCH_SEARCH, cancelTitle };
   }
 })();

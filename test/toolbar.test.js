@@ -500,3 +500,76 @@ test('mounted bare repository, real menu.js: every checkout off, the highlight f
   assert.deepEqual(t.flows.calls, [['createBranch', {}]], 'no checkout ran');
   t.dispose();
 });
+
+// ------------------------------------------------------------------ linked worktrees
+
+const LINKED = { root: '/w/monorepo-feat', name: 'monorepo-feat', bare: false, linkedWorktree: { mainPath: '/w/monorepo', mainName: 'monorepo', title: 'monorepo · monorepo-feat' } };
+
+test('worktreeChipModel: only a linked worktree (main\'s repo.linkedWorktree) gets the chip; tooltip = its folder and the main worktree', () => {
+  const { mod: { worktreeChipModel } } = loadToolbar();
+  assert.deepEqual(worktreeChipModel(LINKED), { text: 'worktree', title: '/w/monorepo-feat\nLinked worktree of /w/monorepo' });
+  assert.equal(worktreeChipModel({ root: '/w/monorepo', name: 'monorepo', bare: false, linkedWorktree: null }), null, 'the main worktree');
+  assert.equal(worktreeChipModel({ root: '/r', name: 'r' }), null, 'a normal repository');
+  assert.equal(worktreeChipModel({ root: '/r.git', name: 'r.git', bare: true, linkedWorktree: null }), null, 'a bare repository');
+  assert.equal(worktreeChipModel(null), null);
+  assert.equal(worktreeChipModel({ ...LINKED, root: '/w/x‮' }).title, '/w/x\\u{202E}\nLinked worktree of /w/monorepo', 'display-safe');
+});
+
+test('mounted: the worktree chip sits right of the repository stack for a linked worktree; a click asks the sidebar to reveal it', async () => {
+  const t = await mounted(repoData(), { repo: LINKED });
+  const chip = t.btn('worktreeChip');
+  const left = t.cls('tb-left');
+  assert.equal(left.children.indexOf(chip), left.children.indexOf(t.btn('repoPicker')) + 1, 'next to the repository crumb');
+  assert.equal(chip.hidden, false);
+  assert.ok(chip.classList.contains('tb-pill') && chip.classList.contains('muted'), 'styled like the "no upstream" pill');
+  assert.equal(chip.textContent, 'worktree');
+  assert.ok(chip.find((n) => n.getAttribute && /icon-worktree/.test(n.getAttribute('class') || '')), 'the tree icon');
+  assert.equal(chip.title, '/w/monorepo-feat\nLinked worktree of /w/monorepo');
+  assert.equal(t.store.state.worktreeReveal, 0);
+  chip.click();
+  chip.click();
+  assert.equal(t.store.state.worktreeReveal, 2, 'store.actions.revealWorktree, once per click');
+  assert.deepEqual(t.flows.calls, [], 'no flow runs');
+  t.dispose();
+});
+
+test('mounted: no worktree chip for a main worktree or a normal repository', async () => {
+  for (const repo of [REPO, { root: '/w/monorepo', name: 'monorepo', bare: false, linkedWorktree: null }]) {
+    const t = await mounted(repoData(), { repo });
+    assert.equal(t.btn('worktreeChip').hidden, true, repo.root);
+    t.dispose();
+  }
+});
+
+test('mounted: the branch switcher disables a branch checked out in another worktree ("Checked out in worktree <path>")', async () => {
+  const t = await mounted(repoData());
+  const w = (o) => ({ head: 'b', bare: false, detached: false, locked: false, prunable: false, main: false, current: false, ...o });
+  t.store.set({ worktrees: [w({ path: '/r', branch: 'main', main: true, current: true }), w({ path: '/w/feat‮', branch: 'feat/x' })] });
+  t.btn('switcher').click();
+  const { items } = t.menu.menu.opened[0];
+  const feat = items.find((i) => i.label === 'feat/x');
+  assert.deepEqual([feat.disabled, feat.title], [true, 'Checked out in worktree /w/feat\\u{202E}']);
+  feat.action();
+  const main = items.find((i) => i.label === 'main');
+  assert.equal(main.checked, true, 'the current worktree\'s own branch is the current branch, not refused');
+  await H.flush();
+  assert.deepEqual(t.flows.calls, [], 'no checkout ran');
+  t.dispose();
+});
+
+test('mounted: main\'s fresh summary of the same repo (store.actions.updateRepoInfo) updates the chip in place; another root is ignored', async () => {
+  const t = await mounted(repoData(), { repo: LINKED });
+  const chip = t.btn('worktreeChip');
+  const before = t.store.state.repo;
+  t.store.actions.updateRepoInfo({ ...LINKED, linkedWorktree: { ...LINKED.linkedWorktree } });
+  assert.equal(t.store.state.repo, before, 'nothing changed: the same repo object, no re-render');
+  const moved = { mainPath: '/w/moved/monorepo', mainName: 'monorepo', title: 'monorepo · monorepo-feat' };
+  t.store.actions.updateRepoInfo({ ...LINKED, linkedWorktree: moved });
+  assert.equal(chip.title, '/w/monorepo-feat\nLinked worktree of /w/moved/monorepo');
+  assert.equal(t.store.state.repo.root, LINKED.root);
+  t.store.actions.updateRepoInfo({ root: '/elsewhere', name: 'x', bare: false, linkedWorktree: null });
+  assert.equal(chip.hidden, false, 'another root: ignored');
+  t.store.actions.updateRepoInfo({ ...LINKED, linkedWorktree: null });
+  assert.equal(chip.hidden, true, 'no longer a linked worktree');
+  t.dispose();
+});

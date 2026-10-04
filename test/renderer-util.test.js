@@ -494,7 +494,7 @@ test('sidebarModel: sections, folders, filter, collapse, unborn/detached rows, s
   });
   const stashes = [{ hash: 's1', ref: 'stash@{0}', message: 'wip on main', date: 0 }];
   const m = sidebarModel({ refs, status: H.status({ oid: 'm' }), stashes, stashError: null });
-  assert.deepEqual(m.sections.map((x) => [x.id, x.count, x.open]), [['local', 3, true], ['remote', 2, true], ['tags', 1, true], ['stashes', 1, true]]);
+  assert.deepEqual(m.sections.map((x) => [x.id, x.count, x.open]), [['local', 3, true], ['remote', 2, true], ['tags', 1, true], ['stashes', 1, true], ['worktrees', 0, true]]);
   const local = m.sections[0].rows;
   assert.deepEqual(local.map((r) => r.key), ['dir:local:/feat', 'local:feat/a', 'local:feat/b', 'local:main']);
   assert.equal(local[0].count, 2);

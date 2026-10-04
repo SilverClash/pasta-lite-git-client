@@ -53,7 +53,8 @@ const {
   run, out, tryOut, kindError, withSignal, LITERAL_ENV,
 } = require('./exec');
 const { headState, repoState, resolveRoot, isBare } = require('./repo-dirs');
-const { worktreeGuard, writeNoFollow, isUnder } = require('./worktree-fs');
+const { worktreeGuard, writeNoFollow } = require('./worktree-fs');
+const { isAtOrUnder } = require('./fs-paths');
 const git = require('./git');
 const { isZero, sha7, OID, fullBranch } = require('./gitref');
 const { parseStageEntries, parseNulRecords } = require('./porcelain');
@@ -443,7 +444,7 @@ function removeFile(guard, rel) {
   let st = null;
   try { st = fs.lstatSync(abs); } catch { /* already gone */ }
   if (st && !st.isDirectory()) fs.rmSync(abs); // a final symlink is removed itself, not its target
-  for (let dir = path.dirname(abs); dir !== guard.root && isUnder(dir, guard.root); dir = path.dirname(dir)) {
+  for (let dir = path.dirname(abs); dir !== guard.root && isAtOrUnder(dir, guard.root); dir = path.dirname(dir)) {
     try { fs.rmdirSync(dir); } catch { break; } // not empty, or gone
   }
 }

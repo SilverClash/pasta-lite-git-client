@@ -1,16 +1,19 @@
 'use strict';
 // High-level git operations, and the facade of the git layer: reads (refs, history, diffs),
-// the index and worktree (stage, discard, commit), branches (checkout, create, delete), plus
-// re-exports of the modules below it (status, pull, remote, hooks, git-reads, stash), so main.js
-// and ops use one module. Every function takes a path inside the repo as `cwd` first and shells
+// the index and worktree (stage, discard, commit), branches (checkout, create, delete), linked
+// worktrees (list, remove, prune, lock / unlock, the batched dirty check, the unreachable
+// count), plus re-exports of the modules below it (status, pull, remote, hooks, git-reads,
+// stash), so main.js and ops use one module. Every function takes a path inside the repo as `cwd` first and shells
 // out through exec.run/out, which always run at the worktree root: paths passed in and returned
 // are root-relative. No parsing or behaviour depends on user config.
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  GitError, kindError, tagError, run, out, tryOut, nulList, argvChunks, LITERAL_ENV,
+  GitError, kindError, tagError, run, out, tryOut, nulList, argvChunks, LITERAL_ENV, forgetRoot,
 } = require('./exec');
-const { resolveRoot, bareGitDir, isBare, headState } = require('./repo-dirs');
+const { resolveRoot, bareGitDir, isBare, headState, repoDirs } = require('./repo-dirs');
+const { gitAt } = require('./git-process');
+const { realPathOf } = require('./fs-paths');
 const {
   OID, PREFIX, after, branchOf, shortName, fullBranch, parseTrack, REFSPEC_SAFE,
 } = require('./gitref');
@@ -124,13 +127,233 @@ async function riskyHooks(cwd) {
 
 /**
  * The repository's worktrees (`git worktree list --porcelain -z`), main one first:
- * [{path, head, branch, bare, detached, locked, prunable}]. `path` absolute as git prints it;
- * `head` the checked-out commit (null for the bare entry or an unborn branch); `branch` the short
- * name (null when detached or bare); locked / prunable: booleans (git's reasons are left out).
- * Works in a bare repo (its own entry is the one with bare: true) and in any worktree.
+ * [{path, head, branch, bare, detached, locked, lockReason, prunable, prunableReason, main,
+ * current, missing}]. `path` absolute as git prints it; `head` the checked-out commit (null for
+ * the bare entry or an unborn branch); `branch` the short name (null when detached or bare);
+ * locked / prunable: booleans, with git's reasons (null when none). `main`: the first entry (the
+ * main worktree, or a bare repo's own entry). `current`: the worktree `cwd` is in (its root; for a
+ * bare repo, cwd is its git dir, the bare entry's path), so the renderer never compares paths.
+ * `missing`: the entry's folder doesn't exist (never for the bare entry). git marks a missing
+ * folder prunable, but not a locked one, so a locked worktree whose folder is gone is only
+ * `missing`. Paths are compared through fs-paths.realPathOf, all at once and each bounded by its
+ * timeout: an entry on a hung mount never blocks the main process (it counts as there, and as not
+ * current unless git printed the root's own spelling). Works in a bare repo (its own entry is the
+ * one with bare: true) and in any worktree.
  */
 async function worktrees(cwd) {
-  return parseWorktrees(await out(cwd, ['worktree', 'list', '--porcelain', '-z']));
+  return (await worktreeList(cwd)).entries.map((w) => {
+    const entry = { ...w };
+    delete entry.real;
+    return entry;
+  });
+}
+
+/**
+ * worktrees() plus the real paths it compared, for the checks in main (ops.js) that compare
+ * folders again: {here, entries}, `here` the real path of the worktree root containing `cwd`,
+ * each entry with `real` (realPathOf: its spelling as git printed it when that is unknown).
+ */
+async function worktreeList(cwd) {
+  const [raw, root] = await Promise.all([
+    out(cwd, ['worktree', 'list', '--porcelain', '-z']),
+    resolveRoot(cwd),
+  ]);
+  const list = parseWorktrees(raw);
+  const [here, ...seen] = await Promise.all([realPathOf(root), ...list.map((w) => realPathOf(w.path))]);
+  const entries = list.map((w, i) => ({
+    ...w,
+    main: i === 0,
+    current: w.path === root || seen[i].real === here.real,
+    missing: !w.bare && seen[i].missing,
+    real: seen[i].real,
+  }));
+  return { here: here.real, entries };
+}
+
+/**
+ * The admin folder git keeps for listed linked worktree `w` (an entry of worktreeList) in the
+ * common git dir of `cwd`: the `worktrees/<id>` whose `gitdir` file points at `w`'s `.git`. It is
+ * that worktree's own git dir (its HEAD, index, a stopped rebase or merge), the one `git worktree
+ * remove` deletes. Found from the file system of the common dir only: nothing runs or is read in
+ * `w`'s folder, which may sit on a hung mount or have a `.git` file pointing elsewhere. null when
+ * none matches (the main worktree, a bare entry).
+ */
+async function worktreeAdminDir(cwd, w) {
+  const { commonDir } = await repoDirs(cwd);
+  const base = path.join(commonDir, 'worktrees');
+  let ids;
+  try {
+    ids = fs.readdirSync(base);
+  } catch {
+    return null;
+  }
+  const pointsAt = ids.map((id) => {
+    try {
+      // An absolute path, or (worktree.useRelativePaths) one relative to the admin folder.
+      const gitFile = fs.readFileSync(path.join(base, id, 'gitdir'), 'utf8').replace(/\r?\n$/, '');
+      return { dir: path.join(base, id), folder: path.dirname(path.resolve(base, id, gitFile)) };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+  const exact = pointsAt.find((a) => a.folder === w.path);
+  if (exact) return exact.dir;
+  // Another spelling of the same folder (a symlinked parent): compare real paths.
+  const reals = await Promise.all(pointsAt.map((a) => realPathOf(a.folder)));
+  const same = pointsAt.find((a, i) => reals[i].real === w.real);
+  return same ? same.dir : null;
+}
+
+/**
+ * `git worktree remove [--force] -- <wtPath>`: deletes the linked worktree's folder and git's
+ * record of it. Never `-f -f`: a locked worktree is refused even with force (the user unlocks
+ * it first). Kinds: 'worktree-dirty' (modified or untracked files; `submodules: true` when it
+ * has submodules, which git only removes with force), 'worktree-locked', 'main-worktree',
+ * 'not-found' (not a worktree). Resolves {path}.
+ */
+async function removeWorktree(cwd, wtPath, { force = false } = {}) {
+  try {
+    await run(cwd, ['worktree', 'remove', ...(force ? ['--force'] : []), '--', wtPath]);
+  } catch (err) {
+    const extra = /submodules/.test(String(err.stderr || '')) ? { submodules: true } : {};
+    throw gitErrors.classify(err, ['worktreeDirty', 'worktreeLocked', 'mainWorktree', 'notAWorktree'], extra);
+  }
+  forgetRoot(wtPath); // its folder is gone: a later command there must not reuse the cached root
+  return { path: wtPath };
+}
+
+const PRUNED = /^Removing (worktrees\/[^:]+): (.*)$/;
+
+/**
+ * `git worktree prune -v` (dryRun: `-n`, nothing is removed): forgets the worktrees whose folder
+ * is gone; git keeps locked ones. Resolves {entries: [{id, reason}]}: `id` the admin folder
+ * ('worktrees/<name>'), `reason` git's (e.g. "gitdir file points to non-existent location").
+ * git 2.51 prints these lines on stderr; both streams are read.
+ */
+async function pruneWorktrees(cwd, { dryRun = false } = {}) {
+  const { stdout, stderr } = await run(cwd, ['worktree', 'prune', ...(dryRun ? ['-n'] : []), '-v']);
+  const entries = [];
+  for (const line of `${stderr}\n${stdout}`.split('\n')) {
+    const m = PRUNED.exec(line);
+    if (m) entries.push({ id: m[1], reason: m[2] });
+  }
+  return { entries };
+}
+
+/** `git worktree lock [--reason=<reason>] -- <wtPath>`. Kind 'main-worktree'. Resolves {path}. */
+async function lockWorktree(cwd, wtPath, { reason } = {}) {
+  try {
+    await run(cwd, ['worktree', 'lock', ...(reason ? [`--reason=${reason}`] : []), '--', wtPath]);
+  } catch (err) {
+    throw gitErrors.classify(err, ['mainWorktree']);
+  }
+  return { path: wtPath };
+}
+
+/** `git worktree unlock -- <wtPath>`. Kind 'main-worktree'. Resolves {path}. */
+async function unlockWorktree(cwd, wtPath) {
+  try {
+    await run(cwd, ['worktree', 'unlock', '--', wtPath]);
+  } catch (err) {
+    throw gitErrors.classify(err, ['mainWorktree']);
+  }
+  return { path: wtPath };
+}
+
+// Config keys that can make `status` (or anything else) run a command: riskyLocalConfig's, by
+// name only (whatever the value), for the dirty check's trust gate (worktreeTrusted).
+const RISKY_NAME = new RegExp(`${RISKY_CONFIG}|${RISKY_VALUES.map(([key]) => key).join('|')}`);
+
+/** The risky key names (RISKY_NAME) of the repo config (local and worktree scopes) git reads in `dir`, from `config -z --list`. */
+function riskyNames(raw) {
+  const f = raw.split('\0');
+  const keys = new Set();
+  for (let i = 0; i + 1 < f.length; i += 2) {
+    const [scope, key] = [f[i], f[i + 1]];
+    if ((scope === 'local' || scope === 'worktree') && RISKY_NAME.test(key)) keys.add(key);
+  }
+  return keys;
+}
+
+const CONFIG_NAMES = ['config', '--includes', '--show-scope', '-z', '--name-only', '--list'];
+
+/**
+ * The dirty check's trust gate. main asked the user about the tab's own repo config before
+ * opening it (repo-trust.js), but `status` in another worktree reads config that check never saw:
+ * that worktree's `config.worktree` (extensions.worktreeConfig), includeIf sections that apply
+ * only there, and the whole config of whatever repo its `.git` file points at. A downloaded repo
+ * could set `filter.x.clean` there and have it run on the first dirty check, with no prompt. So
+ * status only runs in a worktree when (1) git there finds the same common git dir as the tab
+ * (it is this repository's) and (2) every risky key (riskyLocalConfig's, by name, value or not)
+ * git reads there was also set for the tab's own folder, which the user opened (and trusted for
+ * those keys when there were any). Both are asked of git in that folder, so they see exactly
+ * the config its `status` would; neither runs a configured program. `ours`: {commonDir (real
+ * path), risky (riskyNames of its config)} of the tab.
+ */
+async function worktreeTrusted(dir, ours, timeout) {
+  const [common, conf] = await Promise.all([
+    gitAt(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir'], { timeout }),
+    gitAt(dir, CONFIG_NAMES, { timeout, okCodes: [0, 1] }),
+  ]);
+  if ((await realPathOf(common.stdout.replace(/\n$/, ''))).real !== ours.commonDir) return false;
+  return [...riskyNames(conf.stdout)].every((k) => ours.risky.has(k));
+}
+
+/**
+ * Whether each linked worktree has local changes, in one call: [{path, dirty}] for every entry of
+ * a fresh list that is not bare, prunable, missing or the current one (the caller has its own
+ * status). `dirty`: `status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=dirty`
+ * printed anything (untracked files count; a submodule counts when its checked-out commit
+ * differs, not for changes inside it: those need a status run in the submodule, with its own
+ * config no trust check saw, and `git worktree remove` refuses any worktree with submodules
+ * without force anyway); null when it failed, ran past `timeout` ms, the entry is beyond the first
+ * `max`, or the trust gate (worktreeTrusted) declined it. status runs in the entry's folder as git
+ * listed it (no root lookup, which has no timeout): a folder whose `.git` file is gone is
+ * prunable, so it is never asked. At most `concurrency` entries are checked at once. Never
+ * rejects (a failed list gives []).
+ */
+async function worktreesDirty(cwd, { concurrency = 4, timeout = 8000, max = 50 } = {}) {
+  let list;
+  let ours;
+  try {
+    const [{ entries }, dirs, conf] = await Promise.all([
+      worktreeList(cwd),
+      repoDirs(cwd),
+      run(cwd, CONFIG_NAMES, { timeout, okCodes: [0, 1] }),
+    ]);
+    list = entries;
+    ours = { commonDir: (await realPathOf(dirs.commonDir)).real, risky: riskyNames(conf.stdout) };
+  } catch {
+    return [];
+  }
+  const todo = list.filter((w) => !w.bare && !w.prunable && !w.missing && !w.current);
+  const res = todo.map((w) => ({ path: w.path, dirty: null }));
+  const checked = Math.min(todo.length, max);
+  const check = async (w) => {
+    if (!(await worktreeTrusted(w.path, ours, timeout))) return null;
+    const args = ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=dirty'];
+    return (await gitAt(w.path, args, { timeout })).stdout !== '';
+  };
+  let next = 0;
+  const worker = async () => {
+    while (next < checked) {
+      const i = next++;
+      res[i].dirty = await check(todo[i]).catch(() => null);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, checked) }, worker));
+  return res;
+}
+
+/**
+ * How many commits `sha` (a detached worktree's HEAD, as git listed it) reaches that no branch,
+ * tag or remote-tracking ref does: what deleting that worktree would leave unreachable. Refs are
+ * shared by every worktree, so it runs in `cwd`, never in the worktree's folder (which may be gone).
+ */
+async function unreachableCount(cwd, sha) {
+  if (!OID.test(sha)) throw kindError('invalid-args', `Not a commit id: '${sha}'`);
+  const n = await out(cwd, ['rev-list', '--count', sha, '--not', '--branches', '--tags', '--remotes']);
+  return Number(n.trim());
 }
 
 /** Split 'origin/feature/x' into remote + branch, preferring the longest known remote name. */
@@ -504,7 +727,8 @@ async function removeBranch(cwd, { name, sha, upstream }, { force = false } = {}
 module.exports = {
   OID, REFSPEC_SAFE, splitN, trimTrailingNewlines,
   validateBranchName, isUntracked,
-  root, bareGitDir, isBare, riskyLocalConfig, riskyHooks, worktrees, refs, log,
+  root, bareGitDir, isBare, riskyLocalConfig, riskyHooks, refs, log,
+  worktrees, worktreeList, worktreeAdminDir, removeWorktree, pruneWorktrees, lockWorktree, unlockWorktree, worktreesDirty, unreachableCount,
   commitFiles, diffCommitFile, diffWorkdir,
   stage, stageAll, unstage, unstageAll, discard, argvChunks,
   commit, lastCommit, commitInfo, commitError,

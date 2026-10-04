@@ -23,6 +23,7 @@
     conflict: 'a hunk or line action on an unmerged path',
     conflicts: 'there are (or the operation left) conflicted files (`count`)',
     'current-branch': 'the branch to delete is the checked-out one',
+    'current-worktree': 'the worktree is the one this tab has open, or contains it',
     detached: 'pull / push need a branch and HEAD is detached',
     dirty: 'local changes to tracked files are in the way (`paths`, `count`)',
     'embedded-bare': 'a bare repository inside another repository\'s working tree is not opened',
@@ -33,6 +34,7 @@
     'invalid-args': 'the renderer\'s arguments were refused by validation',
     'invalid-todo': 'an interactive rebase todo was refused',
     'local-exists': 'a local branch of that name exists and tracks something else',
+    'main-worktree': 'the main worktree or a bare repository can\'t be deleted, locked or unlocked',
     'merge-commits': 'an interactive rebase range includes a merge commit',
     'mirror-repo': 'the operation would overwrite a mirror\'s branches (`remotes`)',
     'no-repo': 'the call needs the tab\'s repository and none is open',
@@ -67,6 +69,9 @@
     'unrelated-histories': 'the histories to merge have no commit in common',
     'unsafe-repo': 'git refuses the repository (dubious ownership)',
     unsupported: 'git can\'t do this here (a type change, a remote without a fetch refspec)',
+    'worktree-busy': 'a rebase, merge or similar is stopped in the worktree (`state`), or another tab is running a write there: finish it first',
+    'worktree-dirty': 'the worktree has modified or untracked files, or submodules (`submodules`); force deletes it',
+    'worktree-locked': 'the worktree is locked (`reason`): unlock it first',
   });
 
   const KINDS = Object.freeze(Object.fromEntries(Object.keys(MEANING).map((k) => [k.toUpperCase().replace(/-/g, '_'), k])));

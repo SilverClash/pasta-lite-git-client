@@ -6,7 +6,7 @@
 // Security boundary: the pages never give a path to open. Every use case below takes either a
 // path from outside the pages (CLI, dock, the folder dialog, main's own menu, tabs.json) or a
 // path matched against a list main holds: the recent list it last showed (findShownRecent) or
-// `git worktree list` of the tab's repo, read just now (openableWorktree).
+// `git worktree list` of the tab's repo, read just now (listedEntry, freshWorktreeEntry).
 const { pickOpenTarget } = require('./tabs');
 const { kindError } = require('./exec');
 const { EVENTS } = require('./ipc-contract');
@@ -25,21 +25,38 @@ function findShownRecent(shown, root) {
 }
 
 /**
- * The entry of `list` (git.worktrees of the tab's repo, read just now) that app:openWorktree may
- * open for the renderer-supplied `wtPath`, or null: only a listed path, never the bare repo's own
- * entry, never a prunable one (its folder is gone). Compared as git prints it: never an
- * arbitrary path.
+ * The entry of `list` (git.worktrees of the tab's repo, read just now) whose path is exactly the
+ * renderer-supplied `wtPath`, or null: never a prunable or missing one (its folder is gone), and
+ * the bare repo's own entry only with `allowBare` (app:revealWorktree: its folder is real and
+ * revealing it opens nothing; app:openWorktree can't open it). Compared as git prints it: never
+ * an arbitrary path.
  */
-function openableWorktree(list, wtPath) {
+function listedEntry(list, wtPath, { allowBare = false } = {}) {
   if (typeof wtPath !== 'string' || !wtPath || !Array.isArray(list)) return null;
-  return list.find((w) => w && w.path === wtPath && !w.bare && !w.prunable) || null;
+  return list.find((w) => w && w.path === wtPath && (allowBare || !w.bare) && !w.prunable && !w.missing) || null;
+}
+
+/**
+ * listedEntry of a `listWorktrees` of `session`'s repo read just now (app:openWorktree,
+ * app:revealWorktree), or null when the tab's repo changed while git listed them. Kinds: 'no-repo'
+ * (no repository open), 'not-found' (not listed, or its folder is gone).
+ */
+async function freshWorktreeEntry(listWorktrees, session, wtPath, { allowBare = false } = {}) {
+  const repo = session.repo;
+  if (!repo) throw kindError('no-repo', 'No repository is open');
+  const list = await listWorktrees(repo.root);
+  if (session.repo !== repo) return null;
+  const entry = listedEntry(list, wtPath, { allowBare });
+  if (entry) return entry;
+  const listed = Array.isArray(list) && list.some((w) => w && w.path === wtPath && (allowBare || !w.bare));
+  throw kindError('not-found', listed ? 'Its folder is gone' : 'This worktree is no longer listed');
 }
 
 /**
  * @param {{
  *   tabs: ReturnType<typeof import('./tabs').createTabRegistry>,
  *   openRepo: (dir: string) => Promise<{root: string, name: string, bare: boolean}>,
- *   listWorktrees: (root: string) => Promise<{path: string, bare: boolean, prunable: boolean}[]>,
+ *   listWorktrees: (root: string) => Promise<{path: string, bare: boolean, prunable: boolean, missing: boolean}[]>,
  *   trust: {confirm(root: string): Promise<boolean>},
  *   recent: () => ({add(root: string, o: {name: string}): void, remove(root: string): void} | null),
  *   recentView: {refresh(): Promise<object[]>, readonly shown: object[]},
@@ -161,24 +178,19 @@ function createRepoOpening({
       return infoOf(await open(entry.root, { from: session, newTab }));
     },
     /**
-     * app:openWorktree (the bare repo banner's "Open worktree"): a path `git worktree
-     * list` gives right now for the tab's repo, not bare and not prunable. The tab that has it
-     * open already is shown, else it opens in a new tab (the bare repo stays in this one).
-     * Resolves null when the tab's repo changed while git listed the worktrees.
+     * app:openWorktree (the bare repo banner's "Open worktree", the sidebar): a path `git worktree
+     * list` gives right now for the tab's repo, not bare and its folder there (freshWorktreeEntry:
+     * no-repo, not-found). The tab that has it open already is shown, else it opens in a new tab
+     * (the bare repo stays in this one). Resolves null when the tab's repo changed while git
+     * listed the worktrees.
      */
     async openWorktreeOf(session, wtPath) {
-      const repo = session.repo;
-      if (!repo) throw kindError('no-repo', 'No repository is open');
-      if (typeof wtPath !== 'string' || !wtPath) throw kindError('invalid-args', 'No such worktree');
-      const list = await listWorktrees(repo.root);
-      if (session.repo !== repo) return null;
-      const entry = openableWorktree(list, wtPath);
-      if (!entry) throw kindError('invalid-args', 'No such worktree');
-      return infoOf(await open(entry.path, { from: session, preferExisting: true }));
+      const entry = await freshWorktreeEntry(listWorktrees, session, wtPath);
+      return entry ? infoOf(await open(entry.path, { from: session, preferExisting: true })) : null;
     },
     /** A new tab in the background (restoring tabs.json, smoke extra tabs). Resolves {info, session} or null. */
     openBackgroundTab: (root, { abort } = {}) => open(root, { newTab: true, background: true, abort }),
   };
 }
 
-module.exports = { createRepoOpening, shouldForgetRecent, findShownRecent, openableWorktree };
+module.exports = { createRepoOpening, shouldForgetRecent, findShownRecent, listedEntry, freshWorktreeEntry };

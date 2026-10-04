@@ -5,11 +5,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { readJson, writeJson } = require('./json-file');
+const { realPathSync } = require('./fs-paths');
 
 const MAX_RECENT = 10;
 
 const isDir = (p) => fs.promises.stat(p).then((s) => s.isDirectory(), () => false);
-const realOrSelf = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
 /**
  * Recent repos, persisted as [{root, name, openedAt}], newest first. `name` is what add() was
@@ -34,15 +34,15 @@ function createRecentStore(filePath, { max = MAX_RECENT } = {}) {
 
   /** Move `root` (deduplicated by real path) to the front; keeps at most `max`. `name`: shown name. */
   function add(root, { name } = {}) {
-    const real = realOrSelf(root);
-    const rest = load().filter((e) => realOrSelf(e.root) !== real);
+    const real = realPathSync(root);
+    const rest = load().filter((e) => realPathSync(e.root) !== real);
     const shown = typeof name === 'string' && name ? name : path.basename(real);
     writeJson(filePath, [{ root: real, name: shown, openedAt: Date.now() }, ...rest].slice(0, max));
   }
 
   function remove(root) {
-    const real = realOrSelf(root);
-    writeJson(filePath, load().filter((e) => e.root !== root && realOrSelf(e.root) !== real));
+    const real = realPathSync(root);
+    writeJson(filePath, load().filter((e) => e.root !== root && realPathSync(e.root) !== real));
   }
 
   function clear() {
@@ -64,18 +64,22 @@ function createTrustStore(filePath) {
       && Array.isArray(e.keys) && e.keys.every((k) => typeof k === 'string'));
   }
 
+  // A saved root is compared by its real path too, as the recent list does: one saved with
+  // another spelling (a symlink, or another letter case on a case-insensitive file system, which
+  // the native realpath canonicalises) is the same repo.
+  const find = (entries, real) => entries.find((e) => e.root === real || realPathSync(e.root) === real);
+
   /** True when every one of `keys` was accepted for `root`. */
   function isTrusted(root, keys) {
-    const real = realOrSelf(root);
-    const entry = load().find((e) => e.root === real);
+    const entry = find(load(), realPathSync(root));
     return !!entry && keys.every((k) => entry.keys.includes(k));
   }
 
   /** Accept `keys` for `root` (on top of what was accepted before). */
   function trust(root, keys) {
-    const real = realOrSelf(root);
+    const real = realPathSync(root);
     const entries = load();
-    const old = entries.find((e) => e.root === real);
+    const old = find(entries, real);
     const merged = [...new Set([...(old ? old.keys : []), ...keys])].sort(); // NOSONAR(S2871): config keys; code-unit order is intended
     writeJson(filePath, [{ root: real, keys: merged }, ...entries.filter((e) => e !== old)]);
   }

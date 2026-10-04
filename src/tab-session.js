@@ -18,9 +18,16 @@ const { createWatchSession } = require('./watch-session');
  */
 const watchesBare = (repo, root) => !!(repo && repo.root === root && repo.bare);
 
-/** What the strip, the window title and the watcher mode show of a repo: root, name and bare. */
+/** A repo's linkedWorktree as compared by sameShown (null: not a linked worktree, or no repo). */
+const linkedKey = (r) => JSON.stringify((r && r.linkedWorktree) || null);
+
+/**
+ * What the strip, the window title and the watcher mode show of a repo: root, name, bare and
+ * linkedWorktree (a linked worktree's title, tree icon and tooltip).
+ */
 const sameShown = (a, b) => (a ? a.root : null) === (b ? b.root : null)
-  && (a ? a.name : null) === (b ? b.name : null) && !!(a && a.bare) === !!(b && b.bare);
+  && (a ? a.name : null) === (b ? b.name : null) && !!(a && a.bare) === !!(b && b.bare)
+  && linkedKey(a) === linkedKey(b);
 
 /**
  * @param {{
@@ -38,7 +45,7 @@ const sameShown = (a, b) => (a ? a.root : null) === (b ? b.root : null)
  *   createWatchSession options (tests: now, retryMs, info).
  */
 function createTabSession({ id, send, createWatcher, runnerRunning = () => [], onGone = () => {}, log, watch: watchOpts = {} }) {
-  let repo = null; // {root, name, head, bare} | null (the page shows the start screen)
+  let repo = null; // {root, name, head, bare, linkedWorktree} | null (the page shows the start screen)
   let openSeq = 0;
   let closed = false;
   let closing = false;
@@ -79,8 +86,8 @@ function createTabSession({ id, send, createWatcher, runnerRunning = () => [], o
 
   /**
    * A fresh summary of the open repo (app:getState). Only for the repo still open here (same
-   * root). A new head is just stored; a changed name or bare flag goes through setRepo, so the
-   * watcher's mode and the title follow. Returns true when what the tab shows changed.
+   * root). A new head is just stored; a changed name, bare flag or linkedWorktree goes through
+   * setRepo, so the watcher's mode, the title and the strip's icon follow. Returns true when what the tab shows changed.
    */
   function refresh(fresh) {
     if (closed || !repo || !fresh || fresh.root !== repo.root) return false;

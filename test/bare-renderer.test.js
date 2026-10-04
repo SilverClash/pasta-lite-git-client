@@ -291,10 +291,10 @@ test('openWorktree: opens the path through window.api.app.openWorktree (main pic
 
 test('flows in a normal repository are unchanged: checkout runs, createBranch checks out', async () => {
   const t = await setup({ checkout: () => ({}), createBranch: (name) => ({ name }) }, ['topic'], { root: '/r', name: 'r' });
+  assert.equal(t.api.calls.filter((c) => c.op === 'worktrees').length, 1, 'worktrees are read for every repository');
   assert.equal(await t.F.checkout(t.store, { target: 'feat', kind: 'local' }), true);
   assert.equal(await t.F.createBranch(t.store, {}), true);
   assert.deepEqual(t.api.writes().filter((c) => c.op === 'createBranch').map((c) => c.args), [['topic', { checkout: true }]]);
-  assert.equal(t.api.calls.filter((c) => c.op === 'worktrees').length, 0, 'worktrees are read for bare repositories only');
 });
 
 // ------------------------------------------------------------------ banner model
@@ -307,6 +307,7 @@ test('bannerModel: a bare repository gets its banner with one "Open worktree" bu
     { path: '/w/myproject/main', head: SHA('a'), branch: 'main', bare: false, detached: false, locked: false, prunable: false },
     { path: '/w/myproject/review', head: SHA('e'), branch: null, bare: false, detached: true, locked: true, prunable: false },
     { path: '/w/gone', head: SHA('b'), branch: 'old', bare: false, detached: false, locked: false, prunable: true },
+    { path: '/w/usb', head: SHA('b'), branch: 'usb', bare: false, detached: false, locked: true, prunable: false, missing: true },
   ];
   const m = Op.bannerModel(state({ worktrees }));
   assert.equal(m.kind, 'bare');
@@ -394,11 +395,14 @@ test('store: a bare repository has no WIP row, selects HEAD, and reads its workt
   await H.flush();
   assert.equal(api.pending('worktrees').length, 0);
 
-  // another repo: cleared, never read for a normal one
+  // another repo: cleared, then read for the normal one too
   const q = store.actions.loadRepo({ root: '/r', name: 'r' });
   assert.equal(store.state.worktrees, null);
   await H.flush(1);
   await H.answerRefresh(api, H.repoData({ commits: H.chain([SHA('c')]) }));
   await q;
-  assert.equal(api.pending('worktrees').length, 0);
+  const normal = [{ path: '/r', head: SHA('c'), branch: 'main', bare: false, detached: false, locked: false, prunable: false, main: true, current: true }];
+  api.take('worktrees').resolve(normal);
+  await H.flush();
+  assert.deepEqual(store.state.worktrees, normal);
 });

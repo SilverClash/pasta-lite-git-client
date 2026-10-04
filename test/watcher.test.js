@@ -19,7 +19,8 @@ describe('classify', () => {
       '.git/REBASE_HEAD', '.git/CHERRY_PICK_HEAD', '.git/REVERT_HEAD', '.git/BISECT_LOG', '.git/AUTO_MERGE',
       '.git/rebase-merge', '.git/rebase-merge/done', '.git/rebase-apply/next', '.git/sequencer/todo',
       '.git\\refs\\heads\\main'],
-    refs: ['.git/refs/remotes/origin/main', '.git/refs/remotes/origin', '.git/refs/tags/v1', '.git/refs/tags',
+    refs: ['.git/worktrees', '.git/worktrees/x', '.git/worktrees/wt/HEAD', '.git/worktrees/x/locked', '.git/locked',
+      '.git/refs/remotes/origin/main', '.git/refs/remotes/origin', '.git/refs/tags/v1', '.git/refs/tags',
       '.git/packed-refs', '.git/config'],
     stashes: ['.git/refs/stash', '.git/logs/refs/stash'],
   };
@@ -34,7 +35,7 @@ describe('classify', () => {
       '.git/config.lock', '.git/refs/stash.lock', '.git/logs/HEAD', '.git/logs/refs/heads/main',
       '.git/logs/refs/remotes/origin/main', '.git/FETCH_HEAD', '.git/ORIG_HEAD', '.git/COMMIT_EDITMSG',
       '.git/hooks/pre-commit', '.git/description', '.git/refs/pasta-lite/backups/abc', '.git/refs/notes/commits',
-      '.git/worktrees/wt/HEAD', '.git/modules/sub/HEAD', 'nested/.git/index', 'sub/.git', '.git\\index.lock',
+      '.git/modules/sub/HEAD', 'nested/.git/index', 'sub/.git', '.git\\index.lock',
       // objects are written by fetch, gc, hash-object...: staging also writes the index.
       '.git/objects/ab/cdef', '.git/objects/pack/pack-1.pack', '.git/objects', '.git\\objects\\12\\34',
     ]) assert.equal(classify(p), null, p);
@@ -513,11 +514,11 @@ describe('Linux (JS recursive watch)', () => {
     const skip = s.watches[0].opts.ignore;
     const n = (p) => p.split('/').join(path.sep);
     for (const p of ['node_modules', 'a/b/node_modules', 'a/node_modules/x', '.git/objects', '.git/objects/ab',
-      '.git/logs/HEAD', '.git/logs/refs/heads', '.git/modules', '.git/worktrees', '.git/lfs', 'nested/.git', 'build', 'x.log']) {
+      '.git/logs/HEAD', '.git/logs/refs/heads', '.git/modules', '.git/worktrees/x/index', '.git/worktrees/x/logs', '.git/lfs', 'nested/.git', 'build', 'x.log']) {
       assert.equal(skip(n(p)), true, p);
     }
     for (const p of ['src', 'src/a.js', '.git', '.git/refs', '.git/refs/heads/main', '.git/logs', '.git/logs/refs',
-      '.git/logs/refs/stash', '.git/index', '.git/info', 'build2', 'sub/build']) {
+      '.git/logs/refs/stash', '.git/index', '.git/info', '.git/worktrees', '.git/worktrees/x', '.git/worktrees/x/HEAD', 'build2', 'sub/build']) {
       assert.equal(skip(n(p)), false, p);
     }
     s.w.close();
@@ -740,6 +741,44 @@ describe('real repository', () => {
     }
   });
 
+  test('a normal repo sees a linked worktree added, locked and removed -> refs', async () => {
+    const main = h.initRepo();
+    const wt = path.join(h.tmpDir(), 'wt');
+    const l = await live(main);
+    try {
+      for (const args of [['worktree', 'add', '-q', '--detach', wt], ['worktree', 'lock', wt], ['worktree', 'unlock', wt],
+        ['worktree', 'remove', wt]]) {
+        l.reset();
+        h.git(main, ...args);
+        assert.ok(await l.until(() => l.kinds().has('refs')), `${args[1]}: ${JSON.stringify(l.events)}`);
+        await wait(WORK * 2);
+      }
+      assert.deepEqual(l.logged, []);
+    } finally {
+      l.w.close();
+    }
+  });
+
+  test('a linked worktree sees a sibling worktree change (refs) while its own HEAD stays full', async () => {
+    const main = h.initRepo();
+    const me = path.join(h.tmpDir(), 'me');
+    const other = path.join(h.tmpDir(), 'other');
+    h.git(main, 'worktree', 'add', '-q', '-b', 'me', me);
+    h.git(main, 'worktree', 'add', '-q', '-b', 'other', other);
+    const l = await live(me);
+    try {
+      h.git(other, 'switch', '-q', '--detach'); // only worktrees/other/HEAD moves
+      assert.ok(await l.until(() => l.kinds().has('refs')), JSON.stringify(l.events));
+      await wait(WORK * 2);
+      assert.ok(!l.kinds().has('full'), JSON.stringify(l.events));
+      l.reset();
+      h.git(me, 'switch', '-q', '--detach'); // its own worktrees/me/HEAD
+      assert.ok(await l.until(() => l.kinds().has('full')), JSON.stringify(l.events));
+    } finally {
+      l.w.close();
+    }
+  });
+
   test('a linked worktree watches its external gitdir and the common dir', async () => {
     const main = h.initRepo();
     const wt = path.join(h.tmpDir(), 'wt');
@@ -825,17 +864,15 @@ describe('real repository', () => {
 
 // ---------------------------------------------------------------- bare repositories
 
-test('classify / noisyGit: worktrees/ entries count only for a bare repo', () => {
-  for (const p of ['.git/worktrees', '.git/worktrees/x', '.git/worktrees/x/HEAD', '.git/worktrees/x/locked']) {
-    assert.equal(classify(p), null, p);
-    assert.equal(classify(p, { bare: true }), 'refs', p);
+test('classify / noisyGit: worktrees/ entries count in every repo', () => {
+  for (const p of ['.git/worktrees', '.git/worktrees/x', '.git/worktrees/x/HEAD', '.git/worktrees/x/locked', '.git/locked']) {
+    assert.equal(classify(p), 'refs', p);
   }
   for (const p of ['.git/worktrees/x/index', '.git/worktrees/x/HEAD.lock', '.git/worktrees/x/logs/HEAD', '.git/worktrees/x/gitdir']) {
-    assert.equal(classify(p, { bare: true }), null, p);
+    assert.equal(classify(p), null, p);
   }
-  assert.equal(noisyGit('worktrees/x'), true);
-  assert.equal(noisyGit('worktrees/x', true), false);
-  assert.equal(noisyGit('worktrees/x/logs', true), true);
+  assert.equal(noisyGit('worktrees/x'), false);
+  assert.equal(noisyGit('worktrees/x/logs'), true);
 });
 
 describe('bare repository (option bare)', () => {

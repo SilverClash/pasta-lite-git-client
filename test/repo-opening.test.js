@@ -5,7 +5,7 @@
 const test = require('node:test');
 const { describe } = test;
 const assert = require('node:assert/strict');
-const { createRepoOpening, shouldForgetRecent, findShownRecent, openableWorktree } = require('../src/repo-opening');
+const { createRepoOpening, shouldForgetRecent, findShownRecent, listedEntry, freshWorktreeEntry } = require('../src/repo-opening');
 const { createRecentView } = require('../src/recent-view');
 const { createTabRegistry } = require('../src/tabs');
 const { createTabSession } = require('../src/tab-session');
@@ -33,20 +33,40 @@ test('findShownRecent: exact membership in the list main last sent', () => {
   assert.equal(findShownRecent(null, '/r/a'), null);
 });
 
-describe('app:openWorktree helpers', () => {
+describe('app:openWorktree / app:revealWorktree helpers', () => {
   const list = [
-    { path: '/w/.bare', head: null, branch: null, bare: true, prunable: false },
-    { path: '/w/main', head: 'a'.repeat(40), branch: 'main', bare: false, prunable: false },
-    { path: '/w/gone', head: 'a'.repeat(40), branch: 'gone', bare: false, prunable: true },
+    { path: '/w/.bare', head: null, branch: null, bare: true, prunable: false, missing: false },
+    { path: '/w/main', head: 'a'.repeat(40), branch: 'main', bare: false, prunable: false, missing: false },
+    { path: '/w/gone', head: 'a'.repeat(40), branch: 'gone', bare: false, prunable: true, missing: true },
+    { path: '/w/usb', head: 'a'.repeat(40), branch: 'usb', bare: false, prunable: false, missing: true, locked: true },
   ];
-  test('openableWorktree: only a listed, non-bare, non-prunable path', () => {
-    assert.equal(openableWorktree(list, '/w/main'), list[1]);
-    assert.equal(openableWorktree(list, '/w/.bare'), null, 'the bare entry');
-    assert.equal(openableWorktree(list, '/w/gone'), null, 'prunable: its folder is gone');
-    assert.equal(openableWorktree(list, '/etc'), null, 'unlisted');
-    assert.equal(openableWorktree(list, '/w/main/'), null, 'compared as git prints it');
-    for (const bad of ['', null, undefined, 42, ['/w/main'], { path: '/w/main' }]) assert.equal(openableWorktree(list, bad), null, String(bad));
-    assert.equal(openableWorktree(null, '/w/main'), null);
+  test('listedEntry: only a listed path whose folder is there; the bare entry only with allowBare', () => {
+    for (const o of [undefined, { allowBare: false }, { allowBare: true }]) {
+      assert.equal(listedEntry(list, '/w/main', o), list[1]);
+      assert.equal(listedEntry(list, '/w/gone', o), null, 'prunable: its folder is gone');
+      assert.equal(listedEntry(list, '/w/usb', o), null, 'locked and missing: git doesn\'t call it prunable, but its folder is gone');
+      assert.equal(listedEntry(list, '/etc', o), null, 'unlisted');
+      assert.equal(listedEntry(list, '/w/main/', o), null, 'compared as git prints it');
+      for (const bad of ['', null, undefined, 42, ['/w/main'], { path: '/w/main' }]) assert.equal(listedEntry(list, bad, o), null, String(bad));
+      assert.equal(listedEntry(null, '/w/main', o), null);
+    }
+    assert.equal(listedEntry(list, '/w/.bare'), null, 'the bare entry can\'t be opened');
+    assert.equal(listedEntry(list, '/w/.bare', { allowBare: true }), list[0], 'but it is a real folder to reveal');
+  });
+  test('freshWorktreeEntry: a fresh list of the tab\'s repo; not-found, no-repo, or null when the repo changed', async () => {
+    const session = { repo: { root: '/w/.bare' } };
+    const asked = [];
+    const listWorktrees = async (root) => { asked.push(root); return list; };
+    assert.equal(await freshWorktreeEntry(listWorktrees, session, '/w/main'), list[1]);
+    assert.deepEqual(asked, ['/w/.bare']);
+    assert.equal(await freshWorktreeEntry(listWorktrees, session, '/w/.bare', { allowBare: true }), list[0]);
+    for (const [p, message] of [['/w/gone', 'Its folder is gone'], ['/w/usb', 'Its folder is gone'], ['/etc', 'This worktree is no longer listed'], ['/w/.bare', 'This worktree is no longer listed'], ['', 'This worktree is no longer listed'], [42, 'This worktree is no longer listed']]) {
+      await assert.rejects(freshWorktreeEntry(listWorktrees, session, p), { kind: 'not-found', message }, String(p));
+    }
+    await assert.rejects(freshWorktreeEntry(listWorktrees, { repo: null }, '/w/main'), { kind: 'no-repo' });
+    const moved = { repo: { root: '/w/.bare' } };
+    const switching = async () => { moved.repo = { root: '/r/other' }; return list; };
+    assert.equal(await freshWorktreeEntry(switching, moved, '/w/main'), null);
   });
 });
 
@@ -234,15 +254,16 @@ describe('opens from a tab', () => {
 
 describe('openWorktreeOf', () => {
   const list = [
-    { path: '/w/.bare', bare: true, prunable: false },
-    { path: '/w/main', bare: false, prunable: false },
-    { path: '/w/gone', bare: false, prunable: true },
+    { path: '/w/.bare', bare: true, prunable: false, missing: false },
+    { path: '/w/main', bare: false, prunable: false, missing: false },
+    { path: '/w/gone', bare: false, prunable: true, missing: true },
+    { path: '/w/usb', bare: false, prunable: false, missing: true, locked: true },
   ];
   test('only a listed, openable worktree; it opens in a new tab next to the bare repo, which stays', async () => {
     const { opening, tabs } = setup({ repos: { '/w/main': info('/w/main') }, tabs: ['/w/.bare', null], worktrees: { '/w/.bare': list } });
     const s = tabs.get(1);
-    for (const bad of ['/w/.bare', '/w/gone', '/etc', '']) {
-      await assert.rejects(opening.openWorktreeOf(s, bad), (e) => e.kind === 'invalid-args', bad);
+    for (const bad of ['/w/.bare', '/w/gone', '/w/usb', '/etc', '']) {
+      await assert.rejects(opening.openWorktreeOf(s, bad), (e) => e.kind === 'not-found', bad);
     }
     await opening.openWorktreeOf(s, '/w/main');
     assert.deepEqual(tabs.list().map((t) => t.repo && t.repo.root), ['/w/.bare', '/w/main', null], 'not the empty tab, not the asking one');

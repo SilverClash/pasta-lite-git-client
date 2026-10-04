@@ -93,3 +93,22 @@ test('rejectedFetchRefs lists the refs of fetch --porcelain "!" lines', () => {
   assert.deepEqual(ge.rejectedFetchRefs('! 1 2 refs/tags/v1\n* 3 4 refs/remotes/o/x\n! 5 6 refs/tags/v 2'), ['refs/tags/v1', 'refs/tags/v 2']);
   assert.deepEqual(ge.rejectedFetchRefs(undefined), []);
 });
+
+test('worktree remove / lock / unlock: the four rules match git\'s own messages (git 2.51)', () => {
+  const cases = [
+    ["fatal: '../w1' contains modified or untracked files, use --force to delete it", 'worktreeDirty', 'worktree-dirty'],
+    ['fatal: working trees containing submodules cannot be moved or removed', 'worktreeDirty', 'worktree-dirty'],
+    ["fatal: cannot remove a locked working tree, lock reason: on a stick\nuse 'remove -f -f' to override or unlock first", 'worktreeLocked', 'worktree-locked'],
+    ["fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first", 'worktreeLocked', 'worktree-locked'],
+    ["fatal: '.' is a main working tree", 'mainWorktree', 'main-worktree'],
+    ['fatal: The main working tree cannot be locked or unlocked', 'mainWorktree', 'main-worktree'],
+    ["fatal: '/tmp/nowhere' is not a working tree", 'notAWorktree', 'not-found'],
+  ];
+  const names = ['worktreeDirty', 'worktreeLocked', 'mainWorktree', 'notAWorktree'];
+  for (const [text, rule, kind] of cases) {
+    assert.equal(ge.matches(gitErr(text), rule), true, text);
+    assert.equal(ge.kindFor(gitErr(text), ...names), kind, text);
+  }
+  assert.equal(ge.kindFor(gitErr("fatal: '.' is a main working tree", 'contains modified or untracked files'), ...names), 'main-worktree', 'stdout is not read');
+  assert.equal(ge.kindFor(gitErr("fatal: invalid reference: x"), ...names), null);
+});

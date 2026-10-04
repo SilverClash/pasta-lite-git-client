@@ -1072,6 +1072,255 @@ test('loadRemotes: a failure is logged and kept in remotesError; an older read n
   await p;
 });
 
+// ------------------------------------------------------------------ worktrees
+
+const WT = (path, o = {}) => ({ path, head: 'a'.repeat(40), branch: null, bare: false, detached: false, locked: false, lockReason: null, prunable: false, prunableReason: null, main: false, current: false, ...o });
+const MAIN_WT = WT('/r', { branch: 'main', main: true, current: true });
+
+/** A loaded normal repo whose first worktrees read was answered with `list`. */
+async function withWorktrees(list, data = repoData({ commits: chain(['a']) })) {
+  const s = await loadedStore(data);
+  s.api.take('worktrees').resolve(list);
+  await flush();
+  return s;
+}
+
+/** Run a full refresh (answered with `data`), leaving its worktrees read pending. */
+async function fullRefresh(api, store, data = repoData({ commits: chain(['a']) })) {
+  const p = store.actions.refresh();
+  await flush(1);
+  await answerRefresh(api, data);
+  await p;
+}
+
+test('worktrees: a normal repository reads them on the first load and with each full refresh, not with a partial one; a failure keeps the list', async (t) => {
+  const logged = [];
+  const saved = console.error;
+  console.error = (...a) => logged.push(a);
+  t.after(() => { console.error = saved; });
+  const list = [MAIN_WT, WT('/w/feat', { branch: 'feat' })];
+  const { api, store } = await withWorktrees(list);
+  assert.equal(api.count('worktrees'), 1, 'read with the first load');
+  assert.deepEqual(store.state.worktrees, list);
+
+  await fullRefresh(api, store);
+  api.take('worktrees').reject({ message: 'boom' });
+  await flush();
+  assert.deepEqual(store.state.worktrees, list, 'the last list on failure');
+  assert.match(String(logged[0][0]), /could not read the worktrees/);
+
+  store.actions.watchEvent({ repo: '/r', kinds: ['status'] });
+  await flush(1);
+  api.take('status').resolve(status({ oid: 'a' }));
+  api.take('undoState').resolve({ entries: [] });
+  await flush();
+  assert.equal(api.count('worktrees'), 2, 'a partial refresh does not read them');
+
+  store.actions.watchEvent({ repo: '/r', kinds: ['refs'] });
+  await flush(1);
+  await answerRefresh(api, repoData({ commits: chain(['a']) }));
+  const added = [...list, WT('/w/new')];
+  api.take('worktrees').resolve(added);
+  await flush();
+  assert.deepEqual(store.state.worktrees, added, 'a refs event (full) re-reads them');
+});
+
+test('worktrees: loadRepo clears worktrees and worktreeDirty, and a stale read from the old repo is dropped', async () => {
+  const { api, store } = await withWorktrees([MAIN_WT, WT('/w/a')]);
+  store.actions.setWorktreeDirtyWanted(true);
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: true }]);
+  await flush();
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': true });
+
+  await fullRefresh(api, store); // its worktrees read stays pending across the switch
+  const p = store.actions.loadRepo({ root: '/s', name: 's' });
+  assert.deepEqual([store.state.worktrees, store.state.worktreeDirty], [null, null]);
+  await flush(1);
+  await answerRefresh(api, repoData({ commits: chain(['z']) }));
+  await p;
+  const [stale, fresh] = api.pending('worktrees');
+  stale.resolve([MAIN_WT, WT('/w/a'), WT('/w/old')]);
+  await flush();
+  assert.equal(store.state.worktrees, null, 'the old repo\'s list never lands');
+  fresh.resolve([WT('/s', { main: true, current: true }), WT('/w/a')]);
+  await flush();
+  assert.equal(store.state.worktrees.length, 2);
+  assert.equal(api.pending('worktreeDirty').length, 1, 'still wanted: the new repo\'s worktrees are checked, the same path included (TTL reset)');
+});
+
+test('worktreeDirty: read only while wanted; a 5 s TTL for the same paths; a changed path list or the TTL re-read', async (t) => {
+  let now = 1_000_000;
+  t.mock.method(Date, 'now', () => now);
+  const list = [WT('/bare', { bare: true, main: true }), MAIN_WT, WT('/w/b'), WT('/w/a', { locked: true }), WT('/w/gone', { prunable: true })];
+  const { api, store } = await withWorktrees(list);
+  assert.equal(api.count('worktreeDirty'), 0, 'not wanted: never read');
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve(list);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 0, 'not wanted: a full refresh does not read it either');
+  assert.equal(store.state.worktreeDirty, null);
+
+  store.actions.setWorktreeDirtyWanted(true);
+  assert.equal(api.count('worktreeDirty'), 1, 'wanted: read at once');
+  assert.deepEqual(api.take('worktreeDirty').args, [], 'no arguments: main lists the worktrees itself');
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: false }, { path: '/w/b', dirty: true }, { path: '/w/x', dirty: null }]);
+  await flush();
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': false, '/w/b': true, '/w/x': null });
+
+  // within the TTL, the same paths: no second read (setWorktreeDirtyWanted, a full refresh, loadWorktreeDirty)
+  now += 4999;
+  store.actions.setWorktreeDirtyWanted(true);
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve(list);
+  await flush();
+  await store.actions.loadWorktreeDirty();
+  assert.equal(api.count('worktreeDirty'), 1, 'within 5 s: no second read');
+
+  // after the TTL, loadWorktreeDirty re-reads
+  now += 1;
+  const forced = store.actions.loadWorktreeDirty();
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: true }, { path: '/w/b', dirty: true }]);
+  await forced;
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': true, '/w/b': true });
+
+  // a changed path list re-reads within the TTL
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve([...list, WT('/w/c')]);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 3, 'a new worktree: re-read');
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: true }, { path: '/w/b', dirty: true }, { path: '/w/c', dirty: false }]);
+  await flush();
+
+  // the TTL expired: the next full refresh re-reads
+  now += 5000;
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve([...list, WT('/w/c')]);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 4, 'after 5 s: re-read');
+
+  // a failure keeps the last value and is retried by the next read
+  const logged = [];
+  const saved = console.error;
+  console.error = (...a) => logged.push(a);
+  t.after(() => { console.error = saved; });
+  api.take('worktreeDirty').reject({ message: 'boom' });
+  await flush();
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': true, '/w/b': true, '/w/c': false }, 'the last value on failure');
+  assert.match(String(logged[0][0]), /could not read the worktrees' state/);
+  const retried = store.actions.loadWorktreeDirty();
+  assert.equal(api.count('worktreeDirty'), 5, 'a failed read does not hold the TTL');
+  api.take('worktreeDirty').resolve([]);
+  await retried;
+
+  // closed: full refreshes no longer read it
+  store.actions.setWorktreeDirtyWanted(false);
+  now += 10_000;
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve(list);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 5, 'not wanted any more: not read');
+});
+
+test('worktreeDirty: a read still running when the TTL expires is shared, not overlapped; the TTL counts from its end', async (t) => {
+  let now = 1_000_000;
+  t.mock.method(Date, 'now', () => now);
+  const list = [MAIN_WT, WT('/w/a')];
+  const { api, store } = await withWorktrees(list);
+  store.actions.setWorktreeDirtyWanted(true);
+  assert.equal(api.count('worktreeDirty'), 1);
+  const slow = api.take('worktreeDirty');
+
+  // the read is still running 6 s later: refreshes and explicit loads share it
+  now += 6000;
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve(list);
+  await flush();
+  const shared = store.actions.loadWorktreeDirty();
+  store.actions.setWorktreeDirtyWanted(true);
+  assert.equal(api.count('worktreeDirty'), 1, 'no second read while the first is in flight');
+  slow.resolve([{ path: '/w/a', dirty: true }]);
+  await shared;
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': true }, 'the shared promise settles with the read');
+
+  // the TTL counts from the end of the read: 4.9 s later, still fresh
+  now += 4900;
+  await store.actions.loadWorktreeDirty();
+  assert.equal(api.count('worktreeDirty'), 1, 'within 5 s of the read finishing');
+  now += 100;
+  store.actions.loadWorktreeDirty();
+  assert.equal(api.count('worktreeDirty'), 2, '5 s after it finished: re-read');
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: false }]);
+  await flush();
+});
+
+test('worktreeDirty: missing entries (their folder is gone) are not checked', async () => {
+  const { api, store } = await withWorktrees([MAIN_WT, WT('/w/a'), WT('/w/away', { locked: true, missing: true })]);
+  store.actions.setWorktreeDirtyWanted(true);
+  assert.equal(api.count('worktreeDirty'), 1);
+  api.take('worktreeDirty').resolve([{ path: '/w/a', dirty: false }, { path: '/w/away', dirty: null }]);
+  await flush();
+  // the list loses the missing entry: the same checkable paths, so no re-read within the TTL
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve([MAIN_WT, WT('/w/a')]);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 1, 'the checkable-paths key excludes missing entries');
+
+  const only = await withWorktrees([MAIN_WT, WT('/w/away', { missing: true })]);
+  only.store.actions.setWorktreeDirtyWanted(true);
+  await flush();
+  assert.deepEqual(only.store.state.worktreeDirty, {});
+  assert.equal(only.api.count('worktreeDirty'), 0, 'only missing ones: nothing to read');
+});
+
+test('worktreeDirty: with only the current (and bare or prunable) entries there is nothing to check: {} with no read', async () => {
+  const { api, store } = await withWorktrees([MAIN_WT, WT('/w/gone', { prunable: true })]);
+  store.actions.setWorktreeDirtyWanted(true);
+  await flush();
+  assert.deepEqual(store.state.worktreeDirty, {});
+  assert.equal(api.count('worktreeDirty'), 0);
+});
+
+test('worktreeDirty: wanted before the worktrees are read: read once they are', async () => {
+  const win = H.loadRenderer();
+  const api = H.makeApi();
+  const store = win.Store.create(api);
+  const p = store.actions.loadRepo({ root: '/r', name: 'r' });
+  store.actions.setWorktreeDirtyWanted(true);
+  await flush(1);
+  await answerRefresh(api, repoData({ commits: chain(['a']) }));
+  await p;
+  assert.equal(api.count('worktreeDirty'), 0, 'no list yet: nothing to check');
+  api.take('worktrees').resolve([MAIN_WT, WT('/w/a')]);
+  await flush();
+  assert.equal(api.count('worktreeDirty'), 1);
+});
+
+test('worktreeDirty: an older read never lands after a newer one, and a stale result after a repo switch is dropped', async () => {
+  const { api, store } = await withWorktrees([MAIN_WT, WT('/w/a')]);
+  store.actions.setWorktreeDirtyWanted(true);
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve([MAIN_WT, WT('/w/a'), WT('/w/b')]); // another path list: a second read while the first runs
+  await flush();
+  const [older, newer] = api.pending('worktreeDirty');
+  assert.ok(older && newer);
+  newer.resolve([{ path: '/w/a', dirty: true }, { path: '/w/b', dirty: true }]);
+  await flush();
+  older.resolve([{ path: '/w/a', dirty: false }]);
+  await flush();
+  assert.deepEqual(store.state.worktreeDirty, { '/w/a': true, '/w/b': true }, 'the newer read wins');
+
+  await fullRefresh(api, store);
+  api.take('worktrees').resolve([MAIN_WT, WT('/w/a')]);
+  await flush();
+  const late = api.take('worktreeDirty');
+  const p = store.actions.loadRepo({ root: '/s', name: 's' });
+  late.resolve([{ path: '/w/a', dirty: false }]);
+  await flush(1);
+  assert.equal(store.state.worktreeDirty, null, 'the old repo\'s result is dropped');
+  await answerRefresh(api, repoData({ commits: chain(['z']) }));
+  await p;
+});
+
 // ------------------------------------------------------------------ watcher events
 
 const REFRESH_OPS = ['status', 'refs', 'stashes', 'undoState', 'log', 'workdirDiffView', 'commitDiffView'];

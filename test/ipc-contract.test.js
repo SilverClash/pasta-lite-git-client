@@ -226,6 +226,35 @@ describe('registerChannels (main/ipc.js)', () => {
     assert.deepEqual(await b.ipc.call('clipboard:writeText', {}, sha), { ok: false, error: { message: 'no pasteboard', kind: null, exitCode: null } });
   });
 
+  test('app:revealWorktree: shows only a worktree `git worktree list` gives now; a switched repo resolves false', async () => {
+    const list = [
+      { path: '/w/.bare', bare: true, prunable: false, missing: false }, { path: '/w/main', prunable: false, missing: false },
+      { path: '/w/gone', prunable: true, missing: true }, { path: '/w/usb', locked: true, prunable: false, missing: true },
+    ];
+    const shown = [];
+    let listing = async () => list;
+    const session = { id: 5, repo: { root: '/r' } };
+    const main = createHandlers({ controller: { tabs: {} }, listWorktrees: (root) => { assert.equal(root, '/r'); return listing(); }, shell: { showItemInFolder: (p) => shown.push(p) } });
+    const { ipc } = register({ handlers: { ...allHandlers(), 'app:revealWorktree': main['app:revealWorktree'] }, ctx: { kind: 'view', session, senderId: 5 } });
+    assert.deepEqual(await ipc.call('app:revealWorktree', {}, '/w/main'), { ok: true, value: true });
+    assert.deepEqual(shown, ['/w/main']);
+    for (const bad of ['/etc', '/w/gone', '/w/usb', '/w/main/']) {
+      const res = await ipc.call('app:revealWorktree', {}, bad);
+      assert.equal(res.ok, false);
+      assert.equal(res.error.kind, 'not-found', bad);
+    }
+    assert.deepEqual(shown, ['/w/main'], 'no call for an unlisted path or a folder that is gone (prunable, or locked and missing)');
+    assert.deepEqual(await ipc.call('app:revealWorktree', {}, '/w/.bare'), { ok: true, value: true }, 'the bare entry is a real folder');
+    shown.pop();
+    listing = async () => { session.repo = { root: '/other' }; return list; };
+    assert.deepEqual(await ipc.call('app:revealWorktree', {}, '/w/main'), { ok: true, value: false });
+    assert.deepEqual(shown, ['/w/main'], 'the repo switched: nothing shown');
+    session.repo = null;
+    const none = await ipc.call('app:revealWorktree', {}, '/w/main');
+    assert.equal(none.error.kind, 'no-repo');
+    assert.deepEqual(shown, ['/w/main']);
+  });
+
   test('clipboard:writeText: a tab\'s page only (not the strip), and no repo needed', () => {
     const spec = c.CHANNELS['clipboard:writeText'];
     assert.deepEqual(spec.from, ['view']);

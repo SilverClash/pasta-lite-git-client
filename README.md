@@ -11,7 +11,7 @@ window, with your branches on the left and your working changes on the right. It
 workflow: stage, commit, branch, sync, stash, merge, rebase and undo. It's built on Electron and runs
 your system `git`, so your existing SSH keys, credential helper and git config just work.
 
-> **Status: alpha (0.2.0).** This is an early preview. Expect rough edges, and please report what you
+> **Status: alpha (0.2.1).** This is an early preview. Expect rough edges, and please report what you
 > find.
 
 ## Screenshots

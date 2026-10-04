@@ -8,6 +8,8 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-04
+
 ### Added
 
 - Delete several local branches at once. In the sidebar, ⌘-click (Ctrl-click on Windows and Linux)
@@ -129,6 +131,7 @@ or run it from source with Node.js 22.12 or newer.
 - Authentication has only been tested against a local server. Real HTTPS and SSH remotes and
   credential helpers have not been checked end to end yet.
 
-[Unreleased]: https://github.com/SilverClash/pasta-lite-git-client/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/SilverClash/pasta-lite-git-client/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/SilverClash/pasta-lite-git-client/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/SilverClash/pasta-lite-git-client/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/SilverClash/pasta-lite-git-client/releases/tag/v0.1.0

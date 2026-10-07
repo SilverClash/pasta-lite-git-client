@@ -27,7 +27,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 **Graph and history**
 - Lane-based commit graph with branch and tag labels, merge and octopus-merge lines, and resizable, hideable columns.
 - History loads in pages, so large repositories open quickly.
-- Commit details with the changed files, as a path list or a tree, and each file's diff, with a before / after preview for images.
+- Commit details with the changed files, as a path list or a tree, and each file's diff, with a before / after preview for images (side by side, swipe, onion skin or difference; SVG and Git LFS images too).
 - Sidebar with local branches, remotes, tags and stashes, grouped into folders by prefix, with a filter box.
 
 **Staging and committing**

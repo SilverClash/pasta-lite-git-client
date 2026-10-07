@@ -5,9 +5,10 @@ is selected. It covers the WIP panel (unstaged, staged and untracked files) and 
 panel (commits and stashes): before and after side by side, metadata, zoom, then comparison modes,
 text-backed images (SVG, Git LFS pointers) and, as a gated last step, formats Chromium can't decode.
 
-Status: **I1–I2 built** on `feat/image-preview` (the backend, and the side-by-side preview in the
-renderer); I3–I4 are still a plan. Written 2026-10-07 (from `0.2.1`, `debfb3a`). Where I1 and I2
-differ from this plan, §5.7 and §6.7 say what was built and why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
+Status: **I1–I3 built** on `feat/image-preview` (the backend, the side-by-side preview in the
+renderer, then text-backed and conflicted images, the local Git LFS cache, the comparison modes,
+zoom steps and keys); I4 is still a plan. Written 2026-10-07 (from `0.2.1`, `debfb3a`). Where I1,
+I2 and I3 differ from this plan, §5.7, §6.7 and §6.8 say what was built and why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
 `renderer/components/diff-view.js`, `renderer/components/diff-model.js`), the op registry and runner
 (`src/ops.js`, `src/runner.js`), the IPC table (`src/ipc-contract.js`) and the store contract
 (`renderer/store.js`). The roadmap lists this as "image diff" under **Diff: split, whitespace, word
@@ -637,6 +638,151 @@ then 3,000×3,000 at Fit), a truncated and an undecodable PNG. The checkerboard 
 were read back with `getComputedStyle` / `getBoundingClientRect`. The window capture failed in that
 session (no display surface), so there is no screenshot yet: the PR's screenshot and
 `docs/screenshots/image-diff.png` are still to do.
+
+### 6.8 As built (I3)
+
+What I3 actually ships, where it differs from or pins down §4.1, §4.4, §6.1, §6.2 and §6.5–§6.6.
+Decided for I3 (§13): an SVG with a text diff opens as the rendered **Preview** (Q4, not text first);
+Git LFS from the local cache only (Q3); the comparison modes are in (Q5); conflicted binary images
+are handled here (Q10); `.svgz` stays unsupported (Q6) and sizes stay in binary units (Q8).
+
+**Commits.** `feat(preview): local Git LFS objects and conflict stages` (backend),
+`feat(renderer): image comparison modes, zoom steps, keys, text-backed and conflicted images`,
+`test(smoke): demo-repo images and an image preview smoke run`, and this section.
+
+**Git LFS (backend).**
+- `blobRevisions.lfsRevision(repo, side, {oid, size})` looks the object up at
+  `<git common dir>/lfs/objects/<oid[0:2]>/<oid[2:4]>/<oid>` (`repoDirs().commonDir`, so a linked
+  worktree and a bare repository find it too) with `lstat`: only a regular file of exactly the
+  pointer's size counts (a link is not followed, a custom `lfs.storage` is not looked at). It is
+  read like a worktree file (`O_NOFOLLOW`, the stat key checked again on the open handle) and
+  `readRevision` returns null when its sha256 isn't the oid: the side then stays `lfs-pointer`.
+- `ops.previewSide` judges the pointer first; for an `lfs-pointer` side it asks the cache and judges
+  the object instead (source `'lfs-cache'`, the pointer's `lfs: {oid, size}` attached, so the pane's
+  metadata says `LFS <oid>`). Its RevisionKey is `lfs:<sha256>`, which differs from the side's
+  resolved key (the pointer blob's oid), so a `knownKey` of an LFS object is compared **after** the
+  pointer is read (at most 1 KiB) and before the object is.
+- An object over the soft cap is not read at all, like a git blob (its hash can't be checked from a
+  head): `too-large` by the file name's extension, with `lfs`; Load preview (`force`) reads it.
+- A pointer whose object isn't there says "Stored in Git LFS (2.4 MB) — not available locally"
+  (I2: "— not loaded"). The store never sends its key as `knownKey`, so every reload reads the
+  pointer again (one small `cat-file` and an `lstat`) and an object downloaded meanwhile shows up.
+- Nothing but `ls-tree`, `ls-files`, `cat-file` and file reads ever runs: a test records every git
+  argument list and finds no `lfs`, `filter-process` or `smudge`. git-lfs isn't installed on the
+  machine this was built on; no network-off run was done (the read path makes no network calls).
+
+**Conflicts (backend).**
+- `resolveSide` asks the index for every stage of a working-copy path (not untracked) first; an
+  unmerged one resolves `old` to stage 2 (ours), `new` to stage 3 (theirs) and the new side
+  `'base'` to stage 1, whatever `staged` says; a missing stage is `absent` (modify/delete, add/add).
+  Side `'base'` of anything else is `absent`; `workdirImageSide` accepts it, `commitImageSide`
+  refuses it (`invalid-args`). So `workdirImageSide` no longer fails with `conflict` (`indexEntry`
+  still throws it for hunks.js).
+- `src/diff-view.js` flags a combined diff that says "Binary files differ" (and has no hunks) with
+  `conflict.isBinary: true` (git 2.51 prints `diff --cc a.png`, `index …`, `Binary files differ`).
+
+**When a diff gets a preview.** `PLImage.previewKind(spec, data)` → `'binary'`, `'text'`,
+`'conflict'` or null; `wantsPreview` is `previewKind !== null`.
+- `'text'`: exactly one section, with hunks (a rename or mode change without content changes keeps
+  its message), not binary, whose path (or rename source) has a catalogue image extension: an SVG,
+  and a Git LFS pointer of any image type.
+- `'conflict'`: `conflict.isBinary`, or a conflict without a combined diff (modify/delete: "* Unmerged
+  path") of a file with an image extension. A text conflict of an SVG keeps its combined diff.
+
+**Preview | Text.** In the diff header (not the preview's summary bar: it must stay when the text is
+shown), for `'text'` only; Preview by default. The choice is one preference for the app in
+`localStorage` (`pl.imageView`, through `Components.util.storage`, like the panel widths and the pull
+mode), so it outlives the session (§6.5 said "per session (localStorage …)"; localStorage is what the
+app's other view preferences use). Switching keeps focus on the switch. A text-backed diff has no
+`image` badge (that badge replaces `binary`). When neither side has a picture the preview says "No
+image to preview — Text shows the change".
+
+**Conflicted images.** `state.imagePreview` gains `conflict` and, for a conflict, a third slot `base`
+(`SIDES`, `sideGen`, `inflight`, pinning and cancelling cover it). `loadImagePreview` takes the diff
+about to land (`data`), because the store starts the preview before the diff lands; a file that
+becomes or stops being a conflict starts over. The panes are **Base | Ours (main) | Theirs
+(feature/x)**, the names from `PLOp.conflictSides` (during a rebase ours is the new base, theirs the
+replayed commit), plain "Ours" / "Theirs" when no merge or rebase is in progress; no Base pane
+without a stage 1; a missing stage says "Deleted on this side". Titles are neutral (no before /
+after colours), no size delta, no comparison modes, no "Index" source in the metadata. The banner
+reads "Conflicted image — the base, ours and theirs versions. Keep one side or mark the file
+resolved in the WIP panel."
+
+**Comparison modes.** A segmented control in the summary bar (Side by side | Swipe | Onion skin |
+Difference), shown only when `PLImage.canCompare`: both sides `image`, both URLs, neither failed, not
+a conflict. The mode is one preference for the app (`pl.imageMode`); a stored mode that can't apply
+(an added file, a decode failure) shows side by side.
+- One frame (`.ip-frame`) of the larger width and height at one scale (`PLImage.overlaySize`; Fit
+  fits the frame), both images absolutely positioned at its top-left. The frame carries the
+  checkerboard (the images none) and `isolation: isolate`.
+- Swipe: Before left of the divider, After right of it (`clip-path: inset(0 0 0 <px>)` on After).
+  The divider is a `role="slider"` element: drag anywhere on the frame (pointer capture), or focus
+  it and use ←/→ (also ↓/↑), 5% a step, Home / End.
+- Onion skin: After's opacity from an `<input type="range">` (After opacity, 50% at first).
+- Difference: After with `mix-blend-mode: difference` over Before on a black frame.
+- The same two `<img>` elements move between the panes and the frame, so switching modes never
+  reloads an image; the swipe and opacity positions stay from file to file (not stored).
+
+**Zoom.** − / + buttons around Fit | 100% and a level readout (`PLImage.zoomStep`, `ZOOM_STEPS`
+12.5%–3200%): from Fit, a step starts at the scale of the most shrunk image on screen (Fit of a
+small image is 100%). Above 100% `.ip.is-pixelated` sets `image-rendering: pixelated` (Fit never
+enlarges, so only a number zoom gets there). The panes scroll together at every number zoom (I2: at
+100%).
+
+**Keys.** §6.6 asked for `KEYS` entries, but `KEYS` is the ⌘ / Ctrl table (`matchKey` needs the
+modifier) and ⌘+ / ⌘- / ⌘0 are the View menu's page zoom. So `keys.js` has a second frozen table,
+`VIEW_KEYS` (`matchViewKey(e, view)`, `viewKeyHint(id)`), of single keys with no ⌘ / Ctrl / Alt: the
+image preview's `+` (and `=`) zoom in, `-` (and `_`) zoom out, `0` Fit, `1` 100%, `m` next mode, and
+the diff view's existing `n` / `p` / `s` / `u` / Esc, which diff-view.js and diff-staging.js now
+match through it. `test/keys.test.js` checks that no key is in two entries (the image keys run inside
+the diff view) and that none is the graph's. Like `n` / `p`, they act while the diff view shows a
+preview with a picture (the zoom group visible), from the document, not only while a pane has focus
+(§12 said "while a preview has focus"); never in a text field or with a dialog open. `m` ignores key
+repeats; the zoom keys repeat.
+
+**Demo repository and smoke run.** `scripts/demo-repo.js` gains `images/` from small files in
+`test/fixtures/images` (11 files, 12 KB; made once with ImageMagick 7, ffmpeg + SVT-AV1 and macOS
+`sips`; a test checks each sniffs as named). `big.avif` became `badge.avif` (64×64, it isn't big).
+The two LFS pointers come without `.gitattributes`, so a git-lfs in the user's own config never runs
+filters on the demo, and `lfs-cached.png`'s object is written into `.git/lfs/objects`. There is no
+conflict in the demo (it would put the whole repository in a merge); the smoke run makes its own.
+The smoke script is `scripts/smoke-image-preview.js` (Node: builds the demo and a conflicted merge
+in a temp folder, runs `--smoke` on each, exit 0 / 1) with the page script
+`scripts/smoke/image-preview.page.js`, not a change to `main/smoke.js`; `eslint.config.js` lints
+`scripts/smoke/` as a browser script. Two things about the smoke window: it is shown transparent and
+inactive, so Chromium clamps its timers to a second (the page script waits by MessageChannel ticks),
+and `img.decode()` never settles there (the script waits for `complete` and checks `naturalWidth`).
+
+**Tests.** `test/image-preview.test.js` (conflict stages, missing stages, side `base`, the LFS cache:
+found, knownKey without reading the object, missing / corrupt / resized / linked, the soft cap, a
+linked worktree and a bare repository, no `git lfs`), `test/diff-view-backend.test.js` (`isBinary`),
+`test/image-model.test.js` (`previewKind`, conflict layout, zoom steps, modes, `overlaySize`),
+`test/store.test.js` (three sides of a conflict, cancelling them, an SVG text diff, the LFS pointer
+key), `test/image-preview-ui.test.js` (zoom buttons, keys, the modes, Preview | Text and its
+persistence, a conflict's panes), `test/keys.test.js` (`VIEW_KEYS`), `test/image-format.test.js`
+(the fixtures). The harness's component DOM gained document fragments (diff rows under test).
+
+**Runtime checks** (`node scripts/smoke-image-preview.js`, Electron 44.4.5 / Chrome 152, git
+2.51.2, macOS 15, passing): the unstaged animated WebP (both sides decoded, the size change); the
+commit's PNG with `+ +` (400%, 256 px, computed `image-rendering: pixelated`), `0`, and `m` through
+the modes (computed `clip-path: inset(0px 0px 0px 32px)`, opacity 0.5, `mix-blend-mode: difference`,
+a 64×64 frame), a pointer drag of the divider to 25%; the SVG text diff (rendered first, Text shows 7
+rows, back to Preview); `lfs-cached.png` decoded from the local cache (`LFS 860aef726c`) and
+`lfs-missing.png` "not available locally"; HEIC "preview not supported"; the EXIF-rotated JPEG at
+40×80; the mislabeled PNG's note; the animated GIF; the AVIF; and in the conflicted merge Base /
+Ours (main) / Theirs (other) with three decoded images. The window capture still fails in this
+environment (`UnknownVizError`), so there is no screenshot: `node scripts/smoke-image-preview.js
+docs/screenshots/image-diff.png` makes one where capture works.
+
+**For I4.** The hook is `ops.previewSide`: like the LFS lookup after the first `judge`, an
+`unsupported` tier 2 side (HEIC, TIFF, PSD) can be handed to the OS thumbnailer and judged again as
+a PNG (`source: 'os-thumbnail'`, its own RevisionKey compared to `knownKey` after the original is
+resolved). A tier 2 git side over the soft cap is never read and comes back `too-large`, not
+`unsupported`. The renderer needs only a label for the new source (`PLImage.meta`'s `SOURCES`, e.g.
+"Preview by macOS"); comparison modes size from the decoded `naturalWidth` / `naturalHeight`, so a
+scaled thumbnail compares as it is. `test/fixtures/images/scan.heic` (64×64, from `sips`) is in the
+demo, and the smoke page script's `scan.heic` check expects "HEIC — preview not supported": I4
+changes that check.
 
 ---
 

@@ -12,8 +12,16 @@ minor versions may contain breaking changes.
 
 - Image preview in the diff view: PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files show before and
   after side by side, with dimensions, file size and the size change, on a checkerboard for
-  transparency, at Fit or 100%. Large images load on request; Git LFS pointers and formats that
-  can't be shown say so.
+  transparency. Large images load on request; formats that can't be shown say so.
+- Image comparison: besides side by side, **Swipe** (drag the divider between before and after),
+  **Onion skin** (fade after over before) and **Difference** (unchanged pixels turn black). Zoom
+  from 12.5% to 3200%, with Fit and 100%; pixels show as squares above 100%. Keys while an image
+  shows: + and - zoom, 0 fits, 1 is 100%, M switches the comparison mode.
+- An SVG's change opens as the rendered image, with a **Preview | Text** switch for its text diff.
+  The choice is remembered.
+- Images stored in Git LFS preview when their object is already downloaded (in `.git/lfs`); nothing
+  is ever fetched, and an object that isn't there says "not available locally".
+- A conflicted image shows the base, ours and theirs versions side by side.
 
 ## [0.2.1] - 2026-10-04
 

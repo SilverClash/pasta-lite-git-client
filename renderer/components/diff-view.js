@@ -8,6 +8,9 @@
 // (components/diff-staging.js): file / hunk buttons, line selection with a floating action bar, and
 // `s` / `u` shortcuts; hunks cut short by the caps (`data-truncated`, clipped lines) refuse them.
 // Pure row / spec / staging rules live in components/diff-model.js (window.PLDiff).
+// A binary file gets an image preview (components/image-preview.js, docs/plans/image-preview.md) in
+// place of the "Binary file — no preview" message when PLImage.wantsPreview; its header badge then
+// reads `image` instead of `binary` once the preview knows (PLImage.badge).
 //
 // Data (ops.commitDiffView / workdirDiffView): {file, sections?, fingerprint, truncated, maxLines?,
 // maxLineChars?, conflict?}. `sections` (several file views, e.g. a typechange = deletion + new file)
@@ -20,6 +23,7 @@
   const { el, util } = window.Components;
   const { displayName: dn, inTextField, modalOpen, short } = util;
   const D = window.PLDiff;
+  const Img = window.PLImage;
   const { CONTROLS, CONTROLS_G, ctlLabel, sectionsOf, sectionLabel } = D;
   const ROW_H = 20;
   const OVERSCAN = 30;
@@ -149,6 +153,8 @@
       const staging = window.PLDiffStaging.create({
         root, store, scroller, spacer, bodyWrap, rowH: ROW_H, current: () => current, topHunk,
       });
+      const preview = window.PLImagePreview.create({ store });
+      let kindBadge = null; // the shown diff's `binary` / `image` badge (PLImage.badge), updated in place
 
       /** Shown only while the store's centre pane is the diff (state.centre, derived from state.diff). */
       const syncHidden = () => { root.hidden = store.state.centre !== 'diff'; };
@@ -190,7 +196,11 @@
           if (file.isDeleted) badges.append(badge('deleted', 'deleted'));
           if (file.isRename || (origEntry && origEntry.status === 'R')) badges.append(badge('renamed', 'renamed'));
           if (file.isCopy || (origEntry && origEntry.status === 'C')) badges.append(badge('copied', 'renamed'));
-          if (file.isBinary) badges.append(badge('binary', 'binary'));
+          if (file.isBinary) {
+            const kind = Img.badge(spec, d.data, store.state.imagePreview);
+            kindBadge = badge(kind, kind);
+            badges.append(kindBadge);
+          }
           if (file.oldMode && file.newMode && file.oldMode !== file.newMode) {
             badges.append(badge(`mode ${file.oldMode} → ${file.newMode}`, 'mode'));
           }
@@ -232,6 +242,7 @@
       }
 
       function renderHeader(d) {
+        kindBadge = null;
         const sections = sectionsOf(d.data);
         const file = sections[0] || null;
         const multi = sections.length > 1;
@@ -386,6 +397,9 @@
         } else if (!sections.length) {
           parts.push(message('No changes'));
           return parts;
+        } else if (Img.wantsPreview(d.spec, data)) {
+          parts.push(preview.attach(d, D.emptyText(sections[0])));
+          return parts;
         } else if (sections.length === 1 && !sections[0].hunks.length) {
           parts.push(message(D.emptyText(sections[0]), sections[0].isBinary ? 'binary' : null));
           return parts;
@@ -416,6 +430,7 @@
         // canPick (hunk / line actions possible) is decided once per render (PLDiff.hunkDataOk).
         const canPick = D.hunkDataOk(d.spec, d.data, store.state.status);
         current = { spec: d.spec, data: d.data, flat: null, nodes: new Map(), maxChars: Infinity, canPick };
+        preview.detach(); // layoutBody attaches it again when this diff has one
         spacer.replaceChildren();
         pinned.hidden = true;
         pinned.dataset.hunk = '';
@@ -441,6 +456,8 @@
       function close() {
         current = null;
         lastSpec = null;
+        kindBadge = null;
+        preview.detach();
         staging.reset();
         spacer.replaceChildren();
         bodyWrap.replaceChildren();
@@ -498,12 +515,23 @@
       document.addEventListener('keydown', onKey);
 
       const unsub = store.subscribe(['diff'], update);
+      // The preview redraws itself; only the header's binary / image badge follows it here.
+      const unsubPreview = store.subscribe(['imagePreview'], (s) => {
+        if (!kindBadge || !s.diff || !s.diff.data) return;
+        const kind = Img.badge(s.diff.spec, s.diff.data, s.imagePreview);
+        if (kindBadge.textContent === kind) return;
+        kindBadge.textContent = kind;
+        kindBadge.className = `dv-badge dv-badge-${kind}`;
+      });
       const unsubBusy = store.subscribe(['busy'], staging.syncBusy);
       update(store.state);
       return () => {
         unsub();
         unsubBusy();
+        unsubPreview();
         staging.dispose();
+        preview.dispose();
+        store.actions.releaseImagePreview();
         ro.disconnect();
         if (raf) cancelAnimationFrame(raf);
         raf = 0;

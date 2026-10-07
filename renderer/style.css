@@ -84,6 +84,9 @@
   --diff-del-strong: color-mix(in srgb, var(--red) 35%, transparent);
   --diff-add-ln: rgba(168, 216, 142, 0.7);
   --diff-del-ln: rgba(245, 154, 140, 0.7);
+  /* image preview: the checkerboard behind transparent pixels (a light theme redefines just these two) */
+  --checker-a: #3b3530;
+  --checker-b: #2b2622;
 
   /* feedback: toasts, spinners, focus */
   --toast-error-bg: color-mix(in srgb, var(--red) 15%, var(--bg));

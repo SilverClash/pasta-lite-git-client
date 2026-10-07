@@ -26,7 +26,7 @@
 .dv-badge-new { color: var(--green-bright); background: color-mix(in srgb, var(--green) 15%, transparent); }
 .dv-badge-deleted { color: var(--red-bright); background: color-mix(in srgb, var(--red) 18%, transparent); }
 .dv-badge-renamed { color: var(--blue-bright); background: color-mix(in srgb, var(--blue) 18%, transparent); }
-.dv-badge-binary { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.dv-badge-binary, .dv-badge-image { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .dv-badge-mode { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 13%, transparent); text-transform: none; font-family: var(--mono); letter-spacing: 0; }
 
 .dv-header-right { display: flex; align-items: center; gap: 10px; flex: none; }

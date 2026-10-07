@@ -817,7 +817,7 @@ test('mounted WIP panel: ⌘↵ is left alone in another text field, without the
 });
 
 test('mounted diff view: Esc closes the diff; not in a text field, with a menu or dialog open, or once handled', async (tc) => {
-  const t = await mountComponent(tc, ['diff-model.js', 'diff-staging.js', 'diff-view.js'], 'diff-view', graphData());
+  const t = await mountComponent(tc, ['diff-model.js', 'diff-staging.js', 'image-preview.js', 'diff-view.js'], 'diff-view', graphData());
   let menuOpen = false;
   let dialogOpen = false;
   t.win.Components.menu.isOpen = () => menuOpen;

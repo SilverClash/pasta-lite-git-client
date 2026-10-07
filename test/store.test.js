@@ -1627,3 +1627,261 @@ test('continueDraft: null at first and after a repo switch; plain UI state other
   await answerRefresh(api, repoData({ commits: chain(['z']) }));
   await p;
 });
+
+// ------------------------------------------------------------------ image preview (docs/plans/image-preview.md §6.3)
+
+/** A fake URL api for the image cache: counts created and revoked object URLs. */
+function fakeUrls() {
+  let n = 0;
+  return {
+    created: 0,
+    revoked: [],
+    createObjectURL() { this.created++; return `blob:file:///u${++n}`; },
+    revokeObjectURL(url) { this.revoked.push(url); },
+  };
+}
+
+const SHA_B = 'b'.repeat(40);
+const pngSpec = (file = 'a.png') => ({ kind: 'commit', sha: SHA_B, file });
+const binaryDiff = (file = 'a.png') => {
+  const f = { oldPath: file, newPath: file, hunks: [], isBinary: true, oldMode: '100644', newMode: '100644' };
+  return { file: f, sections: [f], fingerprint: null, truncated: false, conflict: null };
+};
+/** An ImageSide as the op returns it ('image' with bytes). */
+const imageSide = (side, key, extra = {}) => ({
+  side, kind: 'image', source: 'commit', key, size: 3, format: 'png', extensionHint: 'png', mime: 'image/png',
+  mismatch: false, dims: { width: 1, height: 1 }, animated: false, bytes: new Uint8Array([1, 2, 3]), ...extra,
+});
+const sideCall = (which) => (c) => c.args[3] === which;
+
+/** A store with commit b open on `spec`'s binary diff, the preview's two reads pending. */
+async function openBinary(spec = pngSpec(), { urls = fakeUrls() } = {}) {
+  const t = await loadedStore(repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }), { urlApi: urls });
+  t.store.actions.openDiff(spec);
+  t.api.take('commitDiffView').resolve(binaryDiff(spec.file));
+  await flush();
+  return { ...t, urls, spec };
+}
+
+/** Resolve both pending image reads (old, new) of `op` with these sides. */
+async function landSides(api, oldSide, newSide, op = 'commitImageSide') {
+  api.take(op, sideCall('old')).resolve(oldSide);
+  api.take(op, sideCall('new')).resolve(newSide);
+  await flush();
+}
+
+test('image preview: a binary diff loads both sides (cancellable, one op id each); bytes go to the URL cache, never into state', async () => {
+  const seen = [];
+  const { api, store, urls, spec } = await openBinary();
+  store.subscribe(['diff'], (s) => seen.push(!!s.imagePreview));
+  const reads = api.pending('commitImageSide');
+  assert.deepEqual(reads.map((c) => c.args), [[SHA_B, 'a.png', null, 'old', {}], [SHA_B, 'a.png', null, 'new', {}]]);
+  assert.ok(reads[0].opId && reads[1].opId && reads[0].opId !== reads[1].opId, 'one op id per side');
+  assert.deepEqual(store.state.imagePreview, {
+    spec, old: { loading: true, side: null, url: null, error: null }, new: { loading: true, side: null, url: null, error: null },
+  });
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2', { format: 'webp', mime: 'image/webp' }));
+  const p = store.state.imagePreview;
+  assert.equal(p.old.url, 'blob:file:///u1');
+  assert.equal(p.new.url, 'blob:file:///u2');
+  assert.equal(p.new.side.format, 'webp');
+  assert.equal(p.old.side.bytes, undefined, 'the side is kept without its bytes');
+  assert.equal(urls.created, 2);
+  const json = JSON.stringify({ diff: store.state.diff, imagePreview: store.state.imagePreview });
+  assert.doesNotMatch(json, /bytes/, 'no bytes in state.diff or state.imagePreview');
+  assert.deepEqual(seen, [], 'the diff itself was not set again');
+});
+
+test('image preview: the slots exist before the diff body that shows them renders', async () => {
+  const { api, store } = await loadedStore(repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }), { urlApi: fakeUrls() });
+  const atLanding = [];
+  store.subscribe(['diff'], (s) => { if (s.diff && s.diff.data) atLanding.push(s.imagePreview && s.imagePreview.old.loading); });
+  store.actions.openDiff(pngSpec());
+  api.take('commitDiffView').resolve(binaryDiff());
+  await flush();
+  assert.deepEqual(atLanding, [true]);
+});
+
+test('image preview: working-copy sides use workdirImageSide with the spec options; text diffs ask for nothing', async () => {
+  const { api, store } = await loadedStore(repoData({ commits: chain(['b', 'a']), status: status({ oid: 'b', unstaged: [{ path: 'a.png', status: 'M' }] }) }), { urlApi: fakeUrls() });
+  const spec = { kind: 'workdir', file: 'a.png', staged: true, untracked: false, orig: 'o.png' };
+  store.actions.openDiff(spec);
+  api.take('workdirDiffView').resolve(binaryDiff());
+  await flush();
+  assert.deepEqual(api.pending('workdirImageSide').map((c) => c.args), [
+    ['a.png', { staged: true, untracked: false, orig: 'o.png' }, 'old', {}],
+    ['a.png', { staged: true, untracked: false, orig: 'o.png' }, 'new', {}],
+  ]);
+  store.actions.openDiff(wdSpec);
+  api.take('workdirDiffView').resolve({ file: { path: 'a.txt', hunks: [{ header: '@@' }] }, fingerprint: 'f' });
+  await flush();
+  assert.equal(api.count('workdirImageSide'), 2, 'a text diff: no preview reads');
+  assert.equal(store.state.imagePreview, null);
+});
+
+test('image preview: switching files cancels the reads in flight, and they never land', async () => {
+  const { api, store, spec } = await openBinary();
+  const first = api.pending('commitImageSide');
+  store.actions.openDiff(pngSpec('b.png'));
+  assert.equal(store.state.imagePreview, null, 'dropped as soon as another file is opened');
+  await flush();
+  assert.deepEqual(api.app.cancelled.sort(), first.map((c) => c.opId).sort(), 'both reads cancelled');
+  api.take('commitDiffView').resolve(binaryDiff('b.png'));
+  await flush();
+  assert.equal(store.state.imagePreview.spec.file, 'b.png');
+  // the first file's sides answer late: ignored
+  first[0].resolve(imageSide('old', 'stale1'));
+  first[1].reject({ message: 'Cancelled', kind: 'aborted' });
+  await flush();
+  assert.equal(store.state.imagePreview.old.loading, true, 'b.png still loading its own sides');
+  assert.equal(store.state.imagePreview.old.side, null);
+  assert.notEqual(spec.file, store.state.imagePreview.spec.file);
+});
+
+test('image preview: closing the diff or selecting another row drops it and cancels its reads', async () => {
+  const { api, store } = await openBinary();
+  store.actions.closeDiff();
+  assert.equal(store.state.imagePreview, null);
+  await flush();
+  assert.equal(api.app.cancelled.length, 2);
+  store.actions.openDiff(pngSpec());
+  api.take('commitDiffView').resolve(binaryDiff());
+  await flush();
+  store.actions.select({ kind: 'commit', sha: 'a' });
+  assert.equal(store.state.imagePreview, null, 'select closes the diff, and the preview with it');
+  await flush();
+  assert.equal(api.app.cancelled.length, 4);
+  for (const c of api.pending('commitImageSide')) c.resolve(imageSide(c.args[3], 'late'));
+  await flush();
+  assert.equal(store.state.imagePreview, null, 'nothing lands after the close');
+});
+
+test('image preview: a reload sends each side\'s key; unchanged sides keep their URL and notify nobody', async () => {
+  const { api, store, urls } = await openBinary();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const shown = store.state.imagePreview;
+  const changes = [];
+  store.subscribe(null, (s, changed) => changes.push(...changed));
+  const p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(binaryDiff());
+  await p;
+  await flush();
+  const reads = api.pending('commitImageSide');
+  assert.deepEqual(reads.map((c) => c.args[4]), [{ knownKey: 'k1' }, { knownKey: 'k2' }]);
+  reads[0].resolve({ side: 'old', key: 'k1', unchanged: true });
+  reads[1].resolve({ side: 'new', key: 'k2', unchanged: true });
+  await flush();
+  assert.equal(store.state.imagePreview, shown, 'the same preview object');
+  assert.deepEqual(changes, [], 'nothing set');
+  assert.equal(urls.created, 2, 'no bytes read again');
+
+  // a side that changed on disk lands with a new URL; the other stays
+  const p2 = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(binaryDiff());
+  await p2;
+  await flush();
+  api.take('commitImageSide', sideCall('old')).resolve({ side: 'old', key: 'k1', unchanged: true });
+  api.take('commitImageSide', sideCall('new')).resolve(imageSide('new', 'k3'));
+  await flush();
+  assert.equal(store.state.imagePreview.old.url, shown.old.url);
+  assert.equal(store.state.imagePreview.new.url, 'blob:file:///u3');
+});
+
+test('image preview: an "unchanged" for a key the slot no longer has re-reads the side in full', async () => {
+  const { api, store } = await openBinary();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(binaryDiff());
+  await p;
+  await flush();
+  api.take('commitImageSide', sideCall('old')).resolve({ side: 'old', key: 'other', unchanged: true });
+  await flush();
+  const again = api.take('commitImageSide', sideCall('old'));
+  assert.deepEqual(again.args[4], {}, 'no knownKey this time');
+});
+
+test('image preview: Load preview forces one side; the soft cap lifts only there', async () => {
+  const { api, store, spec } = await openBinary();
+  const big = { ...imageSide('new', 'big'), kind: 'too-large', soft: true, limit: 'size', max: 20, mime: null, bytes: undefined, size: 30 };
+  await landSides(api, imageSide('old', 'k1'), big);
+  assert.equal(store.state.imagePreview.new.side.kind, 'too-large');
+  store.actions.loadImagePreview(spec, { force: true, side: 'new' });
+  assert.equal(store.state.imagePreview.new.loading, true);
+  assert.equal(store.state.imagePreview.old.side.key, 'k1', 'the other side stays');
+  const forced = api.pending('commitImageSide');
+  assert.equal(forced.length, 1);
+  assert.deepEqual(forced[0].args.slice(3), ['new', { force: true }]);
+  forced[0].resolve(imageSide('new', 'big', { size: 30 }));
+  await flush();
+  assert.equal(store.state.imagePreview.new.side.kind, 'image');
+  store.actions.loadImagePreview(pngSpec('other.png'), { force: true, side: 'new' });
+  assert.equal(api.pending('commitImageSide').length, 0, 'not for a file that isn\'t open');
+});
+
+test('image preview: op errors land in their slot; aborted is ignored; stale keeps what is shown', async () => {
+  const { api, store } = await openBinary();
+  api.take('commitImageSide', sideCall('old')).reject({ message: 'Cancelled', kind: 'aborted' });
+  api.take('commitImageSide', sideCall('new')).reject({ message: 'not a path', kind: 'invalid-args' });
+  await flush();
+  assert.equal(store.state.imagePreview.old.loading, true, 'aborted: no error shown');
+  assert.deepEqual(store.state.imagePreview.new, { loading: false, side: null, url: null, error: 'not a path' });
+
+  store.actions.loadImagePreview(store.state.imagePreview.spec);
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const shown = store.state.imagePreview;
+  const p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(binaryDiff());
+  await p;
+  await flush();
+  api.take('commitImageSide', sideCall('old')).reject({ message: 'changed while read', kind: 'stale' });
+  api.take('commitImageSide', sideCall('new')).resolve({ side: 'new', key: 'k2', unchanged: true });
+  await flush();
+  assert.equal(store.state.imagePreview, shown, 'stale on a reload: the shown side stays');
+});
+
+test('image preview: a reload that turns into a text diff or an error drops the preview', async () => {
+  const { api, store } = await openBinary();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const p = store.actions.reloadDiff();
+  api.take('commitDiffView').reject({ message: 'too big' });
+  await p;
+  assert.equal(store.state.imagePreview, null);
+  assert.equal(store.state.diff.error, 'too big');
+});
+
+test('image preview: a repo switch drops it and revokes every cached URL; release does too', async () => {
+  const { api, store, urls } = await openBinary();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const p = store.actions.loadRepo({ root: '/s', name: 's' });
+  assert.equal(store.state.imagePreview, null);
+  assert.deepEqual(urls.revoked.sort(), ['blob:file:///u1', 'blob:file:///u2']);
+  await flush(1);
+  await answerRefresh(api, repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }));
+  await p;
+
+  store.actions.openDiff(pngSpec());
+  api.take('commitDiffView').resolve(binaryDiff());
+  await flush();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  store.actions.releaseImagePreview();
+  assert.equal(store.state.imagePreview, null);
+  assert.equal(urls.revoked.length, 4);
+});
+
+test('image preview: switching back to a file already seen reuses its cached URLs (git keys never change)', async () => {
+  const { api, store, urls } = await openBinary();
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const first = store.state.imagePreview;
+  store.actions.openDiff(pngSpec('b.png'));
+  api.take('commitDiffView').resolve(binaryDiff('b.png'));
+  await flush();
+  await landSides(api, imageSide('old', 'k3'), imageSide('new', 'k4'));
+  store.actions.openDiff(pngSpec());
+  api.take('commitDiffView').resolve(binaryDiff());
+  await flush();
+  assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{}, {}], 'a new preview: no keys sent');
+  await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));
+  assert.equal(store.state.imagePreview.old.url, first.old.url);
+  assert.equal(store.state.imagePreview.new.url, first.new.url);
+  assert.equal(urls.created, 4, 'the cache answered the second visit');
+});

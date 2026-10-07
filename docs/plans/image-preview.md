@@ -5,8 +5,9 @@ is selected. It covers the WIP panel (unstaged, staged and untracked files) and 
 panel (commits and stashes): before and after side by side, metadata, zoom, then comparison modes,
 text-backed images (SVG, Git LFS pointers) and, as a gated last step, formats Chromium can't decode.
 
-Status: **a plan, nothing built.** Written 2026-10-07 on `feat/image-preview` (from `0.2.1`,
-`debfb3a`). It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
+Status: **I1 (backend) built** on `feat/image-preview`; I2–I4 are still a plan. Written
+2026-10-07 (from `0.2.1`, `debfb3a`). Where I1 differs from this plan, §5.7 says what was built and
+why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
 `renderer/components/diff-view.js`, `renderer/components/diff-model.js`), the op registry and runner
 (`src/ops.js`, `src/runner.js`), the IPC table (`src/ipc-contract.js`) and the store contract
 (`renderer/store.js`). The roadmap lists this as "image diff" under **Diff: split, whitespace, word
@@ -150,12 +151,12 @@ roles map onto the layering it already uses (CONTRIBUTING.md "Architecture"):
 | **DiffSpec** | What the diff view shows; already exists (`renderer/store.js:46`) | `{kind:'workdir', file, staged, untracked, orig?}` \| `{kind:'commit', sha, file, orig?}` |
 | **Side** | One of the two revisions being compared | `'old'` (before) \| `'new'` (after) |
 | **BlobSource** | Where a side's bytes come from | `'commit'` (a tree in history), `'head'` (HEAD's tree), `'index'` (stage 0, or stages 1–3 in I3), `'worktree'` (the file on disk), `'lfs-cache'` (I3) |
-| **BlobRevision** | One resolved side, before reading | `{side, source, oid \| null, mode, size, statKey?}`: `oid` for git objects, `statKey` (`dev:ino:size:mtimeMs`) for the worktree |
+| **BlobRevision** | One resolved side, before reading | `{side, source, oid \| null, mode, size, statKey?, abs?, absent?, special?}`: `oid` for git objects, `statKey` (`dev:ino:size:mtimeNs`) and `abs` for the worktree (main only, never sent) |
 | **RevisionKey** | Cache and identity key of a side's bytes | `oid` for git sides, `wt:<statKey>` for the worktree, `lfs:<sha256>` for LFS (I3) |
 | **ImageFormat** | A catalogue entry | `{id, label, mime, tier: 1 \| 2 \| 'probe', extensions, animatable}`, e.g. `{id:'webp', label:'WebP', mime:'image/webp', tier:1, extensions:['webp'], animatable:true}` |
 | **FormatMatch** | What sniffing concluded | `{format \| null, byContent: boolean, extensionHint \| null, mismatch: boolean, animated?: boolean}` |
 | **PreviewKind** | How a side can be shown (the `ImageSide` state) | `'image'` (Tier 1, bytes attached), `'absent'` (added or deleted: no such side), `'too-large'`, `'lfs-pointer'`, `'unsupported'` (a recognised Tier 2 format, no decoder), `'not-image'` (content isn't a known image), `'special'` (symlink 120000, submodule 160000) |
-| **ImageSide** | The value object the op returns for one side | `{side, kind, source, key, size, format, mime, mismatch, dims \| null, animated, lfs?: {oid, size}, bytes?: Uint8Array, unchanged?: true}` |
+| **ImageSide** | The value object the op returns for one side | `{side, kind, source, key, size, format, extensionHint, mime, mismatch, dims \| null, animated: true \| false \| null}`, plus `bytes` (`image`), `lfs: {oid, size}` (`lfs-pointer`), `soft`, `limit: 'size' \| 'svg' \| 'pixels'`, `max` (`too-large`); or `{side, key, unchanged: true}` (§5.7) |
 | **PreviewPolicy** | The limits and rules, one frozen object | §5.3 |
 | **ImagePreview** | The renderer's aggregate for one DiffSpec | `{specKey, old: SideSlot, new: SideSlot}`; `SideSlot = {loading, side: ImageSide (no bytes) \| null, url \| null, error \| null, decoded?: {width, height}}` |
 | **ImageDelta** | Derived comparison | `{bytes: new.size − old.size, pct, dimsChanged, formatChanged}` |
@@ -347,8 +348,9 @@ The numbers are Q1. The caps are per side.
 ### 5.4 Errors
 
 Only existing kinds (`src/error-kinds.js`): `invalid-args` (arguments), `outside` / `symlink` (the
-worktree guard), `stale` (an untracked path git no longer lists), `aborted` (cancelled), `bare-repo`
-(the gate, for `workdirImageSide`). Every "can't preview" outcome is an `ImageSide.kind`.
+worktree guard), `stale` (a worktree path that is neither in the index nor listed as untracked, or
+a file that changed between resolving and reading it), `conflict` (an unmerged path: the index has
+no stage 0), `aborted` (cancelled), `bare-repo` (the gate, for `workdirImageSide`). Every "can't preview" outcome is an `ImageSide.kind`.
 `test/error-kinds.test.js` stays green with no catalogue change.
 
 ### 5.5 Main-process cost
@@ -366,6 +368,78 @@ opId are cancellable while running, and their git processes are killed (`src/run
 When the spec changes (another file, j/k in the graph, close), the store calls `app.cancel` for
 the outstanding opIds and bumps a generation counter. Only the latest generation lands, the same
 guard as `diffGen` (`renderer/store.js:688-693`).
+
+### 5.7 As built (I1)
+
+What I1 actually ships, where it differs from or pins down §2–§5. The renderer (I2) builds on this.
+
+**Ops** (`src/ops.js` READ). Both are `op(check, act)`, so the arguments are checked before
+anything runs, and the act gets the runner's signal, which lets the worktree read stop on cancel
+too:
+
+```js
+commitImageSide(commit, file, orig, side, {knownKey?, force?})   // bare: true
+workdirImageSide(file, {staged?, untracked?, orig?}, side, {knownKey?, force?})
+// -> ImageSide | {side, key, unchanged: true}
+```
+
+`commit` is a full object id. `file` and `orig` pass `relPath` (`orig` may be null). `side` is
+`'old'` or `'new'`. `knownKey` is a non-empty string of at most 200 characters, and only `true`
+counts for `force`. `untracked` wins over `staged`, as in `diffWorkdir`.
+
+**ImageSide** (the `src/image-preview.js` header). Every side has `{side, kind, source, key, size,
+format, extensionHint, mime, mismatch, dims, animated}`:
+- `source`: `'commit'`, `'head'`, `'index'` or `'worktree'`. `key`: the blob oid,
+  `wt:<dev:ino:size:mtimeNs>`, or null when absent. `size` in bytes (null when absent or special).
+- `format` and `extensionHint` are catalogue ids (`FORMATS[id].label` for the pane). `mime` is set
+  only for `image`, else null.
+- `dims`: `{width, height}` from the header (ICO / CUR add `count`, the number of entries), or
+  null when unknown. `animated`: `true`, `false`, or `null` when unknown (SVG, or the bytes end
+  first).
+- `too-large` adds `soft` (true: Load preview, i.e. `force`, will load it), `limit` (`'size'`,
+  `'svg'` or `'pixels'`) and `max` (that limit, in bytes or pixels). The plan's `{soft: true}` /
+  `{pixels: true}` became this one shape.
+- `lfs-pointer` adds `lfs: {oid, size}`, and `image` adds `bytes`.
+
+**Deviations and decisions**
+- **What `force` lifts**: only the soft byte cap. The SVG cap and the pixel cap are hard, like the
+  50 MB cap ("Too large to preview").
+- **Sides over the cap**: a git blob is **not read at all**, not even its head (`cat-file`
+  can't stop after 64 KiB without failing), so its format is unknown. It is `too-large` when the
+  file name has an image extension, else `not-image`, so a 30 MB `.zip` never offers "Load
+  preview". A worktree file reads its first `sniffBytes`, so its `too-large` has `format` and
+  `dims`.
+- **No pixel cap for SVG**: its `width` / `height` don't decide what Chromium rasterizes (the
+  visible size does). The 5 MB SVG cap applies.
+- **The catalogue**: tier 2 and probe entries have `mime: null`, so they can never reach a Blob.
+  `.svgz` is a tier 2 entry (`svgz`), recognised only by gzip bytes plus the `.svgz` extension
+  (gzip alone is no image), so it says "SVGZ — preview not supported" (Q6). The backend returns
+  JPEG XL (`jxl`, tier `'probe'`) as `unsupported` (Q7); a renderer probe (§3.3) would need an op
+  option to send its bytes. HEIC (every HEVC brand, and `mif1` / `msf1` with one), TIFF (BigTIFF
+  too) and PSD / PSB are recognised for I4, with `dims` for HEIC (`ispe`) and PSD.
+- **The worktree read** compares the open file's `fstat` with the stat key resolved just before
+  (`dev:ino:size:mtimeNs`, BigInt stats). If the file was saved in between, or a parent folder was
+  swapped for a link, the read fails `stale` instead of returning other bytes. The watcher's
+  reload then retries.
+- **A tracked symlink in the worktree** is `special` (the guard runs with `allowFinalLink`), not a
+  `symlink` error. A path *through* a symlinked folder is still refused.
+- **Intent-to-add** (`git add -N`): the index side is the empty blob, so `not-image` with size 0.
+  The diff section says "new file", so the view should treat it like `absent`.
+- **Moved code**: `indexEntry` / `headEntry` moved from `src/hunks.js` to `src/blob-revisions.js`,
+  and hunks.js imports them (`headEntry` is now built on `treeEntry`, with the same results).
+  `baseOf` moved from `src/git.js` to `src/git-reads.js`, which exports it.
+- **Lint**: `src/image-format.js` is already in `eslint.config.js`'s renderer block, and
+  `PLImageFormat` in `RENDERER_GLOBALS` (the first half of I2 task 4), because the
+  `window.PLImageFormat` export needs them. The `<script>` tag and loading it in the harness are
+  still I2's.
+- **Tests**: `test/image-format.test.js`, `test/image-preview.test.js`, and a builder module,
+  `test/image-fixtures.js` (minimal valid bytes per format, shared by both). Small caps go through
+  `require('src/image-preview').testHooks.policy`. `test/ops-in-progress.test.js` lists
+  `workdirImageSide` among the working-tree ops no flow gates (`NO_FLOW`), like `workdirDiffView`.
+
+**Decided for v1** (§13): the caps as proposed (Q1); Git LFS from the local cache only, never the
+network (Q3, I3); `.svgz` unsupported (Q6); JPEG XL not enabled (Q7); binary units, 1 KB =
+1,024 B (Q8); HEIC / TIFF / PSD through the OS thumbnailer in I4 (Q2, option A).
 
 ---
 
@@ -457,7 +531,7 @@ preview, not the virtualized rows.
 - `clear()` on repo switch and when the diff view unmounts.
 - `URL` is injected (`create(urlApi)`) so `test/` can count create / revoke calls without a DOM.
 - A git oid key is immutable, so switching back and forth between files or commits never refetches.
-  A worktree key (`wt:dev:ino:size:mtime`) changes on every save.
+  A worktree key (`wt:dev:ino:size:mtimeNs`) changes on every save.
 
 ### 6.5 Comparison modes (I3)
 

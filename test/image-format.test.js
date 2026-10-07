@@ -1,7 +1,8 @@
 'use strict';
 // src/image-format.js: the catalogue, content sniffing (mislabeled files included), header
 // dimensions, Git LFS pointers, and hostile bytes (truncations, loops, odd box sizes). Fixtures
-// are built here byte by byte, so no binary files are needed.
+// are built here byte by byte; the last test checks the demo repository's real image files
+// (test/fixtures/images) too.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -367,4 +368,23 @@ test('parseLfsPointer: refusals', () => {
   assert.equal(parseLfsPointer(bytes(`${v1}oid sha256:${OID}\nsize 12\n`, [0])), null, 'a NUL');
   assert.equal(parseLfsPointer(Buffer.from(`${v1}oid sha256:${OID}\nsize 12\nnote café\n`, 'utf8')), null, 'non-ASCII');
   assert.equal(parseLfsPointer(null), null);
+});
+
+test('the demo repository\'s image files (test/fixtures/images, made by real encoders) sniff as their names say', () => {
+  const dir = path.join(__dirname, 'fixtures', 'images');
+  const want = {
+    'logo-v1.png': ['png', false, '64×64'], 'logo-v2.png': ['png', false, '64×64'],
+    'hero-v1.webp': ['webp', true, '96×64'], 'hero-v2.webp': ['webp', true, '96×64'],
+    'sprite.gif': ['gif', true, '96×64'], 'photo.jpg': ['jpeg', false, '80×40'], // stored 80×40, EXIF orientation 6
+    'badge.avif': ['avif', false, '64×64'], 'scan.heic': ['heic', false, '64×64'],
+    'icon-v1.svg': ['svg', null, '48×48'], 'icon-v2.svg': ['svg', null, '48×48'],
+    'mislabeled.png': ['jpeg', false, '48×48'],
+  };
+  assert.deepEqual(fs.readdirSync(dir).sort(), Object.keys(want).sort());
+  for (const [file, [format, animated, size]] of Object.entries(want)) {
+    const b = fs.readFileSync(path.join(dir, file));
+    const m = sniff(b, { path: file });
+    const d = dimensions(b, m.format);
+    assert.deepEqual([m.format, m.animated, d && `${d.width}×${d.height}`, m.mismatch], [format, animated, size, file === 'mislabeled.png'], file);
+  }
 });

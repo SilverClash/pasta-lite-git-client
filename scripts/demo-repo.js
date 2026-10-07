@@ -4,8 +4,17 @@
 // History: main with feature/fix branches, merges, an octopus merge, tags, a bare "origin"
 // with remote branches (local main is one commit ahead of origin/main), stashes, and a dirty working tree
 // (staged + unstaged + untracked, incl. a Latin-1 file and a rename).
+// Images (the diff view's image preview, docs/plans/image-preview.md §10.4) under images/: a PNG logo
+// and an SVG icon changed by a later commit, an animated WebP changed in the working tree, an
+// EXIF-rotated JPEG, an animated GIF, an AVIF, a HEIC (no preview: "preview not supported"), a .png
+// holding JPEG bytes, and two Git LFS pointers: lfs-cached.png, whose object is put in the local LFS
+// cache (.git/lfs/objects), and lfs-missing.png, whose object isn't. The bytes are the small files in
+// test/fixtures/images, made once with ImageMagick 7 (PNG, WebP, GIF, JPEG; the JPEG's EXIF
+// orientation 6 added by hand), ffmpeg + SVT-AV1 (AVIF) and macOS sips (HEIC).
+// scripts/smoke-image-preview.js checks the image preview on this repository.
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const dir = path.resolve(process.argv[2] || 'demo-repo');
@@ -44,6 +53,10 @@ function commit(msg, files, who = n % authors.length) {
   gitWith({ GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email }, dir, 'commit', '-q', '-m', msg);
 }
 const lines = (k, len = 30) => Array.from({ length: len }, (_, i) => `line ${i + 1} ${k}`).join('\n') + '\n';
+const image = (f) => fs.readFileSync(path.join(__dirname, '..', 'test', 'fixtures', 'images', f));
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+/** A Git LFS pointer file (spec v1) for `bytes`. */
+const lfsPointer = (bytes) => `version https://git-lfs.github.com/spec/v1\noid sha256:${sha256(bytes)}\nsize ${bytes.length}\n`;
 
 git(dir, 'init', '-q', '-b', 'main');
 commit('chore: initial commit', { 'README.md': '# Demo\n', 'src/app.js': lines('v1') });
@@ -70,6 +83,19 @@ t += 600;
 git(dir, 'merge', '-q', '--no-ff', '-m', 'Merge feature/a, feature/b and fix/unicode', 'feature/a', 'feature/b', 'fix/unicode');
 git(dir, 'tag', 'v1.1.0');
 for (let i = 0; i < 12; i++) commit(`chore: routine change ${i + 1}\n\nLonger body text explaining change ${i + 1}.`, { 'CHANGELOG.md': lines(`c${i}`, 5 + i) });
+commit('feat(images): logo, icons and photos', {
+  'images/logo.png': image('logo-v1.png'),
+  'images/icon.svg': image('icon-v1.svg'),
+  'images/hero.webp': image('hero-v1.webp'),
+  'images/photo.jpg': image('photo.jpg'),
+  'images/sprite.gif': image('sprite.gif'),
+  'images/badge.avif': image('badge.avif'),
+  'images/scan.heic': image('scan.heic'),
+  'images/mislabeled.png': image('mislabeled.png'),
+  'images/lfs-cached.png': lfsPointer(image('logo-v2.png')),
+  'images/lfs-missing.png': lfsPointer(image('hero-v2.webp')),
+});
+commit('feat(images): new logo and icon', { 'images/logo.png': image('logo-v2.png'), 'images/icon.svg': image('icon-v2.svg') });
 git(dir, 'switch', '-q', '-c', 'feature/long-running', 'HEAD~6');
 commit('wip: experiment', { 'exp.txt': 'x\n' });
 git(dir, 'switch', '-q', 'main');
@@ -95,4 +121,12 @@ git(dir, 'mv', 'b.txt', 'renamed-b.txt');
 fs.writeFileSync(path.join(dir, 'latin1.txt'), Buffer.from('caf\xe9 cr\xe8me\n', 'latin1'));
 fs.mkdirSync(path.join(dir, 'notes'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'notes', 'new file.md'), '# New\n\nuntracked\n');
+fs.writeFileSync(path.join(dir, 'images', 'hero.webp'), image('hero-v2.webp'));
+
+// The local Git LFS cache: lfs-cached.png's object (lfs-missing.png's is never downloaded).
+const cached = image('logo-v2.png');
+const oid = sha256(cached);
+const objects = path.join(dir, '.git', 'lfs', 'objects', oid.slice(0, 2), oid.slice(2, 4));
+fs.mkdirSync(objects, { recursive: true });
+fs.writeFileSync(path.join(objects, oid), cached);
 console.log(dir);

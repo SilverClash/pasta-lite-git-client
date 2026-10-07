@@ -48,6 +48,11 @@ module.exports = [
     languageOptions: { globals: { ...globals.browser } },
   },
   {
+    // Smoke page scripts (PL_SMOKE_JS, main/smoke.js): evaluated in the renderer page, not Node.
+    files: ['scripts/smoke/**/*.js'],
+    languageOptions: { sourceType: 'script', globals: { ...globals.browser } },
+  },
+  {
     // Renderer: plain scripts loaded by <script> tags (no modules, no bundler). Most of them
     // also export through module.exports when a test requires them under Node.
     // src/error-kinds.js and src/image-format.js (the image preview's format catalogue) are loaded

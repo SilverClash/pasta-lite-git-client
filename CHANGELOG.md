@@ -8,6 +8,13 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- Image preview in the diff view: PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files show before and
+  after side by side, with dimensions, file size and the size change, on a checkerboard for
+  transparency, at Fit or 100%. Large images load on request; Git LFS pointers and formats that
+  can't be shown say so.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added

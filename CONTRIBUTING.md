@@ -195,7 +195,10 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
   resolve one side of a diff to a git blob or worktree file and read its bytes under size caps
   (`src/blob-revisions.js`), and `src/image-preview.js` turns them into an `ImageSide` (an image
   with its bytes, or why there is none). `src/image-format.js` sniffs the format from the content
-  and is shared with the renderer, like `src/error-kinds.js`.
+  and is shared with the renderer, like `src/error-kinds.js`. In the renderer the store loads both
+  sides into `state.imagePreview` after a binary diff lands, the bytes go into a blob: URL cache
+  (`renderer/image-cache.js`) and never into state, and `renderer/components/image-preview.js`
+  shows them in place of the binary message (rules in `components/image-model.js`).
 - **`test/`** has one `node:test` file per area. Git-layer tests run against throwaway repos
   (`test/helpers.js`); renderer tests load the scripts with a fake `window` and DOM
   (`test/renderer-harness.js`).

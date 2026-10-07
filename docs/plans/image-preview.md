@@ -5,9 +5,9 @@ is selected. It covers the WIP panel (unstaged, staged and untracked files) and 
 panel (commits and stashes): before and after side by side, metadata, zoom, then comparison modes,
 text-backed images (SVG, Git LFS pointers) and, as a gated last step, formats Chromium can't decode.
 
-Status: **I1 (backend) built** on `feat/image-preview`; I2–I4 are still a plan. Written
-2026-10-07 (from `0.2.1`, `debfb3a`). Where I1 differs from this plan, §5.7 says what was built and
-why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
+Status: **I1–I2 built** on `feat/image-preview` (the backend, and the side-by-side preview in the
+renderer); I3–I4 are still a plan. Written 2026-10-07 (from `0.2.1`, `debfb3a`). Where I1 and I2
+differ from this plan, §5.7 and §6.7 say what was built and why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
 `renderer/components/diff-view.js`, `renderer/components/diff-model.js`), the op registry and runner
 (`src/ops.js`, `src/runner.js`), the IPC table (`src/ipc-contract.js`) and the store contract
 (`renderer/store.js`). The roadmap lists this as "image diff" under **Diff: split, whitespace, word
@@ -551,6 +551,92 @@ New `KEYS` entries (`renderer/keys.js`), active only while an image preview is s
 zoom, `0` Fit, `1` 100%, `m` cycle mode. They must not collide with the diff view's `n` / `p`
 (`diff-view.js:493-496`) or global keys. I3 checks the full `KEYS` table, and
 `test/keys.test.js` covers it.
+
+### 6.7 As built (I2)
+
+What I2 actually ships, where it differs from or pins down §6.1–§6.4 and §11.2. I3 builds on this.
+
+**Files.** `renderer/image-cache.js` (`PLImageCache`), `renderer/components/image-model.js`
+(`PLImage`, pure), `renderer/components/image-preview.js` (`PLImagePreview.create({store})`, the
+view), `renderer/components/image-preview.css`; edited `renderer/store.js`,
+`renderer/components/diff-view.js`, `renderer/index.html` (CSP, scripts, stylesheet),
+`renderer/style.css` (`--checker-a`, `--checker-b`), `renderer/components/diff-view.css` (the `image`
+badge), `eslint.config.js`, `test/renderer-harness.js`. Tests: `test/image-model.test.js`,
+`test/image-cache.test.js`, `test/image-preview-ui.test.js` (the mounted diff view on the fake DOM,
+the CSP and the script order), and new cases in `test/store.test.js` and `test/diff-view.test.js`.
+
+**`blob:` from the `file://` page: verified in the real app.** A `--smoke` run (Electron 44.4.5,
+Chrome 152) with a `PL_SMOKE_JS` script: under the old CSP an `<img>` with a `blob:` URL fails to
+load (a `data:` URL loads); with `img-src 'self' data: blob:` the PNG and an SVG load, the URLs are
+`blob:file:///<uuid>`, and the SVG's `<script>` and `onload` do not run (the page title is
+unchanged). So no `data:` fallback was built; it would be a one-line change in `PLImageCache.put`.
+
+**Script order.** `../src/image-format.js` follows `../src/error-kinds.js`; `image-cache.js` and
+`components/image-model.js` load **before `store.js`** (the store uses `PLImage.wantsPreview` /
+`sameTarget` and owns the cache), like `components/rebase-model.js`. Only the view,
+`components/image-preview.js`, loads just before `components/diff-view.js`. The harness loads the
+first three in `loadRenderer` (not `loadComponentHelpers`), so every store test has them.
+
+**Store.**
+- `state.imagePreview = {spec, old: Slot, new: Slot}`: the open diff's spec itself (not a
+  `specKey`); `PLImage.sameTarget` (kind, file, staged, sha, as `PLDiff.sameSpec`) decides "the same
+  file". `Store.create(api, {urlApi})`: the URL api is injectable for the tests.
+- **Dropping is in `set()`**: whenever `diff` changes to null or to another file, `set()` cancels
+  the reads in flight (`app.cancel` per op id), bumps the preview generation, unpins the cache and
+  sets `imagePreview` to null in the same notification, instead of patching every place that sets
+  `diff: null` (close, select, the rebase editor, a refresh, a repo switch).
+- `loadDiff` calls `previewFor(spec, data)` **before** the diff lands, so the body that shows the
+  preview renders with its loading slots in place. It runs on **every** fetch, a reload included,
+  even when the diff data is unchanged: a binary diff's text ("Binary files … differ") is the same
+  whatever the bytes are, so the preview can't ride on the diff's change detection. The `knownKey`
+  of each side keeps that cheap: an unchanged side is one `ls-tree` / `ls-files` / `fstat` and sets
+  nothing.
+- Per side: a generation (a newer read wins) and the op id of the running read (cancelled when a
+  newer one starts). `aborted` never lands; `stale` on a side already shown keeps it (the watcher's
+  reload follows); any other error is the slot's `error`. An `unchanged` reply for a key the slot no
+  longer holds re-reads the side without `knownKey`.
+- `loadImagePreview(spec, {force, side})` is also the Load preview action: `force` with one `side`
+  re-reads only that side (shown as loading meanwhile). `releaseImagePreview()` (the diff view
+  unmounting) also empties the URL cache; `loadRepo` empties it too.
+
+**Cache.** As §6.4, plus: `put` never evicts the key it just put (with both slots pinned and the
+cache at its limit it would otherwise revoke the URL it returns), and `pin` runs the eviction too.
+
+**View.**
+- **The delta and Fit | 100% are in a summary bar at the top of the preview**, not in the diff
+  header: the header is rebuilt with every diff render, while zoom and decoded sizes are the
+  preview's own state, and a side landing must redraw only the preview. The header only swaps its
+  badge in place (`PLImage.badge`: `image` by the file's extension while loading, then by content:
+  any side with a format, tier 2 included, or an LFS pointer; else `binary`; Q9).
+- The summary bar, the pane row, each pane and each `<img>` are made once per file and updated in
+  place, so a side landing doesn't move focus or reset a pane's scroll (a test checks it).
+- Fit is computed (`PLImage.scaledSize`) from the stage's size and `naturalWidth` / `naturalHeight`
+  after the `load` event (a `ResizeObserver` on the preview re-fits), not with CSS `max-width`: an
+  image is hidden (`visibility`) until it has its size, so a large one never flashes at 100%.
+- "Loading image…" appears after 150 ms through a CSS animation delay, not a timer.
+- The size change is coloured like the diff stats (larger green, smaller red).
+- The intent-to-add old side (`not-image`, size 0, source `index`) counts as absent: one "Added"
+  pane (`PLImage.isAbsent`). An emptied new side says "Empty file".
+- A `not-image` side next to an image says "Not an image — no preview"; a `special` one "Not a
+  regular file — no preview". When neither side has anything to show (a binary non-image, both
+  decodes failed) the binary message stays, plus "Couldn't decode this PNG" after a decode failure.
+- Chromium decodes a **truncated** PNG partially and fires `load`, so it shows the rows it has; only
+  undecodable data fires `error` ("Couldn't decode this image"). Both were checked in the real app.
+- Not in I2 (I3): zoom steps, `image-rendering: pixelated` above 100%, keyboard shortcuts, the
+  comparison modes, text-backed previews (`wantsPreview` is binary-only), conflicts.
+
+**Themes.** The app has only its dark theme (`renderer/style.css`); the checkerboard uses the two new
+`:root` tokens, which a light theme only has to redefine.
+
+**Runtime checks** (`--smoke` with `PL_SMOKE_JS` on a scratch repository, git 2.51.2, macOS 15):
+an unstaged PNG (index vs working copy), a commit's WebP (dimensions and size changed), an untracked
+and an added WebP ("Added"), an SVG with `<script>` / `onload` marked `binary` (renders, runs
+nothing), a `.png` holding JPEG bytes (mismatch note), a HEIC ("HEIC — preview not supported"), a
+binary non-image (the binary message, `binary` badge), a 25.8 MB PNG ("Large image" + Load preview,
+then 3,000×3,000 at Fit), a truncated and an undecodable PNG. The checkerboard and Fit / 100% sizes
+were read back with `getComputedStyle` / `getBoundingClientRect`. The window capture failed in that
+session (no display surface), so there is no screenshot yet: the PR's screenshot and
+`docs/screenshots/image-diff.png` are still to do.
 
 ---
 

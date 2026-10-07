@@ -1,8 +1,8 @@
 'use strict';
 // The image preview reads (docs/plans/image-preview.md §10.2): imageSide's policy (pure), and
 // commitImageSide / workdirImageSide end to end against throwaway repos - which blob or file each
-// side is, the caps (an over-cap blob is never read), knownKey, Git LFS pointers, special
-// entries, the path guards, cancellation and bare repositories.
+// side is, the caps (an over-cap blob is never read), knownKey, Git LFS pointers and the local LFS
+// cache, conflict stages, special entries, the path guards, cancellation and bare repositories.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -123,6 +123,8 @@ test('readLimit and revisionKey', () => {
   assert.equal(readLimit({ special: true, size: null }, { policy: p }), 0);
   assert.equal(revisionKey(g(1)), 'o');
   assert.equal(revisionKey(w(1)), 'wt:1:2:3:4');
+  assert.equal(revisionKey({ side: 'new', source: 'lfs-cache', oid: 'f'.repeat(64), size: 1 }), `lfs:${'f'.repeat(64)}`);
+  assert.equal(readLimit({ side: 'new', source: 'lfs-cache', oid: 'f', size: 301 }, { policy: p }), 0, 'an LFS object over the cap is not read');
   assert.equal(revisionKey({ absent: true }), null);
 });
 
@@ -306,7 +308,7 @@ test('arguments: relPath refusals, side, options', async () => {
   }
   await assert.rejects(commitSide(dir, head, 'a.png', '../x', 'old'), { kind: 'invalid-args' }, 'orig');
   await assert.rejects(commitSide(dir, 'HEAD', 'a.png', null, 'new'), { kind: 'invalid-args' }, 'a full object id');
-  for (const side of ['both', 'OLD', null, undefined, 0]) {
+  for (const side of ['both', 'OLD', 'BASE', null, undefined, 0]) {
     await assert.rejects(workdirSide(dir, 'a.png', {}, side), { kind: 'invalid-args' }, String(side));
     await assert.rejects(commitSide(dir, head, 'a.png', null, side), { kind: 'invalid-args' }, String(side));
   }
@@ -337,15 +339,45 @@ test('worktree guards: a path through a symlinked folder, a path git doesn\'t li
   await assert.rejects(workdirSide(dir, 'nope.png', {}, 'new'), { kind: 'stale' });
 });
 
-test('an unmerged path: kind conflict', async () => {
-  const dir = repoWith({ 'a.png': png(1, 1) });
+/** A repo where merging `other` into main conflicts on `file`: base, ours (main) and theirs (other) as given (null: deleted). */
+function conflicted({ file = 'a.png', base = png(1, 1), ours = png(3, 3), theirs = png(2, 2) } = {}) {
+  const dir = repoWith(base ? { [file]: base } : { 'x.txt': 'x' });
   h.git(dir, 'checkout', '-q', '-b', 'other');
-  h.commitFile(dir, 'a.png', png(2, 2), 'other');
+  if (theirs) h.commitFile(dir, file, theirs, 'other');
+  else { h.git(dir, 'rm', '-q', file); h.git(dir, 'commit', '-q', '-m', 'rm'); }
   h.git(dir, 'checkout', '-q', 'main');
-  h.commitFile(dir, 'a.png', png(3, 3), 'main');
+  if (ours) h.commitFile(dir, file, ours, 'main');
+  else { h.git(dir, 'rm', '-q', file); h.git(dir, 'commit', '-q', '-m', 'rm'); }
   assert.throws(() => h.git(dir, 'merge', '-q', 'other'));
-  await assert.rejects(workdirSide(dir, 'a.png', {}, 'new'), { kind: 'conflict' });
-  await assert.rejects(workdirSide(dir, 'a.png', {}, 'old'), { kind: 'conflict' });
+  return dir;
+}
+
+test('an unmerged path: old = ours (stage 2), new = theirs (stage 3), base = stage 1', async () => {
+  const dir = conflicted();
+  const dims = async (side, wo = {}) => {
+    const s = await workdirSide(dir, 'a.png', wo, side);
+    return [s.kind, s.source, s.dims && s.dims.width];
+  };
+  assert.deepEqual(await dims('old'), ['image', 'index', 3], 'ours');
+  assert.deepEqual(await dims('new'), ['image', 'index', 2], 'theirs');
+  assert.deepEqual(await dims('base'), ['image', 'index', 1], 'base');
+  assert.deepEqual(await dims('new', { staged: true }), ['image', 'index', 2], 'staged or not: the stages');
+  const ours = await workdirSide(dir, 'a.png', {}, 'old');
+  assert.equal(ours.key, h.git(dir, 'rev-parse', ':2:a.png').trim(), 'keyed by the stage\'s blob');
+  assert.deepEqual(await workdirSide(dir, 'a.png', {}, 'old', { knownKey: ours.key }), { side: 'old', key: ours.key, unchanged: true });
+  // Side 'base' everywhere else: absent; commitImageSide has none.
+  const clean = repoWith({ 'b.png': png(1, 1) });
+  h.write(clean, 'b.png', png(2, 2));
+  assert.deepEqual([(await workdirSide(clean, 'b.png', {}, 'base')).kind, (await workdirSide(clean, 'b.png', { staged: true }, 'base')).kind], ['absent', 'absent']);
+  assert.equal((await workdirSide(clean, 'c.png', { untracked: true }, 'base')).kind, 'absent');
+  await assert.rejects(commitSide(clean, rev(clean, 'HEAD'), 'b.png', null, 'base'), { kind: 'invalid-args' });
+});
+
+test('an unmerged path: a missing stage is absent (modify/delete, add/add)', async () => {
+  let dir = conflicted({ theirs: null });
+  assert.deepEqual(await Promise.all(['base', 'old', 'new'].map(async (w) => (await workdirSide(dir, 'a.png', {}, w)).kind)), ['image', 'image', 'absent'], 'deleted by them');
+  dir = conflicted({ base: null });
+  assert.deepEqual(await Promise.all(['base', 'old', 'new'].map(async (w) => (await workdirSide(dir, 'a.png', {}, w)).kind)), ['absent', 'image', 'image'], 'both added');
 });
 
 // ---------------------------------------------------------------- caps
@@ -431,6 +463,82 @@ test('a committed Git LFS pointer is lfs-pointer with its oid and size (no git-l
   assert.deepEqual([s.kind, s.lfs, s.bytes, s.size], ['lfs-pointer', { oid, size: 2516582 }, undefined, text.length]);
   // The worktree holds the pointer too here (no smudge ran): the same answer.
   assert.equal((await workdirSide(dir, 'hero.png', {}, 'new')).kind, 'lfs-pointer');
+});
+
+const sha256 = (b) => require('node:crypto').createHash('sha256').update(b).digest('hex');
+const lfsPointer = (b) => `version https://git-lfs.github.com/spec/v1\noid sha256:${sha256(b)}\nsize ${b.length}\n`;
+
+/** Put `bytes` in the local LFS cache of `gitDir` (the common dir) as object `oid` (default: its sha256). */
+function cacheLfs(gitDir, bytes, oid = sha256(bytes)) {
+  const p = path.join(gitDir, 'lfs', 'objects', oid.slice(0, 2), oid.slice(2, 4), oid);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, bytes);
+  return p;
+}
+
+/** A git that records every argument list it runs (one line each) in `log`. */
+function argsGit(t) {
+  const real = findOnPath(process.platform === 'win32' ? 'git.exe' : 'git');
+  const dir = h.tmpDir();
+  const log = path.join(dir, 'args.log');
+  const bin = path.join(dir, 'git');
+  fs.writeFileSync(bin, `#!/bin/sh\necho "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  exec.setGitBinary(bin);
+  t.after(() => exec.setGitBinary(null));
+  return () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
+}
+
+test('Git LFS: an object in the local cache previews (source lfs-cache, key lfs:<sha256>); git lfs never runs', { skip: !POSIX }, async (t) => {
+  const img = png(6, 4);
+  const dir = repoWith({ 'hero.png': lfsPointer(img), '.gitattributes': '*.png filter=lfs diff=lfs merge=lfs -text\n' });
+  const head = rev(dir, 'HEAD');
+  const objPath = cacheLfs(path.join(dir, '.git'), img);
+  const runs = argsGit(t);
+  const s = await commitSide(dir, head, 'hero.png', null, 'new');
+  assert.deepEqual([s.kind, s.source, s.key, s.format, s.dims, s.size, s.lfs], ['image', 'lfs-cache', `lfs:${sha256(img)}`, 'png', { width: 6, height: 4 }, img.length, { oid: sha256(img), size: img.length }]);
+  assert.ok(Buffer.from(s.bytes).equals(img));
+  assert.equal((await workdirSide(dir, 'hero.png', {}, 'new')).source, 'lfs-cache', 'a worktree pointer too');
+  assert.equal((await workdirSide(dir, 'hero.png', { staged: true }, 'new')).source, 'lfs-cache', 'the index');
+  assert.ok(runs().length > 0);
+  assert.equal(runs().filter((a) => /(^| )lfs( |$)|filter-process|smudge/.test(a)).length, 0, 'no git lfs, no smudge');
+
+  // knownKey of the object: the pointer is read, the object isn't (an unreadable copy is never opened).
+  fs.chmodSync(objPath, 0o000);
+  t.after(() => fs.chmodSync(objPath, 0o644));
+  assert.deepEqual(await commitSide(dir, head, 'hero.png', null, 'new', { knownKey: s.key }), { side: 'new', key: s.key, unchanged: true });
+});
+
+test('Git LFS: a missing, corrupt, resized or linked object stays the pointer; the soft cap applies', { skip: !POSIX }, async (t) => {
+  const img = Buffer.concat([png(6, 4), Buffer.alloc(200)]); // larger than its pointer (~130 bytes)
+  const dir = repoWith({ 'hero.png': lfsPointer(img) });
+  const head = rev(dir, 'HEAD');
+  const kind = async (o) => (await commitSide(dir, head, 'hero.png', null, 'new', o)).kind;
+  assert.equal(await kind(), 'lfs-pointer', 'not downloaded');
+  const p = cacheLfs(path.join(dir, '.git'), Buffer.from(img).fill(7, 40, 41)); // same size, other bytes
+  assert.equal(await kind(), 'lfs-pointer', 'the sha256 must match');
+  fs.writeFileSync(p, Buffer.concat([img, Buffer.from('x')]));
+  assert.equal(await kind(), 'lfs-pointer', 'the size must match');
+  fs.rmSync(p);
+  const elsewhere = path.join(h.tmpDir(), 'obj');
+  fs.writeFileSync(elsewhere, img);
+  fs.symlinkSync(elsewhere, p);
+  assert.equal(await kind(), 'lfs-pointer', 'a link is not followed');
+  fs.rmSync(p);
+  cacheLfs(path.join(dir, '.git'), img);
+  assert.equal(await kind(), 'image');
+  smallCaps(t, { softMaxBytes: 150, maxBytes: 600 });
+  const s = await commitSide(dir, head, 'hero.png', null, 'new');
+  assert.deepEqual([s.kind, s.soft, s.source, s.lfs.size], ['too-large', true, 'lfs-cache', img.length], 'over the soft cap: not read');
+  assert.equal(await kind({ force: true }), 'image');
+});
+
+test('Git LFS: a linked worktree and a bare repository read the common dir\'s cache', async () => {
+  const img = png(3, 5);
+  const { bare, wt } = h.bareWithWorktree();
+  h.commitFile(wt, 'hero.png', lfsPointer(img), 'lfs');
+  cacheLfs(bare, img);
+  const head = rev(wt, 'HEAD');
+  assert.deepEqual([(await commitSide(bare, head, 'hero.png', null, 'new')).source, (await commitSide(wt, head, 'hero.png', null, 'new')).source], ['lfs-cache', 'lfs-cache']);
 });
 
 // ---------------------------------------------------------------- cancellation, bare repos, IPC

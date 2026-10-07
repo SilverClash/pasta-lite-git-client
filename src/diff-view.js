@@ -35,7 +35,7 @@ const DIFF_VIEW_MAX_RAW = 50 * 1024 * 1024;
  * - `fingerprint: false` (option): never compute one (rename views, see workdirDiffView).
  * - `conflict`: for an unmerged path git prints a combined diff (`diff --cc`); then `file` is
  *   null, `sections` empty, `fingerprint` null and conflict is { path, hunks: [{ header,
- *   truncated?, lines: [{ prefix, text, cr, clipped?, noNewlineAtEof? }] }] } where `prefix`
+ *   truncated?, lines: [{ prefix, text, cr, clipped?, noNewlineAtEof? }] }], isBinary? } where `prefix`
  *   is the one-char-per-parent column string (e.g. '++', ' -', '- '). A conflict git can't
  *   show as a combined diff (e.g. modify/delete: git prints only "* Unmerged path f") is
  *   { path: requestedPath, hunks: [] }.
@@ -133,20 +133,23 @@ const COMBINED_HUNK_RE = /^(@{3,}) [^@]*\1/;
 /**
  * Minimal parser for git's combined diff of one unmerged path (`diff --cc`): header lines,
  * then hunks `@@@ -a,b -c,d +e,f @@@` (N parents -> N+1 '@'), each line prefixed by N columns
- * of ' ', '+' or '-'. Shown read-only, so line counts are not tracked.
+ * of ' ', '+' or '-'. Shown read-only, so line counts are not tracked. A binary file has no
+ * hunks, only "Binary files differ": `isBinary: true` (the image preview shows its stages).
  */
 function combinedDiffView(raw, cap) {
   const lines = raw.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
   // Reuse hunks.js path decoding (C-quoting, bytes) via the ---/+++ lines when present.
   const head = [];
+  let binary = false;
   let i = 1;
   for (; i < lines.length && !COMBINED_HUNK_RE.test(lines[i]); i++) {
     if (/^(---|\+\+\+) /.test(lines[i])) head.push(lines[i]);
+    else if (lines[i].startsWith('Binary files ')) binary = true;
   }
   const hf = head.length === 2 ? hunks.parsePatch(`${head.join('\n')}\n`, { encoding: 'latin1' })[0] : null;
   const path = hf?.newPath ?? hf?.oldPath ?? hunks.decodeForDisplay(lines[0].replace(/^diff --(cc|combined) /, ''));
-  const conflict = { path, hunks: [] };
+  const conflict = binary ? { path, hunks: [], isBinary: true } : { path, hunks: [] };
   let hunk = null, n = 0;
   for (; i < lines.length; i++) {
     const l = lines[i];

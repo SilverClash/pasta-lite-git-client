@@ -16,6 +16,8 @@
 //   'absent'       no such side (an added file's old side, a deleted file's new side)
 //   'special'      a symlink, submodule, folder or other non-file: never read
 // The caller returns {side, key, unchanged: true} instead when the renderer already holds `key`.
+// A side read from the local Git LFS cache (source 'lfs-cache', ops.js) is judged like any other,
+// keyed 'lfs:<sha256>', and the caller adds the pointer's `lfs: {oid, size}` to it.
 //
 // A side is read in full only up to the soft cap (the hard cap with force). Over it a worktree
 // side reads its first POLICY.sniffBytes (format and dimensions for the 'too-large' message); a
@@ -30,10 +32,14 @@ const testHooks = { policy: null };
 /** The PreviewPolicy in force (POLICY unless a test replaced it). */
 const policy = () => testHooks.policy || F.POLICY;
 
-/** RevisionKey of a resolved side: the blob's oid, 'wt:<statKey>' for a worktree file, null when absent. */
+/**
+ * RevisionKey of a resolved side: the blob's oid, 'wt:<statKey>' for a worktree file, 'lfs:<sha256>'
+ * for a Git LFS object, null when absent.
+ */
 function revisionKey(rev) {
   if (rev.absent) return null;
-  return rev.source === 'worktree' ? `wt:${rev.statKey}` : rev.oid;
+  if (rev.source === 'worktree') return `wt:${rev.statKey}`;
+  return rev.source === 'lfs-cache' ? `lfs:${rev.oid}` : rev.oid;
 }
 
 /** How many bytes of `rev` to read (0: none). See the header for the caps. */

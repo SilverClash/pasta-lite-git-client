@@ -173,20 +173,23 @@ const READ = {
   // ---- image preview (docs/plans/image-preview.md §5): one side ('old' | 'new') of the file diff
   // the view shows, as an ImageSide (src/image-preview.js header): `kind` 'image' with `bytes` (a
   // Uint8Array in the renderer), or why there is no picture ('too-large', 'lfs-pointer',
-  // 'unsupported', 'not-image', 'absent', 'special'): those are results, not errors. Options
-  // {knownKey?, force?}: knownKey, the `key` of bytes the renderer already holds, gives {side, key,
-  // unchanged: true} when the side still has that key, with nothing read; force lifts the soft
-  // size cap (the "Load preview" button). Refused: invalid-args; for a worktree file also stale
-  // (not a tracked or untracked path any more, or changed while read), symlink / outside (the path
-  // goes through a symlinked folder or leaves the worktree), conflict (an unmerged path).
+  // 'unsupported', 'not-image', 'absent', 'special'): those are results, not errors. A Git LFS
+  // pointer whose object is in the local LFS cache is that object (source 'lfs-cache'; never
+  // fetched). Options {knownKey?, force?}: knownKey, the `key` of bytes the renderer already holds,
+  // gives {side, key, unchanged: true} when the side still has that key, with nothing read; force
+  // lifts the soft size cap (the "Load preview" button). Refused: invalid-args; for a worktree file
+  // also stale (not a tracked or untracked path any more, or changed while read), symlink / outside
+  // (the path goes through a symlinked folder or leaves the worktree).
   // commitImageSide(commit, file, orig, side, o): the sides of commitDiffView's file.
   commitImageSide: read(op(
     (repo, commit, file, orig, side, o) => [commitSpec(commit, file, orig), sideArg(side), previewOpts(o)],
     (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal),
   ), { bare: true }),
-  // workdirImageSide(file, {staged?, untracked?, orig?}, side, o): the sides of workdirDiffView's file.
+  // workdirImageSide(file, {staged?, untracked?, orig?}, side, o): the sides of workdirDiffView's
+  // file. An unmerged path's sides are its index stages: 'old' ours (2), 'new' theirs (3), and side
+  // 'base' (1), which only a conflict has (absent otherwise).
   workdirImageSide: read(op(
-    (repo, file, wo, side, o) => [{ kind: 'workdir', file: relPath(file), ...workdirOpts(wo) }, sideArg(side), previewOpts(o)],
+    (repo, file, wo, side, o) => [{ kind: 'workdir', file: relPath(file), ...workdirOpts(wo) }, sideArg(side, { base: true }), previewOpts(o)],
     (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal),
   )),
 };
@@ -223,10 +226,10 @@ function commitSpec(commit, file, orig) {
   return { kind: 'commit', sha: oid, file: rel, orig: from };
 }
 
-/** An image preview side: 'old' (before) or 'new' (after). */
-function sideArg(v) {
-  if (v !== 'old' && v !== 'new') throw invalid("side must be 'old' or 'new'");
-  return v;
+/** An image preview side: 'old' (before) or 'new' (after); with `base`, also 'base' (a conflict's stage 1). */
+function sideArg(v, { base = false } = {}) {
+  if (v === 'old' || v === 'new' || (base && v === 'base')) return v;
+  throw invalid(base ? "side must be 'old', 'new' or 'base'" : "side must be 'old' or 'new'");
 }
 
 const KNOWN_KEY_MAX = 200;
@@ -242,16 +245,31 @@ function previewOpts(o) {
 
 /**
  * Side `side` of DiffSpec `spec` as an ImageSide: resolved first (size included), then read only
- * as far as the caps allow, and not at all when its key is `knownKey`.
+ * as far as the caps allow, and not at all when its key is `knownKey`. A Git LFS pointer is looked
+ * up in the local LFS cache (blobRevisions.lfsRevision): an object there is read and judged instead,
+ * with the pointer's `lfs` (a copy whose sha256 doesn't match stays the pointer); a missing one
+ * stays the pointer. Its key is the object's ('lfs:<sha256>'), so a knownKey of it is checked
+ * after the pointer, before the object is read.
  */
 async function previewSide(repo, spec, side, { knownKey, force }, signal) {
+  const unchanged = (key) => ({ side, key, unchanged: true });
   const rev = await blobRevisions.resolveSide(repo, spec, side);
   const key = imagePreview.revisionKey(rev);
-  if (knownKey && key === knownKey) return { side, key, unchanged: true };
+  if (knownKey && key === knownKey) return unchanged(key);
   const policy = imagePreview.policy();
-  const limit = imagePreview.readLimit(rev, { policy, force });
-  const bytes = limit ? await blobRevisions.readRevision(repo, rev, { maxBytes: limit, signal }) : null;
-  return imagePreview.imageSide(rev, bytes, { policy, force, path: side === 'old' && spec.orig ? spec.orig : spec.file });
+  const path = side === 'old' && spec.orig ? spec.orig : spec.file;
+  const judge = async (r) => {
+    const limit = imagePreview.readLimit(r, { policy, force });
+    const bytes = limit ? await blobRevisions.readRevision(repo, r, { maxBytes: limit, signal }) : null;
+    return bytes === null && limit ? null : imagePreview.imageSide(r, bytes, { policy, force, path });
+  };
+  const s = await judge(rev);
+  if (s.kind !== 'lfs-pointer') return s;
+  const obj = await blobRevisions.lfsRevision(repo, side, s.lfs);
+  if (!obj) return s;
+  if (knownKey && imagePreview.revisionKey(obj) === knownKey) return unchanged(knownKey);
+  const fromCache = await judge(obj);
+  return fromCache ? { ...fromCache, lfs: s.lfs } : s;
 }
 
 /** stage/unstage/discardSelection options: {fingerprint?} plus the view-truncation guard. */

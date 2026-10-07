@@ -62,6 +62,12 @@ test('diffView: combined diff of a conflict, and a modify/delete conflict withou
   assert.equal(v.conflict.path, 'f.txt');
   assert.deepEqual(v.conflict.hunks[0].lines.map((l) => l.prefix), ['++', '+ ', '++', '+ ', '++']);
   assert.deepEqual(dv.diffView('* Unmerged path g.txt\n', 'g.txt').conflict, { path: 'g.txt', hunks: [] });
+  assert.equal(v.conflict.isBinary, undefined, 'a text conflict');
+});
+
+test('diffView: a binary conflict (git 2.51: "Binary files differ", no hunks) is flagged isBinary', () => {
+  const cc = 'diff --cc a.png\nindex 4f38e14,3b6e4c8..0000000\nBinary files differ\n';
+  assert.deepEqual(dv.diffView(cc, 'a.png').conflict, { path: 'a.png', hunks: [], isBinary: true });
 });
 
 test('diffView: a typechange is two sections and has no fingerprint; an empty patch has no file', () => {

@@ -10,7 +10,9 @@
 // createRunner() (src/runner.js) adds what the app needs on top: write ops for one repo run one at
 // a time (reads don't queue), 'busy' / 'changed' events for the watcher, cancellation by op id,
 // and the bare-repository gate (src/bare-gate.js). The argument checks are src/op-validators.js,
-// the display model of diffs src/diff-view.js, the IPC error shape src/ipc-errors.js.
+// the display model of diffs src/diff-view.js, the IPC error shape src/ipc-errors.js. The image
+// preview reads (commitImageSide / workdirImageSide) resolve and read one side of a diff through
+// src/blob-revisions.js and judge it with src/image-preview.js.
 //
 // Linked worktrees (remove, lock, unlock, the unreachable count) are named by the path git prints
 // for them: each check re-reads `git worktree list` and takes only an entry whose path is exactly
@@ -32,6 +34,8 @@ const {
   remoteName, branchName, localBranch, refspecSafe, commitId, commitMessage,
 } = require('./op-validators');
 const { diffView, refuseTruncated } = require('./diff-view');
+const blobRevisions = require('./blob-revisions');
+const imagePreview = require('./image-preview');
 const { bareGate } = require('./bare-gate');
 const { serializeError } = require('./ipc-errors');
 const runner = require('./runner');
@@ -166,6 +170,25 @@ const READ = {
     if (!w.detached || !w.head) return { count: 0 };
     return { count: await git.unreachableCount(repo, w.head) };
   }, { bare: true }),
+  // ---- image preview (docs/plans/image-preview.md §5): one side ('old' | 'new') of the file diff
+  // the view shows, as an ImageSide (src/image-preview.js header): `kind` 'image' with `bytes` (a
+  // Uint8Array in the renderer), or why there is no picture ('too-large', 'lfs-pointer',
+  // 'unsupported', 'not-image', 'absent', 'special'): those are results, not errors. Options
+  // {knownKey?, force?}: knownKey, the `key` of bytes the renderer already holds, gives {side, key,
+  // unchanged: true} when the side still has that key, with nothing read; force lifts the soft
+  // size cap (the "Load preview" button). Refused: invalid-args; for a worktree file also stale
+  // (not a tracked or untracked path any more, or changed while read), symlink / outside (the path
+  // goes through a symlinked folder or leaves the worktree), conflict (an unmerged path).
+  // commitImageSide(commit, file, orig, side, o): the sides of commitDiffView's file.
+  commitImageSide: read(op(
+    (repo, commit, file, orig, side, o) => [commitSpec(commit, file, orig), sideArg(side), previewOpts(o)],
+    (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal),
+  ), { bare: true }),
+  // workdirImageSide(file, {staged?, untracked?, orig?}, side, o): the sides of workdirDiffView's file.
+  workdirImageSide: read(op(
+    (repo, file, wo, side, o) => [{ kind: 'workdir', file: relPath(file), ...workdirOpts(wo) }, sideArg(side), previewOpts(o)],
+    (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal),
+  )),
 };
 
 /** checkout's [ref, {kind}] from the renderer's (target, kind): an existing branch, remote branch or commit. */
@@ -192,6 +215,43 @@ function workdirOpts(o) {
     if (res.untracked) throw invalid('an untracked file has no rename source (orig)');
   }
   return res;
+}
+
+/** The DiffSpec of a commit's file, from commitImageSide's (commit, file, orig) as commitFileArgs checks them. */
+function commitSpec(commit, file, orig) {
+  const [oid, rel, from] = commitFileArgs(commit, file, orig);
+  return { kind: 'commit', sha: oid, file: rel, orig: from };
+}
+
+/** An image preview side: 'old' (before) or 'new' (after). */
+function sideArg(v) {
+  if (v !== 'old' && v !== 'new') throw invalid("side must be 'old' or 'new'");
+  return v;
+}
+
+const KNOWN_KEY_MAX = 200;
+
+/** commitImageSide / workdirImageSide options: {knownKey?: a RevisionKey string, force?}. */
+function previewOpts(o) {
+  const { knownKey, force } = opts(o);
+  if (knownKey != null && (typeof knownKey !== 'string' || !knownKey || knownKey.length > KNOWN_KEY_MAX)) {
+    throw invalid(`knownKey must be a non-empty string of at most ${KNOWN_KEY_MAX} characters`);
+  }
+  return { knownKey: knownKey == null ? undefined : knownKey, force: bool(force) };
+}
+
+/**
+ * Side `side` of DiffSpec `spec` as an ImageSide: resolved first (size included), then read only
+ * as far as the caps allow, and not at all when its key is `knownKey`.
+ */
+async function previewSide(repo, spec, side, { knownKey, force }, signal) {
+  const rev = await blobRevisions.resolveSide(repo, spec, side);
+  const key = imagePreview.revisionKey(rev);
+  if (knownKey && key === knownKey) return { side, key, unchanged: true };
+  const policy = imagePreview.policy();
+  const limit = imagePreview.readLimit(rev, { policy, force });
+  const bytes = limit ? await blobRevisions.readRevision(repo, rev, { maxBytes: limit, signal }) : null;
+  return imagePreview.imageSide(rev, bytes, { policy, force, path: side === 'old' && spec.orig ? spec.orig : spec.file });
 }
 
 /** stage/unstage/discardSelection options: {fingerprint?} plus the view-truncation guard. */

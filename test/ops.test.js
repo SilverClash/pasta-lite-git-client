@@ -27,7 +27,7 @@ async function waitForFile(file, what, ms = 60000) {
 }
 
 test('registry has exactly the documented operations', () => {
-  const reads = ['status', 'refs', 'log', 'stashes', 'commitDiffView', 'workdirDiffView', 'commitFiles', 'diffCommitFile', 'diffWorkdir', 'undoState', 'remotes', 'lastCommitMessage', 'rebasePlan', 'worktrees', 'worktreeDirty', 'worktreePrunePreview', 'worktreeUnreachable'];
+  const reads = ['status', 'refs', 'log', 'stashes', 'commitDiffView', 'workdirDiffView', 'commitFiles', 'diffCommitFile', 'diffWorkdir', 'undoState', 'remotes', 'lastCommitMessage', 'rebasePlan', 'worktrees', 'worktreeDirty', 'worktreePrunePreview', 'worktreeUnreachable', 'commitImageSide', 'workdirImageSide'];
   const writes = [
     'stage', 'stageAll', 'unstage', 'unstageAll', 'stageSelection', 'unstageSelection', 'discardSelection', 'discard',
     'commit', 'commitAll', 'fetch', 'pull', 'push', 'setUpstream', 'checkout', 'createBranch', 'deleteBranch', 'deleteBranches',

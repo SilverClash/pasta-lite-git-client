@@ -248,8 +248,9 @@ function fakeDom() {
 }
 
 /**
- * The DOM of the mounted component tests (sidebar-actions, graph-columns): just enough for sidebar.js
- * and graph-view.js. Elements with children, attributes, classList, dataset, style (setProperty),
+ * The DOM of the mounted component tests (sidebar-actions, graph-columns, image-preview-ui): just enough for
+ * sidebar.js, graph-view.js and diff-view.js. Elements with children, attributes, classList, dataset, style (setProperty),
+ * document fragments (appending one moves its children),
  * closest / querySelector(All) for '.a.b', 'tag', '[attr="v"]', '[data-x]' and descendant ('a b')
  * selectors, focus, click(), and event dispatch (capture on window / document, then target -> ancestors ->
  * document -> window). Returns {doc, win, El, dispatch, key}.
@@ -323,6 +324,7 @@ function componentDom() {
     append(...nodes) {
       for (let n of nodes) {
         if (typeof n === 'string') { const t = new El('#text'); t.nodeType = 3; t.own = n; n = t; }
+        if (n.nodeType === 11) { this.append(...n.children); continue; } // a fragment: its children move
         if (n.parentNode) n.remove();
         n.parentNode = this;
         this.children.push(n);
@@ -381,6 +383,7 @@ function componentDom() {
   doc.createElement = (tag) => new El(tag);
   doc.createElementNS = (_ns, tag) => new El(tag);
   doc.createTextNode = (text) => { const n = new El('#text'); n.nodeType = 3; n.own = String(text); return n; };
+  doc.createDocumentFragment = () => { const f = new El('#fragment'); f.nodeType = 11; return f; };
   doc.body = new El('body');
   doc.documentElement = new El('html');
   doc.activeElement = doc.body;

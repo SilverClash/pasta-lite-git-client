@@ -1678,7 +1678,7 @@ test('image preview: a binary diff loads both sides (cancellable, one op id each
   assert.deepEqual(reads.map((c) => c.args), [[SHA_B, 'a.png', null, 'old', {}], [SHA_B, 'a.png', null, 'new', {}]]);
   assert.ok(reads[0].opId && reads[1].opId && reads[0].opId !== reads[1].opId, 'one op id per side');
   assert.deepEqual(store.state.imagePreview, {
-    spec, old: { loading: true, side: null, url: null, error: null }, new: { loading: true, side: null, url: null, error: null },
+    spec, conflict: false, old: { loading: true, side: null, url: null, error: null }, new: { loading: true, side: null, url: null, error: null },
   });
   await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2', { format: 'webp', mime: 'image/webp' }));
   const p = store.state.imagePreview;
@@ -1837,6 +1837,51 @@ test('image preview: op errors land in their slot; aborted is ignored; stale kee
   api.take('commitImageSide', sideCall('new')).resolve({ side: 'new', key: 'k2', unchanged: true });
   await flush();
   assert.equal(store.state.imagePreview, shown, 'stale on a reload: the shown side stays');
+});
+
+test('image preview: a conflicted image loads base, ours and theirs; leaving it cancels all three', async () => {
+  const { api, store } = await loadedStore(repoData({ commits: chain(['b', 'a']), status: status({ oid: 'b' }) }), { urlApi: fakeUrls() });
+  const spec = { kind: 'workdir', file: 'a.png', staged: false, untracked: false };
+  store.actions.openDiff(spec);
+  api.take('workdirDiffView').resolve({ file: null, sections: [], fingerprint: null, truncated: false, conflict: { path: 'a.png', hunks: [], isBinary: true } });
+  await flush();
+  const reads = api.pending('workdirImageSide');
+  assert.deepEqual(reads.map((c) => c.args[2]), ['old', 'new', 'base']);
+  assert.equal(store.state.imagePreview.conflict, true);
+  assert.equal(store.state.imagePreview.base.loading, true);
+  api.take('workdirImageSide', (c) => c.args[2] === 'base').resolve({ ...imageSide('base', 'k0'), source: 'index' });
+  await flush();
+  assert.equal(store.state.imagePreview.base.url, 'blob:file:///u1');
+  // a reload keeps the conflict and sends the base's key too
+  const p = store.actions.reloadDiff();
+  api.take('workdirDiffView').resolve({ file: null, sections: [], fingerprint: null, truncated: false, conflict: { path: 'a.png', hunks: [], isBinary: true } });
+  await p;
+  await flush();
+  assert.deepEqual(api.pending('workdirImageSide', (c) => c.args[2] === 'base').map((c) => c.args[3]), [{ knownKey: 'k0' }]);
+  const inFlight = api.pending('workdirImageSide').map((c) => c.opId);
+  store.actions.closeDiff();
+  await flush();
+  for (const id of inFlight) assert.ok(api.app.cancelled.includes(id), 'every side cancelled');
+});
+
+test('image preview: a text diff of an image (an SVG) asks for both sides; a Git LFS pointer is never "known"', async () => {
+  const { api, store } = await loadedStore(repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }), { urlApi: fakeUrls() });
+  const spec = pngSpec('icon.svg');
+  const svgText = () => {
+    const f = { oldPath: 'icon.svg', newPath: 'icon.svg', hunks: [{ header: '@@ -1 +1 @@', lines: [] }], isBinary: false, oldMode: '100644', newMode: '100644' };
+    return { file: f, sections: [f], fingerprint: null, truncated: false, conflict: null };
+  };
+  store.actions.openDiff(spec);
+  api.take('commitDiffView').resolve(svgText());
+  await flush();
+  assert.equal(api.pending('commitImageSide').length, 2);
+  const lfs = { ...imageSide('new', 'p2'), kind: 'lfs-pointer', mime: null, bytes: undefined, lfs: { oid: 'c'.repeat(64), size: 9 } };
+  await landSides(api, imageSide('old', 'k1', { format: 'svg', mime: 'image/svg+xml' }), lfs);
+  const p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(svgText());
+  await p;
+  await flush();
+  assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, {}], 'the pointer is read again: its object may have arrived');
 });
 
 test('image preview: a reload that turns into a text diff or an error drops the preview', async () => {

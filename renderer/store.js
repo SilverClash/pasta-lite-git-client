@@ -44,15 +44,19 @@
 //   diff         null | {spec, loading, data|null, error}; data = ops diffView result:
 //                {file (=sections[0]|null), sections, fingerprint, truncated, maxLines, maxLineChars, conflict|null}
 //                spec: {kind:'workdir', file, staged, untracked} | {kind:'commit', sha, file, orig}
-//   imagePreview null | the open diff's image preview (docs/plans/image-preview.md §6.3): {spec, old: Slot,
-//                new: Slot}, Slot = {loading, side: ImageSide without its bytes (src/image-preview.js header) |
-//                null, url: a blob: URL of the bytes (window.PLImageCache) | null, error: message | null}.
+//   imagePreview null | the open diff's image preview (docs/plans/image-preview.md §6.3): {spec, conflict,
+//                old: Slot, new: Slot, base?: Slot}, Slot = {loading, side: ImageSide without its bytes
+//                (src/image-preview.js header) | null, url: a blob: URL of the bytes (window.PLImageCache) | null,
+//                error: message | null}. conflict: an unmerged path (PLImage.previewKind 'conflict'), whose
+//                old / new / base slots are its ours / theirs / base stages (`base` only then).
 //                Loaded by the store itself after a diff lands when PLImage.wantsPreview(spec, data) (one op per
 //                side, commitImageSide / workdirImageSide, each cancellable), reloaded with each side's
-//                `knownKey` whenever the diff is re-fetched (an unchanged side keeps its URL), and null whenever
-//                state.diff is closed or shows another file (set() drops it, cancelling the reads in flight).
+//                `knownKey` whenever the diff is re-fetched (an unchanged side keeps its URL; a Git LFS pointer
+//                whose object isn't in the local cache is read again: it may have been downloaded), and null
+//                whenever state.diff is closed or shows another file (set() drops it, cancelling the reads in flight).
 //                The bytes live only in the URL cache, never in a state key (diffs are compared as JSON).
-//                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side),
+//                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side;
+//                internally also `data`, the diff about to land),
 //                closeImagePreview(), releaseImagePreview() (also empties the URL cache: the diff view unmounting)
 //   undo         undo.getState() result | null: {undo: {action, description, entry}|null, redo: same|null,
 //                busy, undoBlocked: string|null, redoBlocked: string|null}
@@ -759,8 +763,9 @@
     const images = window.PLImageCache.create(urlApi || URL);
     const LOADING_SLOT = Object.freeze({ loading: true, side: null, url: null, error: null });
     let previewGen = 0; // bumped when the preview is dropped: reads started before never land
-    const sideGen = { old: 0, new: 0 }; // the latest read per side; an older one never lands after it
-    const inflight = { old: null, new: null }; // op id of each side's running read
+    const SIDES = ['old', 'new', 'base'];
+    const sideGen = { old: 0, new: 0, base: 0 }; // the latest read per side; an older one never lands after it
+    const inflight = { old: null, new: null, base: null }; // op id of each side's running read
 
     /** Cancel `which` side's running read (main kills its git process); it then rejects 'aborted'. */
     function cancelSide(which) {
@@ -770,11 +775,10 @@
       Promise.resolve().then(() => api.app.cancel(opId)).catch((e) => logError('[store] could not cancel an image read:', e));
     }
 
-    /** Forget the preview's reads: cancel both, let none land, unpin its URLs. (set() / close.) */
+    /** Forget the preview's reads: cancel them all, let none land, unpin its URLs. (set() / close.) */
     function dropPreview() {
       previewGen++;
-      cancelSide('old');
-      cancelSide('new');
+      for (const w of SIDES) cancelSide(w);
       images.pin([]);
     }
 
@@ -787,17 +791,20 @@
         : call('workdirImageSide', spec.file, workdirArgs(spec), which, o);
     }
 
-    /** The key a reload may send for a shown side: its bytes are still cached (or it has none to show). */
+    /**
+     * The key a reload may send for a shown side: its bytes are still cached (or it has none to show).
+     * None for a Git LFS pointer: its object may have reached the local LFS cache since.
+     */
     function knownKeyOf(slot) {
       const side = slot && !slot.error ? slot.side : null;
-      if (!side || !side.key) return null;
+      if (!side || !side.key || side.kind === 'lfs-pointer') return null;
       return side.kind !== 'image' || images.has(side.key) ? side.key : null;
     }
 
     /** Keep the URLs on screen from being evicted. */
     function pinShown() {
       const p = state.imagePreview;
-      images.pin(p ? [p.old, p.new].filter((s) => s && s.url).map((s) => s.side.key) : []);
+      images.pin(p ? SIDES.map((w) => p[w]).filter((s) => s && s.url).map((s) => s.side.key) : []);
     }
 
     async function loadSide(spec, which, { force, knownKey }) {
@@ -841,22 +848,27 @@
     }
 
     /**
-     * Load the open diff's image preview (both sides, or `side` only). The same file as the preview
-     * shown reloads each side with its key (unchanged sides keep their URL, nothing flickers); another
-     * file starts over. force: lift the soft size cap (Load preview). Not for a spec that isn't open.
+     * Load the open diff's image preview (every side, or `side` only): old and new, plus base for a
+     * conflict (the open diff's data says, PLImage.previewKind). The same file as the preview shown
+     * reloads each side with its key (unchanged sides keep their URL, nothing flickers); another
+     * file, or a file that became or stopped being a conflict, starts over. force: lift the soft size
+     * cap (Load preview). Not for a spec that isn't open.
      */
-    function loadImagePreview(spec, { force = false, side = null } = {}) {
+    function loadImagePreview(spec, { force = false, side = null, data } = {}) {
       const d = state.diff;
       if (!spec || !d || !Img().sameTarget(d.spec, spec)) return Promise.resolve();
+      // previewFor passes the data about to land; the Load preview button the shown one.
+      const conflict = Img().previewKind(spec, data === undefined ? d.data : data) === 'conflict';
+      const all = conflict ? SIDES : ['old', 'new'];
       let p = state.imagePreview;
-      const keep = !!p && Img().sameTarget(p.spec, spec);
+      const keep = !!p && Img().sameTarget(p.spec, spec) && !!p.conflict === conflict;
       if (keep) {
         if (p.spec !== spec) p = { ...p, spec };
       } else {
         dropPreview();
-        p = { spec, old: LOADING_SLOT, new: LOADING_SLOT };
+        p = { spec, conflict, old: LOADING_SLOT, new: LOADING_SLOT, ...(conflict ? { base: LOADING_SLOT } : {}) };
       }
-      const sides = side === 'old' || side === 'new' ? [side] : ['old', 'new'];
+      const sides = all.includes(side) ? [side] : all;
       if (force) for (const w of sides) p = { ...p, [w]: LOADING_SLOT };
       set({ imagePreview: p });
       return Promise.all(sides.map((w) => loadSide(spec, w, { force, knownKey: keep && !force ? knownKeyOf(p[w]) : null })));
@@ -864,7 +876,7 @@
 
     /** The diff of `spec` landed with `data` (null: it failed): load its preview, or drop one it no longer wants. */
     function previewFor(spec, data) {
-      if (Img().wantsPreview(spec, data)) loadImagePreview(spec);
+      if (Img().wantsPreview(spec, data)) loadImagePreview(spec, { data });
       else if (state.imagePreview) closeImagePreview();
     }
 

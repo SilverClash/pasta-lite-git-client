@@ -1,6 +1,7 @@
 'use strict';
 // The image preview's presenter (renderer/components/image-model.js, window.PLImage): when a diff
-// gets a preview, pane states and messages, labels, sizes, the before / after delta, Fit / 100%.
+// gets a preview and what kind, pane states and messages, labels, sizes, the before / after delta,
+// the zoom (Fit / 100% / steps), the comparison modes and a conflict's panes.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const H = require('./renderer-harness.js');
@@ -24,19 +25,30 @@ const LOADING = { loading: true, side: null, url: null, error: null };
 
 // ------------------------------------------------------------------ wantsPreview
 
-test('wantsPreview: one binary section, no conflict, no symlink / submodule; text diffs keep their rows', () => {
-  const { wantsPreview } = I();
+test('previewKind / wantsPreview: a binary section, a text diff of an image, a conflicted image; else none', () => {
+  const { wantsPreview, previewKind } = I();
+  const text = (extra = {}) => binary({ isBinary: false, hunks: [{ header: '@@' }], ...extra });
+  assert.equal(previewKind(wd, data([binary()])), 'binary');
+  assert.equal(previewKind(cm, data([binary()])), 'binary');
+  assert.equal(previewKind(cm, { file: binary() }), 'binary', 'the older single-file shape');
+  assert.equal(previewKind({ ...wd, file: 'icon.svg' }, data([text()])), 'text', 'an SVG');
+  assert.equal(previewKind(wd, data([text()])), 'text', 'a .png text diff: a Git LFS pointer');
+  assert.equal(previewKind({ ...wd, file: 'b.txt', orig: 'a.svg' }, data([text()])), 'text', 'renamed from an image');
+  assert.equal(previewKind({ ...wd, file: 'notes.txt' }, data([text()])), null, 'not an image');
+  assert.equal(previewKind({ ...wd, file: 'icon.svg' }, data([text({ hunks: [] })])), null, 'no content change (a rename, a mode change)');
+  assert.equal(previewKind(wd, data([binary(), binary()])), null, 'a type change keeps its sections');
+  assert.equal(previewKind(wd, data([], { conflict: { path: 'a.png', hunks: [], isBinary: true } })), 'conflict');
+  assert.equal(previewKind(wd, data([], { conflict: { path: 'a.png', hunks: [] } })), 'conflict', 'modify/delete of an image');
+  assert.equal(previewKind({ ...wd, file: 'a.txt' }, data([], { conflict: { path: 'a.txt', hunks: [] } })), null, 'modify/delete of a text file');
+  assert.equal(previewKind({ ...wd, file: 'a.svg' }, data([], { conflict: { path: 'a.svg', hunks: [{ header: '@@@', lines: [] }] } })), null, 'a text conflict keeps its combined diff');
+  assert.equal(previewKind(wd, data([binary({ newMode: '120000' })])), null, 'symlink');
+  assert.equal(previewKind(wd, data([binary({ oldMode: '160000' })])), null, 'submodule');
+  assert.equal(previewKind(wd, data([])), null, 'no changes');
+  assert.equal(previewKind(wd, null), null, 'not loaded');
+  assert.equal(previewKind(null, data([binary()])), null);
   assert.equal(wantsPreview(wd, data([binary()])), true);
-  assert.equal(wantsPreview(cm, data([binary()])), true);
-  assert.equal(wantsPreview(cm, { file: binary() }), true, 'the older single-file shape');
-  assert.equal(wantsPreview(wd, data([binary({ isBinary: false, hunks: [{ header: '@@' }] })])), false, 'a text diff (an SVG, an LFS pointer) until I3');
-  assert.equal(wantsPreview(wd, data([binary(), binary()])), false, 'a type change keeps its sections');
-  assert.equal(wantsPreview(wd, data([binary()], { conflict: { path: 'a.png', hunks: [] } })), false);
-  assert.equal(wantsPreview(wd, data([binary({ newMode: '120000' })])), false, 'symlink');
-  assert.equal(wantsPreview(wd, data([binary({ oldMode: '160000' })])), false, 'submodule');
-  assert.equal(wantsPreview(wd, data([])), false, 'no changes');
-  assert.equal(wantsPreview(wd, null), false, 'not loaded');
-  assert.equal(wantsPreview(null, data([binary()])), false);
+  assert.equal(wantsPreview({ ...wd, file: 'icon.svg' }, data([text()])), true);
+  assert.equal(wantsPreview({ ...wd, file: 'notes.txt' }, data([text()])), false);
 });
 
 test('sameTarget: kind, file, side and commit (a re-made spec of the same file is the same)', () => {
@@ -164,7 +176,7 @@ test('paneState: every state of a side', () => {
   assert.equal(paneState(slot(side('old', 'too-large', { size: 3 * MB, soft: false, limit: 'pixels', dims: { width: 20000, height: 20000 } }))).text,
     'Too large to preview (3 MB, 20,000×20,000)');
   assert.deepEqual(paneState(slot(side('old', 'lfs-pointer', { format: null, lfs: { oid: 'a'.repeat(64), size: 2.4 * MB } }))),
-    { kind: 'message', text: 'Stored in Git LFS (2.4 MB) — not loaded' });
+    { kind: 'message', text: 'Stored in Git LFS (2.4 MB) — not available locally' });
   assert.deepEqual(paneState(slot(side('old', 'unsupported', { format: 'heic' }))), { kind: 'message', text: 'HEIC — preview not supported' });
   assert.deepEqual(paneState(slot(side('old', 'unsupported', { format: 'svgz' }))), { kind: 'message', text: 'SVGZ — preview not supported' });
   assert.deepEqual(paneState(slot(side('old', 'special', { size: null }))), { kind: 'message', text: 'Not a regular file — no preview' });
@@ -232,6 +244,66 @@ test('badge: image once a side is an image format or an LFS pointer, by extensio
   assert.equal(badge(cm, d, pv(slot(side('old', 'image')), slot(side('new', 'image')), { ...cm, file: 'other.png' })), 'image',
     'another file\'s preview is ignored (extension)');
   assert.equal(badge(cm, data([binary({ isBinary: false, hunks: [{ header: '@@' }] })]), null), 'binary', 'no preview: the badge rule doesn\'t apply');
+});
+
+test('layout: a conflict is Base, Ours (name) and Theirs (name); no base pane without a stage 1; a deleted side says so', () => {
+  const { layout, paneState } = I();
+  const names = { ours: 'main', theirs: 'feature/x' };
+  const c = (base, old, neu) => ({ spec: wd, conflict: true, base, old, new: neu });
+  const img = (w) => slot(side(w, 'image'));
+  assert.deepEqual(layout(c(img('base'), img('old'), img('new')), {}, { names }).panes,
+    [{ which: 'base', title: 'Base' }, { which: 'old', title: 'Ours (main)' }, { which: 'new', title: 'Theirs (feature/x)' }]);
+  assert.deepEqual(layout(c(slot(side('base', 'absent')), img('old'), img('new'))).panes.map((x) => x.title), ['Ours', 'Theirs'], 'add/add: no base; no names: plain');
+  const gone = slot(side('new', 'absent'));
+  assert.deepEqual(layout(c(img('base'), img('old'), gone), {}, { names }).panes.map((x) => x.which), ['base', 'old', 'new']);
+  assert.deepEqual(paneState(gone, { conflict: true }), { kind: 'message', text: 'Deleted on this side' });
+  assert.equal(layout(c(LOADING, img('old'), img('new'))).fallback, false, 'loading');
+  const none = (w) => slot(side(w, 'not-image', { format: null }));
+  assert.deepEqual(layout(c(none('base'), none('old'), none('new'))), { fallback: true, note: null }, 'a binary non-image');
+  assert.equal(layout(c(none('base'), none('old'), img('new')), { new: true }).fallback, true, 'the one image failed');
+});
+
+test('zoomStep / zoomText / pixelated: ×2 / ÷2 steps from 12.5% to 3200%, from Fit at the scale shown', () => {
+  const { zoomStep, zoomText, pixelated, ZOOM_STEPS } = I();
+  assert.deepEqual([...ZOOM_STEPS], [0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32]);
+  assert.equal(zoomStep(1, 1), 2);
+  assert.equal(zoomStep(1, -1), 0.5);
+  assert.equal(zoomStep(32, 1), 32, 'kept at the largest');
+  assert.equal(zoomStep(0.125, -1), 0.125, 'kept at the smallest');
+  assert.equal(zoomStep('fit', 1, 0.37), 0.5, 'from Fit: the next step past the scale on screen');
+  assert.equal(zoomStep('fit', -1, 0.37), 0.25);
+  assert.equal(zoomStep('fit', 1, 1), 2, 'Fit of a small image is 100%');
+  assert.equal(zoomStep('fit', -1, 0.1), 0.125, 'below the smallest step');
+  assert.deepEqual([zoomText(1), zoomText(0.125), zoomText(32), zoomText(0.37)], ['100%', '12.5%', '3200%', '37%']);
+  assert.deepEqual([pixelated(1), pixelated(2), pixelated(0.5), pixelated(NaN)], [false, true, false, false]);
+});
+
+test('comparison modes: available for two decoded images only (not a conflict); m cycles them; the overlay frame', () => {
+  const { MODES, modeOf, canCompare, nextMode, overlaySize, clampPct } = I();
+  assert.deepEqual(MODES.map((m) => m.id), ['side-by-side', 'swipe', 'onion', 'difference']);
+  assert.deepEqual([modeOf('swipe'), modeOf('nope'), modeOf(null)], ['swipe', 'side-by-side', 'side-by-side']);
+  assert.deepEqual(MODES.map((m) => nextMode(m.id)), ['swipe', 'onion', 'difference', 'side-by-side']);
+  const p = (old, neu, extra = {}) => ({ spec: wd, old, new: neu, ...extra });
+  const img = (w) => slot(side(w, 'image'));
+  assert.equal(canCompare(p(img('old'), img('new'))), true);
+  assert.equal(canCompare(p(img('old'), img('new')), { new: true }), false, 'a decode failure');
+  assert.equal(canCompare(p(slot(side('old', 'absent')), img('new'))), false, 'added');
+  assert.equal(canCompare(p(img('old'), slot(side('new', 'too-large')))), false);
+  assert.equal(canCompare(p(img('old'), LOADING)), false);
+  assert.equal(canCompare(p(img('old'), img('new'), { conflict: true, base: img('base') })), false, 'a conflict');
+  assert.equal(canCompare(null), false);
+  // Both at one scale in a frame of the larger width and height; Fit fits the frame.
+  assert.deepEqual(overlaySize('fit', { width: 400, height: 100 }, { width: 200, height: 300 }, { width: 200, height: 1000 }),
+    { scale: 0.5, frame: { width: 200, height: 150 }, old: { width: 200, height: 50 }, new: { width: 100, height: 150 } });
+  assert.deepEqual(overlaySize(2, { width: 4, height: 4 }, { width: 8, height: 2 }, null).frame, { width: 16, height: 8 });
+  assert.equal(overlaySize('fit', null, { width: 1, height: 1 }, null), null);
+  assert.deepEqual([clampPct(-5), clampPct(105), clampPct(42), clampPct(NaN)], [0, 100, 42, 50]);
+});
+
+test('meta: an image from the local Git LFS cache names its object', () => {
+  const { meta } = I();
+  const s = side('new', 'image', { source: 'lfs-cache', lfs: { oid: 'c0ffee'.padEnd(64, '0'), size: 1000 } });
+  assert.deepEqual(meta(s, { workdir: true }).parts, ['PNG', '10×20', '1000 B', 'LFS c0ffee0000']);
 });
 
 test('the presenter loads under the harness next to the shared catalogue', () => {

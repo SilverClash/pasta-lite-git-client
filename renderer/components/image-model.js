@@ -2,15 +2,18 @@
 // Pure presenter of the diff view's image preview (plain script; exposes window.PLImage, and
 // module.exports under node for the tests). No DOM. docs/plans/image-preview.md §6.
 //
-// It decides when a diff gets a preview (wantsPreview), what each pane shows for an ImageSide
+// It decides when a diff gets a preview and what kind (previewKind: a binary file, a text-backed
+// image with its Preview | Text choice, a conflicted image), what each pane shows for an ImageSide
 // (src/image-preview.js header; the store keeps it without its bytes), the labels, sizes and the
-// before / after delta, and the Fit / 100% scale. Format labels come from the shared catalogue,
-// src/image-format.js (window.PLImageFormat), which index.html loads before this file.
+// before / after delta, the zoom (Fit, 100%, steps) and the comparison modes. Format labels come
+// from the shared catalogue, src/image-format.js (window.PLImageFormat), which index.html loads
+// before this file; a conflict's side names from op-model.js (window.PLOp.conflictSides).
 //
-// state.imagePreview (renderer/store.js): {spec, old: Slot, new: Slot}, Slot = {loading, side
-// (ImageSide without bytes) | null, url | null, error | null}. `decoded` below is what the view
-// measured once an <img> loaded ({width, height}: naturalWidth / naturalHeight, so EXIF rotation is
-// applied), and `failed` whether its decode failed.
+// state.imagePreview (renderer/store.js): {spec, conflict, old: Slot, new: Slot, base?: Slot}, Slot
+// = {loading, side (ImageSide without bytes) | null, url | null, error | null}; `conflict`: an
+// unmerged path, whose old / new / base are its ours / theirs / base stages. `decoded` below is
+// what the view measured once an <img> loaded ({width, height}: naturalWidth / naturalHeight, so
+// EXIF rotation is applied), and `failed` whether its decode failed.
 (function () {
   const F = () => (typeof window !== 'undefined' ? window.PLImageFormat : null);
   const SPECIAL_MODES = new Set(['120000', '160000']); // symlink, submodule (as diff-model.js)
@@ -26,20 +29,36 @@
     return data.file ? [data.file] : [];
   }
 
+  /** Whether a path names an image by its extension (any catalogue format, tier 2 included). */
+  const imagePath = (p) => !!(p && F() && F().formatOfPath(p));
+
   /**
-   * Whether the loaded diff `data` of `spec` gets an image preview: exactly one section, a binary
-   * one, no conflict, no symlink / submodule mode on either side. A binary non-image is asked for
-   * too (the ops say 'not-image', and the view falls back to the binary message). Text diffs (SVG,
-   * Git LFS pointers) keep their rows until the Preview / Text toggle (I3).
+   * What image preview the loaded diff `data` of `spec` gets, or null (none: the diff's rows or
+   * message as before):
+   *   'binary'    exactly one section, a binary one, no symlink / submodule mode on either side. A
+   *               binary non-image is asked for too (the ops say 'not-image', and the view falls
+   *               back to the binary message).
+   *   'text'      exactly one section with hunks, a text diff of a file with an image extension (an
+   *               SVG, a Git LFS pointer): the view offers Preview | Text.
+   *   'conflict'  an unmerged path whose combined diff is binary, or that has none (modify/delete)
+   *               and an image extension: its base / ours / theirs stages.
    */
-  function wantsPreview(spec, data) {
-    if (!spec || !data || data.conflict) return false;
+  function previewKind(spec, data) {
+    if (!spec || !data) return null;
+    if (data.conflict) {
+      const c = data.conflict;
+      return c.isBinary || ((!c.hunks || !c.hunks.length) && imagePath(spec.file)) ? 'conflict' : null;
+    }
     const sections = sectionsOf(data);
-    if (sections.length !== 1) return false;
+    if (sections.length !== 1) return null;
     const f = sections[0];
-    if (SPECIAL_MODES.has(String(f.oldMode || '')) || SPECIAL_MODES.has(String(f.newMode || ''))) return false;
-    return !!f.isBinary;
+    if (SPECIAL_MODES.has(String(f.oldMode || '')) || SPECIAL_MODES.has(String(f.newMode || ''))) return null;
+    if (f.isBinary) return 'binary';
+    return f.hunks && f.hunks.length && (imagePath(spec.file) || imagePath(spec.orig)) ? 'text' : null;
   }
+
+  /** Whether the loaded diff `data` of `spec` gets an image preview (previewKind is not null). */
+  const wantsPreview = (spec, data) => previewKind(spec, data) !== null;
 
   /**
    * Same preview target: the same file on the same side of the same commit (as PLDiff.sameSpec).
@@ -144,9 +163,9 @@
   /**
    * What a pane shows for its slot: {kind: 'loading'} | {kind: 'image'} | {kind: 'message', text,
    * load?: true (a soft cap: the Load preview button)} | {kind: 'error', text}. `failed`: its image
-   * didn't decode.
+   * didn't decode; `conflict`: a conflict's stage (a missing one was deleted on that side).
    */
-  function paneState(slot, { failed = false } = {}) {
+  function paneState(slot, { failed = false, conflict = false } = {}) {
     if (!slot || (slot.loading && !slot.side && !slot.error)) return { kind: 'loading' };
     if (slot.error) return { kind: 'error', text: slot.error };
     const side = slot.side;
@@ -158,13 +177,14 @@
       case 'too-large':
         if (side.soft) return { kind: 'message', text: `Large image (${formatBytes(side.size)})`, load: true };
         return { kind: 'message', text: `Too large to preview (${tooLargeDetail(side)})` };
-      case 'lfs-pointer':
-        return { kind: 'message', text: `Stored in Git LFS (${formatBytes(side.lfs && side.lfs.size)}) — not loaded` };
+      case 'lfs-pointer': // the object isn't in the local LFS cache (nothing is ever downloaded)
+        return { kind: 'message', text: `Stored in Git LFS (${formatBytes(side.lfs && side.lfs.size)}) — not available locally` };
       case 'unsupported':
         return { kind: 'message', text: `${formatLabel(side.format) || 'This format'} — preview not supported` };
       case 'special':
         return { kind: 'message', text: 'Not a regular file — no preview' };
       case 'absent':
+        if (conflict) return { kind: 'message', text: 'Deleted on this side' };
         return { kind: 'message', text: side.side === 'old' ? 'Added' : 'Deleted' };
       default: // 'not-image'
         return { kind: 'message', text: side.size === 0 ? 'Empty file' : 'Not an image — no preview' };
@@ -179,26 +199,111 @@
   const isPending = (slot) => !slot || (!slot.side && !slot.error);
 
   /**
-   * How the preview body is laid out: {fallback: true, note} (nothing to show on either side: the
+   * How the preview body is laid out: {fallback: true, note} (nothing to show on any side: the
    * binary message, plus `note` when an image failed to decode) or {fallback: false, panes:
-   * [{which: 'old' | 'new', title}]} — 'Before' / 'After', or one pane 'Added' / 'Deleted' when
-   * the other side doesn't exist. `failed`: {old, new} decode failures.
+   * [{which: 'old' | 'new' | 'base', title}]} — 'Before' / 'After', or one pane 'Added' / 'Deleted'
+   * when the other side doesn't exist. A conflict: 'Base' (left out when no stage 1), 'Ours (main)',
+   * 'Theirs (feature)' (`names`: PLOp.conflictSides' {ours, theirs}, display-safe; plain 'Ours' /
+   * 'Theirs' without). `failed`: {old, new, base} decode failures.
    */
-  function layout(preview, failed = {}) {
-    const old = preview && preview.old;
-    const neu = preview && preview.new;
-    if (!isPending(old) && !isPending(neu) && !isVisual(old, failed.old) && !isVisual(neu, failed.new)) {
-      const bad = [old, neu].find((s, i) => s.side && s.side.kind === 'image' && failed[i ? 'new' : 'old']);
+  function layout(preview, failed = {}, { names = null } = {}) {
+    const conflict = !!(preview && preview.conflict);
+    const order = conflict ? ['base', 'old', 'new'] : ['old', 'new'];
+    const slots = order.map((w) => (preview ? preview[w] : null));
+    if (slots.every((s) => !isPending(s)) && slots.every((s, i) => !isVisual(s, failed[order[i]]))) {
+      const bad = slots.find((s, i) => s.side && s.side.kind === 'image' && failed[order[i]]);
       return { fallback: true, note: bad ? `Couldn't decode this ${formatLabel(bad.side.format) || 'image'}` : null };
     }
+    if (conflict) {
+      const base = slots[0];
+      const titled = (which, word, name) => ({ which, title: name ? `${word} (${name})` : word });
+      return {
+        fallback: false,
+        panes: [
+          ...(base && base.side && isAbsent(base.side) ? [] : [{ which: 'base', title: 'Base' }]),
+          titled('old', 'Ours', names && names.ours), titled('new', 'Theirs', names && names.theirs),
+        ],
+      };
+    }
+    const [old, neu] = slots;
     if (old && old.side && isAbsent(old.side)) return { fallback: false, panes: [{ which: 'new', title: 'Added' }] };
     if (neu && neu.side && isAbsent(neu.side)) return { fallback: false, panes: [{ which: 'old', title: 'Deleted' }] };
     return { fallback: false, panes: [{ which: 'old', title: 'Before' }, { which: 'new', title: 'After' }] };
   }
 
+  // ---------------------------------------------------------------- zoom and comparison modes
+
+  /** The zoom steps of zoom in / out (×2 / ÷2), 12.5% to 3200%. */
+  const ZOOM_STEPS = Object.freeze([0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32]);
+
+  /**
+   * The zoom after one step in (`dir` > 0) or out from `zoom` ('fit' or a scale), whose scale on
+   * screen is `shown` (Fit's computed scale; a number zoom is its own): the next step past it, kept
+   * within ZOOM_STEPS.
+   */
+  function zoomStep(zoom, dir, shown = zoom === 'fit' ? 1 : Number(zoom)) {
+    const at = Number.isFinite(shown) && shown > 0 ? shown : 1;
+    const eps = 1e-9;
+    if (dir > 0) return ZOOM_STEPS.find((z) => z > at + eps) || ZOOM_STEPS[ZOOM_STEPS.length - 1];
+    return [...ZOOM_STEPS].reverse().find((z) => z < at - eps) || ZOOM_STEPS[0];
+  }
+
+  /** '100%', '12.5%', '3200%': a scale as a percentage. */
+  const zoomText = (scale) => `${Number((scale * 100).toFixed(1))}%`;
+
+  /** Above 100% the pixels are drawn as squares (image-rendering: pixelated), so they can be counted. */
+  const pixelated = (scale) => Number.isFinite(scale) && scale > 1;
+
+  /** The comparison modes, in the order the mode key (m) cycles them. */
+  const MODES = Object.freeze([
+    Object.freeze({ id: 'side-by-side', label: 'Side by side', title: 'Before and after next to each other' }),
+    Object.freeze({ id: 'swipe', label: 'Swipe', title: 'After over before, revealed up to a divider you drag' }),
+    Object.freeze({ id: 'onion', label: 'Onion skin', title: 'After over before, faded by a slider' }),
+    Object.freeze({ id: 'difference', label: 'Difference', title: 'The pixels that changed: identical pixels are black' }),
+  ]);
+  const MODE_IDS = new Set(MODES.map((m) => m.id));
+
+  /** A stored mode id, else 'side-by-side'. */
+  const modeOf = (v) => (MODE_IDS.has(v) ? v : 'side-by-side');
+
+  /**
+   * Whether the comparison modes apply: Before and After both shown as decoded images (both sides
+   * 'image', each with its URL and not failed), not a conflict.
+   */
+  function canCompare(preview, failed = {}) {
+    if (!preview || preview.conflict) return false;
+    return ['old', 'new'].every((w) => {
+      const s = preview[w];
+      return !!(s && !s.error && s.side && s.side.kind === 'image' && s.url && !failed[w]);
+    });
+  }
+
+  /** The mode after `mode` in MODES (wrapping). */
+  function nextMode(mode) {
+    const i = MODES.findIndex((m) => m.id === mode);
+    return MODES[(i + 1) % MODES.length].id;
+  }
+
+  /**
+   * The overlay of a comparison mode: both images at one scale, top-left aligned, in a frame of the
+   * larger width and height. {scale, frame, old, new} (CSS px sizes), or null without both sizes.
+   * `zoom` as for scaledSize; Fit fits the frame into `box`.
+   */
+  function overlaySize(zoom, a, b, box) {
+    const ok = (d) => d && d.width > 0 && d.height > 0;
+    if (!ok(a) || !ok(b)) return null;
+    const natural = { width: Math.max(a.width, b.width), height: Math.max(a.height, b.height) };
+    const scale = zoom === 'fit' ? fitScale(natural, box) : Number(zoom) || 1;
+    const px = (d) => ({ width: Math.max(1, Math.round(d.width * scale)), height: Math.max(1, Math.round(d.height * scale)) });
+    return { scale, frame: px(natural), old: px(a), new: px(b) };
+  }
+
+  /** A swipe divider or onion opacity position (percent) kept in 0-100. */
+  const clampPct = (v) => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 50);
+
   /**
    * The metadata line of a pane: ['WebP · animated', '512×512', '148.2 KB', 'Working copy'] (the
-   * source only for working-copy diffs), and `note` when the content isn't what the name says
+   * source only for working-copy diffs; 'LFS <oid>' for a Git LFS pointer or object), and `note` when the content isn't what the name says
    * ('content is PNG, named .webp'). `path`: the side's file path.
    */
   function meta(side, { decoded = null, workdir = false, path = '' } = {}) {
@@ -210,7 +315,7 @@
     if (dims) parts.push(dims);
     if (side.dims && side.dims.count > 1) parts.push(`${side.dims.count} sizes`);
     if (Number.isFinite(side.size)) parts.push(formatBytes(side.size));
-    if (side.kind === 'lfs-pointer' && side.lfs) parts.push(`LFS ${side.lfs.oid.slice(0, 10)}`);
+    if (side.lfs) parts.push(`LFS ${side.lfs.oid.slice(0, 10)}`); // a pointer, or its object from the local LFS cache
     if (workdir && SOURCES[side.source]) parts.push(SOURCES[side.source]);
     const ext = F() ? F().extensionOf(path) : null;
     const note = side.mismatch && label && ext ? `content is ${label}, named .${ext}` : null;
@@ -230,7 +335,7 @@
    * an image extension; else 'binary' (Q9: one badge, not both).
    */
   function badge(spec, data, preview) {
-    if (!wantsPreview(spec, data)) return 'binary';
+    if (previewKind(spec, data) !== 'binary') return 'binary';
     const sides = preview && sameTarget(preview.spec, spec) ? [preview.old, preview.new].map((s) => s && s.side).filter(Boolean) : [];
     const known = sides.filter((s) => !isAbsent(s) && s.kind !== 'special');
     if (known.some((s) => s.format || s.kind === 'lfs-pointer')) return 'image';
@@ -239,8 +344,9 @@
   }
 
   const api = {
-    wantsPreview, sameTarget, formatBytes, formatLabel, dimsText, isAbsent, delta, deltaParts, fitScale, scaledSize,
-    paneState, isVisual, layout, meta, altText, badge,
+    previewKind, wantsPreview, sameTarget, formatBytes, formatLabel, dimsText, isAbsent, delta, deltaParts, fitScale, scaledSize,
+    paneState, isVisual, layout, meta, altText, badge, ZOOM_STEPS, zoomStep, zoomText, pixelated, MODES, modeOf, canCompare,
+    nextMode, overlaySize, clampPct,
   };
   if (typeof window !== 'undefined') window.PLImage = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

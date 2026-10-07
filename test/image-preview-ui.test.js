@@ -1,8 +1,9 @@
 'use strict';
-// docs/plans/image-preview.md I2: the image preview (renderer/components/image-preview.js) inside the
-// mounted diff view on the fake DOM of test/renderer-harness.js — panes, metadata, the delta, the
-// header badge, Fit / 100%, decode failures, Load preview, the binary fallback — and the page's CSP
-// and script order (renderer/index.html).
+// docs/plans/image-preview.md I2 / I3: the image preview (renderer/components/image-preview.js) inside
+// the mounted diff view on the fake DOM of test/renderer-harness.js — panes, metadata, the delta, the
+// header badge, Fit / 100% / zoom steps, decode failures, Load preview, the binary fallback, the
+// comparison modes, the image keys, a text-backed SVG's Preview | Text, a conflict's three panes —
+// and the page's CSP and script order (renderer/index.html).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,10 +25,11 @@ const imageSide = (side, key, extra = {}) => ({
 });
 const other = (side, kind, extra = {}) => ({ ...imageSide(side, `k-${side}`, extra), kind, mime: null, bytes: undefined, ...extra });
 
-/** The diff view mounted on a fake DOM over a loaded store; commit b's `file` diff opened (binary). */
-async function mount(tc, { file = 'img/logo.png' } = {}) {
+/** The diff view mounted on a fake DOM over a loaded store; commit b's `file` diff opened (binary, or `diff`). */
+async function mount(tc, { file = 'img/logo.png', diff = null, storage = H.memoryStorage() } = {}) {
   let n = 0;
   const urlApi = { createObjectURL: () => `blob:file:///u${++n}`, revokeObjectURL() {} };
+  H.setLocalStorage(storage);
   const { win, api, store } = await H.loadedStore(H.repoData({ commits: [H.commit(SHA, ['a']), H.commit('a')] }), { urlApi });
   const dom = H.componentDom();
   Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
@@ -49,7 +51,7 @@ async function mount(tc, { file = 'img/logo.png' } = {}) {
   tc.after(dispose);
   const spec = { kind: 'commit', sha: SHA, file };
   store.actions.openDiff(spec);
-  api.take('commitDiffView').resolve(binaryDiff(file));
+  api.take('commitDiffView').resolve(diff || binaryDiff(file));
   await H.flush();
   const q = (sel) => root.querySelector(sel);
   const qa = (sel) => root.querySelectorAll(sel);
@@ -69,7 +71,7 @@ async function mount(tc, { file = 'img/logo.png' } = {}) {
     img.naturalHeight = height;
     dom.dispatch(img, 'load');
   };
-  return { win, api, store, dom, root, spec, q, qa, land, texts, badges, loaded, dispose };
+  return { win, api, store, dom, root, spec, q, qa, land, texts, badges, loaded, dispose, storage };
 }
 
 test('preview: Before / After images instead of the binary message, with metadata, the delta and an image badge', async (tc) => {
@@ -214,7 +216,7 @@ test('preview: too large, Git LFS, unsupported and op errors are messages in the
     other('old', 'lfs-pointer', { format: null, size: 130, dims: null, lfs: { oid: 'c'.repeat(64), size: 2.4 * MB } }),
     other('new', 'too-large', { size: 82 * MB, soft: false, limit: 'size', format: null, dims: null }),
   );
-  assert.deepEqual(t.texts('.ip-state-text'), ['Stored in Git LFS (2.4 MB) — not loaded', 'Too large to preview (82 MB)']);
+  assert.deepEqual(t.texts('.ip-state-text'), ['Stored in Git LFS (2.4 MB) — not available locally', 'Too large to preview (82 MB)']);
   assert.equal(t.q('button.ip-load'), null, 'a hard cap: no Load preview');
   t.dispose();
 });
@@ -258,6 +260,229 @@ test('preview: closing the diff detaches it; switching files never shows the pre
   assert.equal(t.root.hidden, true);
   assert.equal(t.q('.ip'), null);
   t.dispose();
+});
+
+// ------------------------------------------------------------------ I3: zoom steps, keys, comparison modes
+
+/** Both sides landed and decoded: a 400×200 Before and a 200×300 After, in 424×324 stages. */
+async function decodedPair(t) {
+  await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const [a, b] = t.qa('img');
+  t.loaded(a, 400, 200);
+  t.loaded(b, 200, 300);
+  return [a, b];
+}
+
+test('zoom: − / + step ×2 from the scale on screen, the level shows it, pixels go square above 100%', async (tc) => {
+  const t = await mount(tc);
+  const [a] = await decodedPair(t);
+  const level = t.q('.ip-zoom-level');
+  assert.equal(level.textContent, '100%', 'Fit of images that fit: 100%');
+  const [out, inn] = t.qa('.ip-zoom-step');
+  assert.deepEqual([out.title, inn.title], ['Zoom out (-)', 'Zoom in (+)']);
+  inn.click();
+  assert.deepEqual([a.style.width, level.textContent], ['800px', '200%']);
+  assert.ok(t.q('.ip').classList.contains('is-pixelated'), 'image-rendering: pixelated above 100%');
+  assert.deepEqual(t.qa('.ip-zoom-btn').map((b) => b.getAttribute('aria-pressed')), ['false', 'false'], 'neither Fit nor 100%');
+  out.click();
+  out.click();
+  assert.deepEqual([a.style.width, level.textContent], ['200px', '50%']);
+  assert.equal(t.q('.ip').classList.contains('is-pixelated'), false);
+  for (let i = 0; i < 5; i++) out.click();
+  assert.equal(level.textContent, '12.5%');
+  assert.equal(out.disabled, true, 'the smallest step');
+  t.dispose();
+});
+
+test('keys: + - 0 1 zoom and m cycles the mode while a picture is shown; not in a text field, not with ⌘', async (tc) => {
+  const t = await mount(tc);
+  const [a] = await decodedPair(t);
+  const press = (key, mods) => t.dom.key(key, mods, t.dom.doc.body);
+  let e = press('+');
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(a.style.width, '800px');
+  press('-');
+  press('-');
+  assert.equal(a.style.width, '200px');
+  press('1');
+  assert.equal(a.style.width, '400px');
+  press('=');
+  press('0');
+  assert.equal(a.style.width, '400px', 'Fit (it fits)');
+  e = press('+', { metaKey: true });
+  assert.equal(e.defaultPrevented, false, '⌘+ is the page zoom (the View menu)');
+  assert.equal(a.style.width, '400px');
+  press('m');
+  assert.ok(t.q('.ip-compare'), 'm: side by side -> swipe');
+  assert.equal(t.q('.ip-compare').dataset.mode, 'swipe');
+  const input = t.dom.doc.createElement('input');
+  input.type = 'text';
+  t.dom.doc.body.append(input);
+  input.focus();
+  press('m', {});
+  t.dom.key('m', {}, input);
+  assert.equal(t.q('.ip-compare').dataset.mode, 'swipe', 'typing in a field changes nothing');
+  t.dispose();
+});
+
+test('keys: no image keys without a picture (a non-image, a too-large side); n / p still belong to the diff', async (tc) => {
+  const t = await mount(tc);
+  await t.land(other('old', 'too-large', { size: 34 * MB, soft: true, limit: 'size', max: 20 * MB }), other('new', 'unsupported', { format: 'heic' }));
+  assert.equal(t.dom.key('+', {}, t.dom.doc.body).defaultPrevented, false);
+  assert.equal(t.dom.key('m', {}, t.dom.doc.body).defaultPrevented, false);
+  t.dispose();
+});
+
+test('modes: offered only for two images; swipe, onion skin and difference overlay them in one frame; the choice is kept', async (tc) => {
+  const t = await mount(tc);
+  await t.land(imageSide('old', 'k1'), other('new', 'absent', { size: null, key: null, format: null, dims: null }));
+  assert.equal(t.q('.ip-modes').hidden, true, 'an added image: nothing to compare');
+  t.store.actions.loadImagePreview(t.spec);
+  await decodedPair(t);
+  const modes = t.q('.ip-modes');
+  assert.equal(modes.hidden, false);
+  assert.deepEqual(t.texts('.ip-mode-btn'), ['Side by side', 'Swipe', 'Onion skin', 'Difference']);
+  assert.deepEqual(t.qa('.ip-mode-btn').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.mode), ['side-by-side']);
+
+  t.qa('.ip-mode-btn')[1].click(); // swipe
+  assert.equal(t.q('.ip-panes'), null, 'the panes make way for the frame');
+  const stage = t.q('.ip-compare-stage');
+  stage.clientWidth = 424;
+  stage.clientHeight = 324;
+  t.store.set({ imagePreview: { ...t.store.state.imagePreview } }); // the ResizeObserver is a stub here: a redraw sizes the frame
+  const frame = t.q('.ip-frame');
+  const [before, after, handle] = frame.children;
+  assert.deepEqual([before.dataset.side, after.dataset.side, handle.getAttribute('role')], ['old', 'new', 'slider']);
+  assert.deepEqual([frame.style.width, frame.style.height], ['400px', '300px'], 'the larger width and height at Fit');
+  assert.deepEqual([before.style.width, after.style.width, after.style.height], ['400px', '200px', '300px'], 'one scale, top-left aligned');
+  assert.equal(after.style.clipPath, 'inset(0 0 0 200px)', 'After right of the divider at 50%');
+  assert.deepEqual(t.texts('.ip-compare-label'), ['Before', 'After']);
+  assert.deepEqual(t.texts('.ip-compare-side'), ['Before: PNG · 400×200 · 100 KB', 'After: PNG · 200×300 · 100 KB']);
+  handle.focus();
+  t.dom.key('ArrowRight', {}, handle);
+  assert.equal(handle.getAttribute('aria-valuenow'), '55');
+  assert.equal(after.style.clipPath, 'inset(0 0 0 220px)');
+  t.dom.key('End', {}, handle);
+  t.dom.key('ArrowRight', {}, handle);
+  assert.equal(handle.getAttribute('aria-valuenow'), '100', 'kept within the frame');
+  assert.equal(t.storage.getItem('pl.imageMode'), '"swipe"', 'one preference for the app');
+
+  t.qa('.ip-mode-btn')[2].click(); // onion skin
+  const range = t.q('.ip-onion-range');
+  assert.equal(after.style.clipPath, '', 'no clip outside swipe');
+  assert.equal(after.style.opacity, '0.5');
+  range.value = '20';
+  t.dom.dispatch(range, 'input');
+  assert.equal(after.style.opacity, '0.2');
+  assert.equal(frame.children.length, 2, 'no divider');
+
+  t.qa('.ip-mode-btn')[3].click(); // difference
+  assert.ok(frame.classList.contains('is-difference'));
+  assert.equal(after.style.opacity, '');
+  assert.match(t.q('.ip-compare-controls').textContent, /identical pixels are black/);
+
+  t.qa('.ip-mode-btn')[0].click(); // back side by side: the same <img>s, no overlay styles left
+  const imgs = t.qa('img');
+  assert.deepEqual(imgs, [before, after]);
+  assert.deepEqual(t.texts('.ip-pane-title'), ['Before', 'After']);
+  t.dispose();
+});
+
+test('modes: the stored mode applies to the next file; a decode failure falls back to side by side', async (tc) => {
+  const storage = H.memoryStorage();
+  storage.setItem('pl.imageMode', '"difference"');
+  const t = await mount(tc, { storage });
+  await decodedPair(t);
+  assert.equal(t.q('.ip-compare').dataset.mode, 'difference');
+  t.dom.dispatch(t.q('.ip-frame').children[1], 'error');
+  assert.equal(t.q('.ip-compare'), null);
+  assert.deepEqual(t.texts('.ip-state'), ['Couldn\'t decode this image']);
+  assert.equal(t.q('.ip-modes').hidden, true);
+  t.dispose();
+});
+
+// ------------------------------------------------------------------ I3: text-backed images, conflicts
+
+const svgText = () => {
+  const f = { oldPath: 'icon.svg', newPath: 'icon.svg', isBinary: false, oldMode: '100644', newMode: '100644', hunks: [{ header: '@@ -1 +1 @@', oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [{ type: 'del', text: '<svg/>', oldNo: 1 }, { type: 'add', text: '<svg width="2"/>', newNo: 1 }] }] };
+  return { file: f, sections: [f], fingerprint: null, truncated: false, conflict: null };
+};
+
+test('an SVG with a text diff: the preview by default, Preview | Text in the header, the choice kept for the app', async (tc) => {
+  const t = await mount(tc, { file: 'icon.svg', diff: svgText() });
+  assert.ok(t.q('.ip'), 'the rendered preview first');
+  assert.equal(t.q('.dv-row'), null);
+  const [pv, tx] = t.qa('.dv-view-btn');
+  assert.deepEqual([pv.textContent, tx.textContent, pv.getAttribute('aria-pressed')], ['Preview', 'Text', 'true']);
+  const svg = (side) => imageSide(side, `s-${side}`, { format: 'svg', mime: 'image/svg+xml', dims: null });
+  await t.land(svg('old'), svg('new'));
+  assert.equal(t.qa('img').length, 2);
+  tx.click();
+  assert.equal(t.q('.ip'), null);
+  assert.ok(t.qa('.dv-row').length > 0, 'the text diff\'s rows');
+  const textBtn = t.qa('.dv-view-btn').find((b) => b.dataset.view === 'text');
+  assert.equal(textBtn.getAttribute('aria-pressed'), 'true');
+  assert.equal(t.dom.doc.activeElement, textBtn, 'focus stays on the switch');
+  assert.equal(t.storage.getItem('pl.imageView'), '"text"');
+  assert.equal(t.dom.key('+', {}, t.dom.doc.body).defaultPrevented, false, 'no image keys while the text shows');
+  t.dispose();
+
+  const again = await mount(tc, { file: 'icon.svg', diff: svgText(), storage: t.storage });
+  assert.equal(again.q('.ip'), null, 'Text remembered');
+  again.qa('.dv-view-btn').find((b) => b.dataset.view === 'preview').click();
+  assert.ok(again.q('.ip'));
+  assert.equal(again.storage.getItem('pl.imageView'), '"preview"');
+  again.dispose();
+});
+
+test('a binary diff has no Preview | Text switch; a text file none either', async (tc) => {
+  const t = await mount(tc);
+  assert.equal(t.q('.dv-view-toggle'), null);
+  t.dispose();
+  const txt = svgText();
+  txt.file.oldPath = 'a.txt';
+  txt.file.newPath = 'a.txt';
+  const u = await mount(tc, { file: 'a.txt', diff: txt });
+  assert.equal(u.q('.dv-view-toggle'), null);
+  assert.equal(u.q('.ip'), null);
+  u.dispose();
+});
+
+test('a conflicted binary image: Base, Ours and Theirs panes from the index stages, no delta, no modes', async (tc) => {
+  let n = 0;
+  H.setLocalStorage(H.memoryStorage());
+  const urlApi = { createObjectURL: () => `blob:file:///c${++n}`, revokeObjectURL() {} };
+  const st = { ...H.status({ oid: 'a'.repeat(40), branch: 'main' }), state: 'merging', merge: { head: SHA, name: 'feature/x' } };
+  const { win, api, store } = await H.loadedStore(H.repoData({ commits: [H.commit('a'.repeat(40))], status: st }), { urlApi });
+  const dom = H.componentDom();
+  Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
+  win.addEventListener = dom.win.addEventListener;
+  win.removeEventListener = dom.win.removeEventListener;
+  for (const f of ['actions.js', 'components/diff-model.js', 'components/diff-staging.js', 'components/image-preview.js', 'components/diff-view.js']) {
+    delete require.cache[require.resolve(R_(f))];
+    require(R_(f));
+  }
+  const root = dom.doc.createElement('section');
+  root.dataset.component = 'diff-view';
+  dom.doc.body.append(root);
+  const unmount = win.Components.mountAll({ querySelectorAll: () => [root], contains: (x) => x === root }, store);
+  tc.after(unmount);
+  store.actions.openDiff({ kind: 'workdir', file: 'a.png', staged: false, untracked: false });
+  api.take('workdirDiffView').resolve({ file: null, sections: [], fingerprint: null, truncated: false, conflict: { path: 'a.png', hunks: [], isBinary: true } });
+  await H.flush();
+  const texts = (sel) => root.querySelectorAll(sel).map((x) => x.textContent);
+  assert.match(texts('.dv-banner')[0], /^Conflicted image/);
+  for (const w of ['base', 'old', 'new']) {
+    api.take('workdirImageSide', (c) => c.args[2] === w).resolve({ ...imageSide(w, `k-${w}`), source: 'index' });
+  }
+  await H.flush();
+  const op = win.PLOp.conflictSides(store.state.status, store.state.refsBySha);
+  assert.deepEqual(texts('.ip-pane-title'), ['Base', `Ours (${op.ours})`, `Theirs (${op.theirs})`]);
+  assert.equal(root.querySelectorAll('img').length, 3);
+  assert.deepEqual(texts('.ip-fact'), [], 'no before / after delta');
+  assert.equal(root.querySelector('.ip-modes').hidden, true);
+  assert.deepEqual(texts('.ip-meta'), ['PNG · 512×512 · 100 KB', 'PNG · 512×512 · 100 KB', 'PNG · 512×512 · 100 KB'], 'no "Index" source on every pane');
+  assert.ok(root.querySelector('.ip-panes').classList.contains('is-conflict'));
 });
 
 // ------------------------------------------------------------------ the page

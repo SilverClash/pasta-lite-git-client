@@ -1,7 +1,8 @@
-/* image preview of the diff view (components/image-preview.js): before / after panes on a checkerboard. */
+/* image preview of the diff view (components/image-preview.js): before / after panes on a checkerboard,
+   the comparison modes (swipe, onion skin, difference) and zoom. */
 .ip { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-/* Summary bar: size change, dimension / format changes, Fit | 100% */
+/* Summary bar: size change, dimension / format changes, comparison mode, zoom */
 .ip-summary {
   flex: none; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--border);
@@ -10,14 +11,19 @@
 .ip-fact-size { font: 600 12px var(--mono); }
 .ip-fact-size.ip-grew { color: var(--green-bright); }
 .ip-fact-size.ip-shrank { color: var(--red-bright); }
-.ip-zoom { flex: none; display: inline-flex; border: 1px solid var(--white-12); border-radius: 4px; overflow: hidden; }
-.ip-zoom-btn {
+.ip-tools { flex: none; display: flex; align-items: center; gap: 10px; }
+.ip-zoom-level { min-width: 44px; text-align: right; font: 11px var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ip-zoom, .ip-modes { flex: none; display: inline-flex; border: 1px solid var(--white-12); border-radius: 4px; overflow: hidden; }
+.ip-zoom[hidden], .ip-modes[hidden], .ip-zoom-level[hidden] { display: none; }
+.ip-zoom-btn, .ip-zoom-step, .ip-mode-btn {
   font: 600 11px/1 var(--font); color: var(--text-2); background: transparent; border: 0; padding: 0 10px; height: 24px; cursor: pointer;
 }
-.ip-zoom-btn + .ip-zoom-btn { border-left: 1px solid var(--white-12); }
-.ip-zoom-btn:hover { color: var(--text-strong); background: var(--panel-3); }
-.ip-zoom-btn[aria-pressed="true"] { color: var(--text-strong); background: var(--blue-select); }
-.ip-zoom-btn:focus-visible { outline-offset: -2px; }
+.ip-zoom-step { font-size: 14px; padding: 0 8px; }
+.ip-zoom > * + *, .ip-modes > * + * { border-left: 1px solid var(--white-12); }
+.ip-zoom-btn:hover, .ip-zoom-step:hover:not(:disabled), .ip-mode-btn:hover { color: var(--text-strong); background: var(--panel-3); }
+.ip-zoom-step:disabled { opacity: 0.4; cursor: default; }
+.ip-zoom-btn[aria-pressed="true"], .ip-mode-btn[aria-pressed="true"] { color: var(--text-strong); background: var(--blue-select); }
+.ip-zoom-btn:focus-visible, .ip-zoom-step:focus-visible, .ip-mode-btn:focus-visible { outline-offset: -2px; }
 
 /* Panes */
 .ip-panes { flex: 1; min-height: 0; display: flex; gap: 1px; background: var(--border); }
@@ -29,6 +35,7 @@
 }
 .ip-pane[data-side="old"] .ip-pane-title { color: var(--red-text); }
 .ip-pane[data-side="new"] .ip-pane-title { color: var(--green-text); }
+.ip-panes.is-conflict .ip-pane-title { color: var(--text-2); } /* base / ours / theirs: no before and after */
 .ip-stage { flex: 1; min-height: 0; overflow: auto; display: flex; padding: 12px; outline: none; }
 .ip-stage:focus-visible { box-shadow: var(--focus-inset); }
 /* margin: auto centres a smaller image and, unlike centring the container, never clips a larger one. */
@@ -38,6 +45,7 @@
   box-shadow: 0 0 0 1px var(--border-strong);
 }
 .ip-img:not(.is-sized) { visibility: hidden; } /* until it decoded and got its zoomed size */
+.ip.is-pixelated .ip-img { image-rendering: pixelated; } /* above 100%: square pixels you can count */
 
 .ip-state { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; text-align: center; }
 .ip-state-text { color: var(--text-2); font-size: 13px; max-width: 360px; white-space: pre-wrap; word-break: break-word; }
@@ -53,3 +61,36 @@
 }
 .ip-meta-text { font-variant-numeric: tabular-nums; }
 .ip-mismatch { color: var(--yellow); }
+
+/* Comparison modes: both images in one frame, top-left aligned, at one scale */
+.ip-compare { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.ip-compare-controls {
+  flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 30px; padding: 4px 14px;
+  font-size: 12px; color: var(--text-2);
+}
+.ip-compare-label { font: 600 11px/16px var(--font); text-transform: uppercase; letter-spacing: 0.06em; }
+.ip-compare-label:first-child { color: var(--red-text); }
+.ip-compare-label:last-child { color: var(--green-text); }
+.ip-compare-hint { color: var(--text-3); }
+.ip-onion-range { width: min(320px, 50%); accent-color: var(--accent); }
+.ip-frame {
+  flex: none; margin: auto; position: relative; isolation: isolate; overflow: hidden;
+  background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 16px 16px;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.ip-frame:not(.is-sized) { visibility: hidden; }
+.ip-frame .ip-img { position: absolute; top: 0; left: 0; margin: 0; background: none; box-shadow: none; }
+.ip-frame.is-difference { background: #000; } /* identical pixels come out black, so the frame is black too */
+.ip-frame.is-difference .ip-img[data-side="new"] { mix-blend-mode: difference; }
+.ip-frame.is-swipe { cursor: ew-resize; touch-action: none; }
+.ip-swipe-handle {
+  position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); outline: none;
+  box-shadow: 0 0 0 1px var(--overlay);
+}
+.ip-swipe-handle::after { /* a grip in the middle, wider than the line, to aim at */
+  content: ''; position: absolute; top: 50%; left: 50%; width: 14px; height: 28px; transform: translate(-50%, -50%);
+  border-radius: 7px; background: var(--accent); box-shadow: 0 0 0 1px var(--overlay);
+}
+.ip-swipe-handle:focus-visible::after { box-shadow: 0 0 0 2px var(--text-strong); }
+.ip-compare-meta { justify-content: space-between; }
+.ip-compare-side[data-side="old"] .ip-meta-text { color: var(--text-2); }

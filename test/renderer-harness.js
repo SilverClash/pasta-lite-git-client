@@ -30,15 +30,19 @@ function throwingStorage() {
 }
 
 /**
- * Fresh window.Graph / window.PLErrorKinds / window.Components / window.PLKeys / window.PLIcons / window.PLOp / window.PLPolicy / window.PLHistory /
- * window.PLRebase / window.Store (module caches cleared; index.html order).
+ * Fresh window.Graph / window.PLErrorKinds / window.PLImageFormat / window.Components / window.PLKeys / window.PLIcons /
+ * window.PLOp / window.PLPolicy / window.PLHistory / window.PLRebase / window.PLImageCache / window.PLImage /
+ * window.Store (module caches cleared; index.html order).
  */
 function loadRenderer() {
-  const files = ['components.js', 'keys.js', 'icons.js', 'op-model.js', 'policy.js', 'history-model.js', 'components/rebase-model.js', 'store.js'];
+  const files = ['components.js', 'keys.js', 'icons.js', 'op-model.js', 'policy.js', 'history-model.js', 'components/rebase-model.js',
+    'image-cache.js', 'components/image-model.js', 'store.js'];
   const kinds = path.join(__dirname, '..', 'src', 'error-kinds.js');
-  for (const f of [kinds, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
-  // index.html order: graph.js, ../src/error-kinds.js (window.PLErrorKinds), then components.js ...
-  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds: require(kinds) };
+  const formats = path.join(__dirname, '..', 'src', 'image-format.js');
+  for (const f of [kinds, formats, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
+  // index.html order: graph.js, ../src/error-kinds.js (window.PLErrorKinds), ../src/image-format.js
+  // (window.PLImageFormat), then components.js ...
+  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds: require(kinds), PLImageFormat: require(formats) };
   globalThis.document = globalThis.document || { createElement: (tag) => ({ tagName: String(tag).toUpperCase() }) };
   for (const f of files) require(R(f));
   return globalThis.window;
@@ -542,11 +546,11 @@ async function answerRefresh(api, data, { rejectUndo, rejectStashes } = {}) {
   return !!log;
 }
 
-/** Store over a fresh api; loads `repo` with `data` (answering the first refresh). */
-async function loadedStore(data, { repo = { root: '/r', name: 'r' } } = {}) {
+/** Store over a fresh api; loads `repo` with `data` (answering the first refresh). urlApi: the image cache's URL api. */
+async function loadedStore(data, { repo = { root: '/r', name: 'r' }, urlApi } = {}) {
   const win = loadRenderer();
   const api = makeApi();
-  const store = win.Store.create(api);
+  const store = win.Store.create(api, { urlApi });
   const p = store.actions.loadRepo(repo);
   await flush(1);
   await answerRefresh(api, data);

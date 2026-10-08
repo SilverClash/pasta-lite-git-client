@@ -15,7 +15,7 @@ const { CHANNELS } = require('../src/ipc-contract');
 const { imageSide, readLimit, revisionKey, thumbnailKey, thumbnailSide, testHooks } = require('../src/image-preview');
 const { createOsThumbnailer } = require('../src/os-thumbnail');
 const { POLICY } = require('../src/image-format');
-const { png, jpeg, webpVp8x, svg, isobmff, tiff, psd } = require('./image-fixtures');
+const { png, jpeg, webpVp8x, svg, isobmff, heif, tiff, psd } = require('./image-fixtures');
 
 const runner = ops.createRunner();
 const rev = (dir, r) => h.git(dir, 'rev-parse', r).trim();
@@ -631,6 +631,19 @@ test('OS thumbnailer: HEIC, TIFF and PSD sides are its PNG (source os-thumbnail,
   assert.equal((await tr.workdir(dir, 'p.heic', {}, 'old')).thumbnail.from, 'index');
   await tr.thumbnailer.idle();
   assert.deepEqual(tr.left(), [], 'no temp file left');
+});
+
+test('OS thumbnailer: a HEIC (irot) and a TIFF (Orientation 6) stored landscape: the displayed size is asked for and labelled', async () => {
+  const dir = repoWith({ 'p.heic': heif(['heic', 'mif1'], 40, 30, { angle: 1 }), 'p.tif': tiff(40, 30, { orientation: 6 }) });
+  const head = rev(dir, 'HEAD');
+  const sizes = [];
+  const tr = thumbRunner({ answer: (file, size) => { sizes.push(size); return png(size.width, size.height); } });
+  for (const file of ['p.heic', 'p.tif']) {
+    const s = await tr.commit(dir, head, file, 'new');
+    assert.deepEqual([s.kind, s.dims, s.thumbnail.width, s.thumbnail.height], ['image', { width: 30, height: 40 }, 30, 40], file);
+  }
+  assert.deepEqual(sizes, [{ width: 30, height: 40 }, { width: 30, height: 40 }]);
+  await tr.thumbnailer.idle();
 });
 
 test('OS thumbnailer: a failure leaves the side unsupported, keyed as the original; knownKey of either is not read again', { skip: !POSIX }, async (t) => {

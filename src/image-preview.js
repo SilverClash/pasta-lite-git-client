@@ -18,7 +18,7 @@
 // The caller returns {side, key, unchanged: true} instead when the renderer already holds `key`.
 // A side read from the local Git LFS cache (source 'lfs-cache', ops.js) is judged like any other,
 // keyed 'lfs:<sha256>', and the caller adds the pointer's `lfs: {oid, size}` to it.
-// With an OS thumbnailer (I4, src/os-thumbnail.js: macOS, Windows) a HEIC, TIFF or PSD side
+// With an OS thumbnailer (I4, src/os-thumbnail.js: macOS) a HEIC, TIFF or PSD side
 // (THUMBNAIL_FORMATS) is capped like a tier 1 image, and the caller turns its bytes into a PNG:
 // thumbnailSide makes that an 'image' (source 'os-thumbnail', keyed 'os:<the original's key>', plus
 // `thumbnail: {by, from, width, height}`). When the thumbnailer fails it stays 'unsupported'.
@@ -56,7 +56,7 @@ const thumbnailKey = (key) => (key ? `os:${key}` : null);
  * The ImageSide of a side `s` ('unsupported', its whole bytes read) shown through the OS thumbnailer
  * (src/os-thumbnail.js): `thumb` {png, width, height} (the PNG's own size). Kind 'image', source
  * 'os-thumbnail', the PNG's bytes and mime; `format`, `size`, `dims` and `mismatch` stay the
- * original's, and `thumbnail` says what it is: {by ('macOS' | 'Windows'), from (the original's
+ * original's, and `thumbnail` says what it is: {by (the thumbnailer's: 'macOS'), from (the original's
  * source), width, height}.
  */
 function thumbnailSide(s, thumb, by) {

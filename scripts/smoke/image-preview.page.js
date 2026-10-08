@@ -151,18 +151,21 @@
   snap = await added('lfs-missing.png');
   steps.lfsMissing = snap;
   check(snap.states.some((t) => /Stored in Git LFS \(.+\) — not available locally/.test(t)), 'lfs-missing.png: not available locally');
-  // HEIC, TIFF (two pages: the first one shows) and PSD through the OS thumbnailer: macOS's QuickLook
-  // here; on Windows it depends on the installed codecs; elsewhere "preview not supported".
+  // HEIC, TIFF (two pages: the first one shows) and PSD through the OS thumbnailer: macOS's QuickLook;
+  // elsewhere "preview not supported". The portrait ones are stored landscape and turned by their
+  // header (HEIC irot, TIFF Orientation 6): the displayed size is the turned one.
   const mac = /Mac/.test(navigator.platform);
-  const win = /Win/.test(navigator.platform);
-  for (const [file, label, size] of [['scan.heic', 'HEIC', '64×64'], ['scan.tiff', 'TIFF', '96×64'], ['layers.psd', 'PSD', '64×64']]) {
+  const thumbnails = [
+    ['scan.heic', 'HEIC', '64×64'], ['scan.tiff', 'TIFF', '96×64'], ['layers.psd', 'PSD', '64×64'],
+    ['portrait.heic', 'HEIC', '64×96'], ['portrait.tiff', 'TIFF', '64×96'],
+  ];
+  for (const [file, label, size] of thumbnails) {
     snap = await added(file);
     steps[file] = snap;
     const thumb = allDecoded(snap, 1) && snap.imgs[0].natural.join('×') === size
-      && snap.meta.some((m) => m.includes(`${label} · ${size}`) && /Preview by (macOS|Windows)/.test(m));
+      && snap.meta.some((m) => m.includes(`${label} · ${size}`) && m.includes('Preview by macOS'));
     const unsupported = snap.states.includes(`${label} — preview not supported`);
-    if (mac) check(thumb && snap.meta.some((m) => m.includes('Preview by macOS')), `${file}: a thumbnail by macOS (${snap.meta} ${snap.states})`);
-    else if (win) check(thumb || unsupported, `${file}: a thumbnail by Windows, or not supported`);
+    if (mac) check(thumb, `${file}: a ${size} thumbnail by macOS (${snap.imgs.map((i) => i.natural.join('×'))}; ${snap.meta} ${snap.states})`);
     else check(unsupported, `${file}: not supported`);
   }
   await open({ kind: 'commit', sha: first, file: 'images/scan.tiff' });

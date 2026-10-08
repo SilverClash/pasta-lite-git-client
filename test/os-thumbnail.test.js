@@ -37,10 +37,10 @@ function fake({ answer, ...o } = {}) {
   return { t, calls, tmpDir, left: () => fs.readdirSync(tmpDir) };
 }
 
-test('platforms: macOS and Windows have one; Linux, or no call given, has none', () => {
+test('platforms: macOS has one; Windows (a synchronous Shell call in Electron), Linux, or no call given, has none', () => {
   const thumbnail = async () => null;
   assert.equal(createOsThumbnailer({ thumbnail, platform: 'darwin' }).by, 'macOS');
-  assert.equal(createOsThumbnailer({ thumbnail, platform: 'win32' }).by, 'Windows');
+  assert.equal(createOsThumbnailer({ thumbnail, platform: 'win32' }), null);
   assert.equal(createOsThumbnailer({ thumbnail, platform: 'linux' }), null);
   assert.equal(createOsThumbnailer({ thumbnail, platform: 'freebsd' }), null);
   assert.equal(createOsThumbnailer({ platform: 'darwin' }), null);
@@ -63,6 +63,11 @@ test('thumbnailOf: a PNG no larger than the image, of its aspect ratio', () => {
   assert.equal(thumbnailOf(png(1024, 1024), d), null, 'QuickLook\'s square file icon');
   assert.equal(thumbnailOf(png(4096, 2731), d), null, 'larger than the image');
   assert.equal(thumbnailOf(png(1024, 700), d), null, 'another aspect ratio');
+  // Turned a quarter: the header's dimensions missed a turn the OS applied.
+  assert.deepEqual(thumbnailOf(png(683, 1024), d), { width: 683, height: 1024 });
+  assert.deepEqual(thumbnailOf(png(1024, 683), { width: 2000, height: 3000 }), { width: 1024, height: 683 });
+  assert.equal(thumbnailOf(png(2000, 3000), { width: 1000, height: 1500 }), null, 'turned and larger than the image');
+  assert.equal(thumbnailOf(png(700, 1024), d), null, 'turned, another aspect ratio');
   assert.equal(thumbnailOf(Buffer.from('not a png'), d), null);
   assert.equal(thumbnailOf(null, d), null);
   assert.equal(thumbnailOf(Buffer.alloc(0), d), null);
@@ -154,6 +159,91 @@ test('render: no answer within the timeout is null; the copy goes when the call 
   gate.reject(new Error('late'));
   await t.idle();
   assert.deepEqual(left(), []);
+});
+
+test('render: an answer turned a quarter is taken (portrait thumbnail of a landscape header)', async () => {
+  const { t, calls } = fake({ answer: (file, size) => png(size.height, size.width) });
+  const res = await t.render(HEIC, { format: 'heic', dims: { width: 40, height: 30 } });
+  assert.deepEqual([res.width, res.height, calls.length], [30, 40, 1]);
+  await t.idle();
+});
+
+test('render: the timeout covers waiting for a slot and the OS call together', async () => {
+  const gate = deferred();
+  const timeoutMs = 200;
+  const { t, calls, left } = fake({ answer: () => gate.promise, concurrent: 1, timeoutMs });
+  const dims = { width: 40, height: 30 };
+  const a = t.render(HEIC, { format: 'heic', dims });
+  while (!calls.length) await new Promise((r) => setTimeout(r, 5));
+  const t0 = Date.now();
+  // b waits for a's slot; a hangs, so at a's deadline its slot is b's, whose own deadline comes soon after.
+  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null);
+  const took = Date.now() - t0;
+  assert.ok(took < timeoutMs * 1.6, `one deadline over the wait and the call (${took} ms)`);
+  assert.equal(await a, null);
+  assert.equal(calls.length, 2);
+  gate.resolve(png(40, 30));
+  await t.idle();
+  assert.deepEqual(left(), []);
+});
+
+test('render: a hung OS call stops holding its slot at its deadline; while maxAbandoned hang, nothing new is asked', async () => {
+  const gates = [deferred(), deferred(), deferred()];
+  const { t, calls, left } = fake({
+    answer: (file, size, all) => (all.length <= gates.length ? gates[all.length - 1].promise : png(size.width, size.height)),
+    concurrent: 1, timeoutMs: 30, maxAbandoned: 2,
+  });
+  const dims = { width: 40, height: 30 };
+  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null, 'the first hangs: null at its deadline');
+  assert.equal(t.busy(), true);
+  // A cancelled call holds its slot until it ends or its deadline passes, then frees it as well.
+  const ctrl = new AbortController();
+  const b = t.render(HEIC, { format: 'heic', dims, signal: ctrl.signal });
+  while (calls.length < 2) await new Promise((r) => setTimeout(r, 5));
+  ctrl.abort();
+  await assert.rejects(b, { kind: 'aborted' });
+  const c = t.render(HEIC, { format: 'heic', dims });
+  assert.equal(await c, null, 'it waited for the cancelled call\'s deadline, and got no slot then: two calls hang');
+  assert.equal(calls.length, 2);
+  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null, 'two hang: null at once');
+  assert.equal(calls.length, 2, 'not handed to the OS');
+  gates[0].resolve(null); // one hung call ends
+  while (left().length > 1) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 5));
+  const d = t.render(HEIC, { format: 'heic', dims });
+  while (calls.length < 3) await new Promise((r) => setTimeout(r, 5));
+  gates[2].resolve(png(40, 30));
+  assert.equal((await d).width, 40, 'asked again once fewer hang');
+  gates[1].resolve(null);
+  await t.idle();
+  assert.equal(t.busy(), false);
+  assert.deepEqual(left(), []);
+});
+
+test('sweep: removes the thumbnailer\'s own old temp folders only', async () => {
+  const { t, tmpDir, left } = fake();
+  const old = Date.now() / 1000 - 2 * 3600;
+  const mk = (name, { file = false, age = old } = {}) => {
+    const p = path.join(tmpDir, name);
+    if (file) fs.writeFileSync(p, 'x');
+    else fs.mkdirSync(path.join(p, 'sub'), { recursive: true });
+    fs.utimesSync(p, age, age);
+  };
+  mk(`${PREFIX}old`);
+  mk(`${PREFIX}new`, { age: Date.now() / 1000 });
+  mk(`${PREFIX}file`, { file: true });
+  mk('other-old');
+  if (POSIX) {
+    const target = path.join(h.tmpDir(), `${PREFIX}target`);
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, path.join(tmpDir, `${PREFIX}link`));
+    fs.lutimesSync(path.join(tmpDir, `${PREFIX}link`), old, old);
+  }
+  assert.equal(await t.sweep(), 1);
+  assert.deepEqual(left().sort(), [`${PREFIX}file`, ...(POSIX ? [`${PREFIX}link`] : []), `${PREFIX}new`, 'other-old'].sort());
+  assert.equal(await t.sweep({ maxAgeMs: 0, now: Date.now() + 1000 }), 1, 'the recent one, when asked');
+  const missing = createOsThumbnailer({ thumbnail: async () => null, platform: 'darwin', tmpDir: path.join(tmpDir, 'nope') });
+  assert.equal(await missing.sweep(), 0, 'no temp folder: nothing, no error');
 });
 
 test('render: at most `concurrent` OS calls; a call cancelled while it waits never reaches the OS', async () => {

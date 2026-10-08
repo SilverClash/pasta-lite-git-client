@@ -82,7 +82,7 @@ let tabsStore = null; // the open tabs (tabs.json), restored at launch
 let pendingOpen = args.repo; // repo to open once the window exists (CLI, early open-file)
 const gitInfo = () => ({ gitVersion, gitPath });
 // The image preview's HEIC, TIFF and PSD sides go through the OS thumbnailer (src/os-thumbnail.js;
-// macOS and Windows, none elsewhere): Electron's call, as a PNG (null for an empty answer).
+// macOS only, none elsewhere): Electron's call, as a PNG (null for an empty answer).
 const thumbnailer = createOsThumbnailer({
   thumbnail: async (file, size) => {
     const img = await nativeImage.createThumbnailFromPath(file, size);
@@ -166,6 +166,11 @@ const quitGuard = createQuitGuard({
   confirm: confirmWith(ui.confirm),
   log: (message) => quitLog.info(message),
 });
+// The OS thumbnailer removes its temp copies when its calls end: a quit waits for them (cancelled
+// with the reads, they end when the OS answers), at most this long.
+const THUMBNAILS_QUIT_MS = 2000;
+let thumbnailsWaited = false;
+
 // One decision at a time; once it says quit, before-quit and the window close let it through.
 const quitFlow = createQuitFlow({
   guard: quitGuard,
@@ -473,6 +478,8 @@ async function start() {
   setGitBinary(found.path);
   gitVersion = found.version;
   gitPath = found.path;
+  // Temp folders of thumbnails an earlier run left behind (it quit while the OS worked on them).
+  if (thumbnailer) thumbnailer.sweep().then((count) => { if (count) log.info('removed stale thumbnail folders', { count }); });
   // Every web permission is denied, clipboard writes included: pages copy through main
   // (the clipboard:writeText channel, main/ipc.js).
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
@@ -525,6 +532,13 @@ app.on('before-quit', (e) => {
   }
   quitGuard.quitNow(); // cancel running reads (a no-op after an approved quit)
   controller.closeWatchers();
+  if (thumbnailer && thumbnailer.busy() && !thumbnailsWaited) {
+    thumbnailsWaited = true;
+    e.preventDefault(); // quit again once the thumbnailer's temp folders are gone (or the wait is over)
+    quitLog.info('waiting for the OS thumbnailer');
+    Promise.race([thumbnailer.idle(), new Promise((r) => { setTimeout(r, THUMBNAILS_QUIT_MS); })]).finally(() => app.quit());
+    return;
+  }
   quitLog.info('quitting');
 });
 

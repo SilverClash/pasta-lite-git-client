@@ -5,10 +5,11 @@ is selected. It covers the WIP panel (unstaged, staged and untracked files) and 
 panel (commits and stashes): before and after side by side, metadata, zoom, then comparison modes,
 text-backed images (SVG, Git LFS pointers) and, as a gated last step, formats Chromium can't decode.
 
-Status: **I1–I3 built** on `feat/image-preview` (the backend, the side-by-side preview in the
+Status: **I1–I4 built** on `feat/image-preview` (the backend, the side-by-side preview in the
 renderer, then text-backed and conflicted images, the local Git LFS cache, the comparison modes,
-zoom steps and keys); I4 is still a plan. Written 2026-10-07 (from `0.2.1`, `debfb3a`). Where I1,
-I2 and I3 differ from this plan, §5.7, §6.7 and §6.8 say what was built and why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
+zoom steps and keys, then HEIC / TIFF / PSD through the OS thumbnailer). Written 2026-10-07 (from
+`0.2.1`, `debfb3a`). Where I1, I2, I3 and I4 differ from this plan, §5.7, §6.7, §6.8 and §7.3 say
+what was built and why. It builds on the diff pipeline (`src/diff-args.js`, `src/diff-view.js`, `src/hunks.js`,
 `renderer/components/diff-view.js`, `renderer/components/diff-model.js`), the op registry and runner
 (`src/ops.js`, `src/runner.js`), the IPC table (`src/ipc-contract.js`) and the store contract
 (`renderer/store.js`). The roadmap lists this as "image diff" under **Diff: split, whitespace, word
@@ -802,6 +803,128 @@ changes that check.
 binary message). If HEIC / TIFF / PSD matter (Q2), build **option A** first: S size, zero
 dependencies, covers macOS, the only platform the app is built and tested on today (CONTRIBUTING.md
 "Requirements"). Option B only if Linux or pixel-exact decoding matters.
+
+### 7.3 As built (I4)
+
+Q2 was decided for **option A**: HEIC, TIFF and PSD through the OS thumbnailer, no dependency, no
+decoder in the app. What I4 ships, where it differs from or pins down §7.1 and §11.4.
+
+**Commits.** `feat(preview): HEIC, TIFF and PSD through the OS thumbnailer` (backend),
+`feat(renderer): say when an image is the system's preview`, `test(smoke): TIFF and PSD in the demo
+repository, thumbnails in the smoke run`, and this section.
+
+**The Electron call, as checked** (the Electron docs through Context7, then a probe app on Electron
+44.4.5, macOS 15.7, with HEIC / TIFF / PSD files from `sips` and ImageMagick):
+- `nativeImage.createThumbnailFromPath(path, size)` → `Promise<NativeImage>`, macOS and Windows
+  only; Windows ignores `size.height`; since Electron 24 the docs say the thumbnail is scaled to the
+  size asked for.
+- On macOS `getSize()` does report the size asked for, but `toPNG()` holds QuickLook's bitmap, which
+  is **never larger than the image** and up to **twice** the size asked for on a Retina screen (a
+  6,000×4,000 HEIC asked at 1,024×683 gave a 2,048×1,366 PNG; a 64×64 one asked at 2,048 gave
+  64×64). So the PNG's own IHDR is what counts, never `getSize()`.
+- A missing file rejects ("unable to retrieve thumbnail preview image for the given path"). A file
+  QuickLook can't read **doesn't**: it resolves with the file type's **icon** (a square "HEIC" /
+  "TIFF" document picture, 1,024×1,024 or smaller). Asking 2,048×1,365 of a 3,000×2,000 TIFF also gave
+  the icon, while 1,024×683 gave the picture.
+- Timing: 10–120 ms per call, plus `toPNG()` on the main thread (about 90 ms for 2,048×1,365; the
+  event loop stalled up to ~90 ms for the largest). One call per side, bounded by the size asked for.
+
+**Port and adapter.** `src/os-thumbnail.js` has no Electron in it: `createOsThumbnailer({thumbnail,
+platform})` → `{by, render, idle}`, or **null** on any platform but `darwin` / `win32` (or without a
+call). `main.js`, the composition root, passes `thumbnail(file, size)` = the Electron call, `null`
+for an empty image, else `toPNG()`, and hands the thumbnailer to `ops.createRunner({thumbnailer})`,
+which builds the two image ops with it (`imageOps(thumbnailer)` in `src/ops.js`). `ops.OPS` and a
+runner without one (every test that doesn't ask for it, plain Node) read as before. Not a module
+setter like `exec.setGitBinary`: the port is per runner and needs no global to reset in tests.
+
+**`render(bytes, {format, dims, signal})`** → `{png, width, height}` or null:
+- Only `heic`, `tiff` and `psd` (`imagePreview.THUMBNAIL_FORMATS`; `.svgz` and JPEG XL stay
+  unsupported, Q6 / Q7), and only with header dimensions (else nothing is asked).
+- **A private temp copy, always**, even for a worktree file: the bytes already read and checked for
+  the side go to a new `mkdtemp` folder (0700) as `image.<the sniffed format's extension>` (0600,
+  created exclusively). The hand-off allowed thumbnailing a worktree file in place; the copy was
+  chosen instead because the OS picks its decoder by the extension (a `.png` holding a HEIC would
+  fail in place), the bytes shown are the bytes whose stat key was checked (no window for a save or
+  a swapped folder between the check and QuickLook's open), and the user's file is never handed
+  over. The cost is one write of at most the side's size (≤ 20 MB, 50 MB with Load preview).
+- Size asked: the header's dimensions fitted into **1,024** px, never enlarged (macOS answers up to
+  2,048 on a Retina screen; 2,048 asked could give the icon, see above).
+- **The answer check**: a PNG, no larger than the header's dimensions, of their aspect ratio within
+  ±1 px. That refuses the icon of any non-square image, an upscaled answer and anything not a PNG.
+  A refused, empty or failed answer is null.
+- The folder is removed when the OS call ends, whatever happened (`finally` on the call, not on the
+  op: on Windows a file still open can't be deleted). `idle()` resolves when every call has ended
+  and its folder is gone (the tests wait on it).
+- **Cancellation**: an aborted signal rejects kind `aborted` at once, before the copy is made, while
+  waiting for a slot, or while the OS works (that call can't be stopped; its folder goes when it
+  ends). **At most 2 OS calls** run at once, a cancelled one counting until it ends, so j/k through
+  commits can't pile up QuickLook work; a call cancelled while it waits never reaches the OS.
+- **Timeout** 20 s: null (the side stays unsupported), the folder removed when the call ends. §5.6
+  said "no timeout: reads are cancellable", but an OS call that never answers would leave the pane
+  loading until the user moves on.
+
+**Ops** (`ops.previewSide`). With a thumbnailer, `imageSide(..., {thumbnails: true})` caps HEIC,
+TIFF and PSD like tier 1: over the soft cap a git side isn't read (`too-large` by the extension), a
+worktree side reads its head (`too-large` with the format), and Load preview (`force`) reads it
+whole; under the caps the side is `unsupported` with all its bytes, and `render` gets them. A PNG
+answer becomes `imagePreview.thumbnailSide(s, thumb, by)`: kind `image`, source `'os-thumbnail'`,
+`mime: 'image/png'`, the PNG's bytes, key `os:<the original's key>` (`thumbnailKey`), `animated:
+false`, and `thumbnail: {by: 'macOS' | 'Windows', from: <the original's source>, width, height}`;
+`format`, `size`, `dims`, `mismatch` (and `lfs` for an LFS object) stay the original's. **No pixel
+cap** for these: the bitmap the page decodes is at most 2,048 px, and the OS scales the original.
+`knownKey` is compared with both the side's key and its `os:` key right after resolving, so a reload
+reads nothing and doesn't ask the OS again; for a Git LFS object after the pointer, as in I3. A
+failed thumbnail leaves the side `unsupported` keyed as the original, so reloads don't ask the OS
+again until the file changes.
+
+**Format.** `dimensions(bytes, 'tiff')` reads ImageWidth / ImageLength from the first IFD (the first
+page; II / MM, BigTIFF, SHORT / LONG / LONG8), bounds-checked like the other parsers. I1 had null for
+TIFF; the answer check needs dimensions.
+
+**Renderer** (`PLImage`). A thumbnail's pane shows the original's format, dimensions and size, then
+"Preview by macOS" (or Windows), with ", scaled to 2,048×1,366" when the thumbnail is smaller than the
+original (`thumbnailText`); the "Index" / "Working copy" source is the original's (`thumbnail.from`).
+`dimsOf` prefers the header's dimensions for a thumbnail, so the delta and the alt text compare the
+originals. Comparison modes, the badge and zoom need no change: the modes size from the decoded
+thumbnail; 100% is one thumbnail pixel per CSS pixel (the label says when it is scaled).
+
+**Demo and smoke run.** `test/fixtures/images` gains `scan.tiff` (96×64, two pages: an orange to purple
+gradient, then teal) and `layers.psd` (64×64, two layers), made with ImageMagick 7; the demo commits
+them next to `scan.heic`. The smoke page script expects a decoded thumbnail labelled "Preview by
+macOS" with the original's dimensions for all three on macOS, a thumbnail or "preview not supported"
+on Windows, and "preview not supported" elsewhere; on macOS it reads a pixel of the TIFF's thumbnail
+through a canvas to check it is the first page.
+
+**Runtime checks** (`node scripts/smoke-image-preview.js`, Electron 44.4.5 / Chrome 152, git 2.51.2,
+macOS 15.7, passing): `scan.heic` 64×64, `scan.tiff` 96×64 (first page: pixel 252,161,4), `layers.psd`
+64×64, each "… · Preview by macOS". An extra `--smoke` run on a scratch repository: a 6,000×4,000 HEIC
+(3.4 MB) → 2,048×1,366, "HEIC · 6,000×4,000 · 3.4 MB · Preview by macOS, scaled to 2,048×1,366", the
+side in 685 ms; a 34.3 MB TIFF → "Large image (34.3 MB)", then Load preview → 2,048×1,365; a HEIC cut
+to a third → QuickLook's partial decode, 1,000×1,000 (shown, like Chromium's partial PNGs); an
+unstaged HEIC (Index and Working copy panes, both thumbnails, "Same size"). No `pasta-lite-thumb-*`
+folder was left in the temp folder after these runs.
+
+**Tests.** `test/os-thumbnail.test.js` (a fake `thumbnail` call: the platforms, Linux null, the
+request size, the answer check with QuickLook's icon, the temp copy's name, modes and removal, refused
+and failed answers, no dimensions, an unwritable temp folder, cancel before / while the OS works, the
+timeout, the concurrency limit and a cancel while waiting); `test/image-preview.test.js` (the ops
+with a fake thumbnailer: HEIC / TIFF / PSD from a commit, the worktree and the index, never a tier 1
+side, a failure stays `unsupported`, `knownKey` of either key reads nothing and asks nothing, the caps
+and Load preview, an LFS object, a cancel while the OS works, none on Linux; `imageSide` with
+`thumbnails`, `thumbnailSide`); `test/image-format.test.js` (TIFF dimensions, truncations, the new
+fixtures); `test/image-model.test.js` (the thumbnail's metadata line, delta, alt text).
+
+**Known limitations.**
+- **Windows is untested**: no Windows machine. Electron's docs say the call works there; HEIC needs
+  the HEIF / HEVC extensions, PSD a third-party handler. Whether Electron's Windows implementation
+  blocks the main thread during the Shell call was not checked.
+- **QuickLook's icon of a square image** passes the answer check when it isn't larger than the image
+  (a broken 1,024×1,024 HEIC with a readable header could show the HEIC document icon). The icon of
+  an image that isn't (within a pixel) square is always refused.
+- **Not pixel-exact**: the OS's rendering (colour management, a PSD's saved composite), at most 2,048
+  px; a swipe or difference against a full-size side compares at the thumbnail's size.
+- A temp folder is left behind only if the app dies while the OS works on it.
+- Linux: none (option B would be the way); JPEG XL and `.svgz` unchanged.
 
 ---
 

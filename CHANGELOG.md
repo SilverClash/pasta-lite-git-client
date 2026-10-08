@@ -22,6 +22,11 @@ minor versions may contain breaking changes.
 - Images stored in Git LFS preview when their object is already downloaded (in `.git/lfs`); nothing
   is ever fetched, and an object that isn't there says "not available locally".
 - A conflicted image shows the base, ours and theirs versions side by side.
+- HEIC, TIFF and PSD images preview on macOS and Windows through the system's thumbnailer (QuickLook
+  on macOS; on Windows it depends on the installed codecs). The pane says "Preview by macOS" and, for
+  a large image, the size it was scaled to; dimensions and file size are the original's. A multi-page
+  TIFF shows its first page. On Linux, or when the system can't read the file, they still say
+  "preview not supported".
 
 ## [0.2.1] - 2026-10-04
 

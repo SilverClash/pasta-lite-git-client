@@ -55,9 +55,8 @@
 //                whose object isn't in the local cache is read again: it may have been downloaded), and null
 //                whenever state.diff is closed or shows another file (set() drops it, cancelling the reads in flight).
 //                The bytes live only in the URL cache, never in a state key (diffs are compared as JSON).
-//                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side;
-//                internally also `data`, the diff about to land),
-//                closeImagePreview(), releaseImagePreview() (also empties the URL cache: the diff view unmounting)
+//                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side),
+//                releaseImagePreview() (also empties the URL cache: the diff view unmounting)
 //   undo         undo.getState() result | null: {undo: {action, description, entry}|null, redo: same|null,
 //                busy, undoBlocked: string|null, redoBlocked: string|null}
 //   remotes      configured remote names (ops 'remotes'), e.g. ['origin'], null until first read; read on the first load and
@@ -849,16 +848,15 @@
 
     /**
      * Load the open diff's image preview (every side, or `side` only): old and new, plus base for a
-     * conflict (the open diff's data says, PLImage.previewKind). The same file as the preview shown
+     * conflict (`data`, the diff's data, says: PLImage.previewKind). The same file as the preview shown
      * reloads each side with its key (unchanged sides keep their URL, nothing flickers); another
      * file, or a file that became or stopped being a conflict, starts over. force: lift the soft size
      * cap (Load preview). Not for a spec that isn't open.
      */
-    function loadImagePreview(spec, { force = false, side = null, data } = {}) {
+    function startPreview(spec, data, { force = false, side = null } = {}) {
       const d = state.diff;
       if (!spec || !d || !Img().sameTarget(d.spec, spec)) return Promise.resolve();
-      // previewFor passes the data about to land; the Load preview button the shown one.
-      const conflict = Img().previewKind(spec, data === undefined ? d.data : data) === 'conflict';
+      const conflict = Img().previewKind(spec, data) === 'conflict';
       const all = conflict ? SIDES : ['old', 'new'];
       let p = state.imagePreview;
       const keep = !!p && Img().sameTarget(p.spec, spec) && !!p.conflict === conflict;
@@ -874,20 +872,25 @@
       return Promise.all(sides.map((w) => loadSide(spec, w, { force, knownKey: keep && !force ? knownKeyOf(p[w]) : null })));
     }
 
-    /** The diff of `spec` landed with `data` (null: it failed): load its preview, or drop one it no longer wants. */
-    function previewFor(spec, data) {
-      if (Img().wantsPreview(spec, data)) loadImagePreview(spec, { data });
-      else if (state.imagePreview) closeImagePreview();
+    /** The Load preview button (force, one side), or a reload of the open diff's preview: startPreview with the diff shown. */
+    function loadImagePreview(spec, { force = false, side = null } = {}) {
+      return startPreview(spec, state.diff ? state.diff.data : null, { force, side });
     }
 
-    function closeImagePreview() {
+    /** The diff of `spec` is about to land with `data` (null: it failed): load its preview, or drop one it no longer wants. */
+    function previewFor(spec, data) {
+      if (Img().wantsPreview(spec, data)) startPreview(spec, data);
+      else if (state.imagePreview) closePreview();
+    }
+
+    function closePreview() {
       dropPreview();
       set({ imagePreview: null });
     }
 
-    /** closeImagePreview, and revoke every cached URL (the diff view unmounting). */
+    /** Drop the preview and revoke every cached URL (the diff view unmounting). */
     function releaseImagePreview() {
-      closeImagePreview();
+      closePreview();
       images.clear();
     }
 
@@ -1010,7 +1013,7 @@
       setToast: (fn) => { toastFn = fn; },
       actions: {
         loadRepo, refresh: () => refresh().catch(toast), loadMore: () => loadMore().catch(toast),
-        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty, loadImagePreview, closeImagePreview, releaseImagePreview,
+        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty, loadImagePreview, releaseImagePreview,
         select, selectRelative, openDiff, closeDiff, toast, write, loadRemotes, cancelRemote,
         notify: (message) => toastFn({ message: String(message), level: 'info' }),
         openRebaseEditor, closeRebaseEditor, editRebase, undoRebaseEdit, redoRebaseEdit, resetRebaseEditor, patchRebaseEditor,

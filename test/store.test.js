@@ -1884,6 +1884,12 @@ test('image preview: a text diff of an image (an SVG) asks for both sides; a Git
   assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, {}], 'the pointer is read again: its object may have arrived');
 });
 
+test('image preview: the store\'s actions are loadImagePreview and releaseImagePreview (closing is the store\'s own)', async () => {
+  const { store } = await loadedStore(repoData({ commits: chain(['b', 'a']) }), { urlApi: fakeUrls() });
+  for (const a of ['loadImagePreview', 'releaseImagePreview']) assert.equal(typeof store.actions[a], 'function', a);
+  assert.equal(store.actions.closeImagePreview, undefined);
+});
+
 test('image preview: a reload that turns into a text diff or an error drops the preview', async () => {
   const { api, store } = await openBinary();
   await landSides(api, imageSide('old', 'k1'), imageSide('new', 'k2'));

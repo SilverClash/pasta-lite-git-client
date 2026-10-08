@@ -59,11 +59,16 @@ async function root(dir) {
 // url.*.insteadOf (can only reach ext::, forbidden), remote.*.vcs and alias.* (run installed
 // helpers, or only when the user types the repo's own alias name), and mail/browser programs
 // (sendemail.*, imap.tunnel, browser.*: only on explicit send-email / help --web).
+// Includes (include.path, includeIf.<condition>.path) are listed whatever they point at: the
+// check sees an included file only as it is now and only when its condition holds now, but
+// `onbranch:` holds once a branch is checked out, and a relative path can point into the working
+// tree, which a checkout or a merge rewrites.
 const RISKY_CONFIG = '^(filter\\..+\\.(clean|smudge|process)'
   + '|core\\.(sshcommand|hookspath|gitproxy|askpass|editor|pager|alternaterefscommand)|pager\\..+'
   + '|sequence\\.editor|credential\\.(.+\\.)?helper|gpg\\.(.+\\.)?program|gpg\\.ssh\\.defaultkeycommand'
   + '|merge\\..+\\.driver|remote\\..+\\.(uploadpack|receivepack)'
-  + '|diff\\.external|diff\\..+\\.(command|textconv)|(merge|diff)tool\\..+\\.(cmd|path)|trailer\\..+\\.(cmd|command))$';
+  + '|diff\\.external|diff\\..+\\.(command|textconv)|(merge|diff)tool\\..+\\.(cmd|path)|trailer\\..+\\.(cmd|command)'
+  + '|include\\.path|includeif\\..+\\.path)$';
 
 // Keys that only run a command with some values: [key regexp, value regexp]. protocol.allow /
 // protocol.<name>.allow = always (any case) re-enables ext:: (and file:// for submodules) for a

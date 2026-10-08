@@ -109,16 +109,32 @@ describe('riskyLocalConfig', () => {
     const inc = path.join(tmpDir(), 'inc.cfg');
     fs.writeFileSync(inc, '[filter "x"]\n\tsmudge = evil\n');
     git(dir, 'config', 'include.path', inc);
-    assert.deepEqual(await g.riskyLocalConfig(dir), ['filter.x.smudge']);
+    assert.deepEqual(await g.riskyLocalConfig(dir), ['filter.x.smudge', 'include.path']);
     const globalCfg = path.join(tmpDir(), 'global.cfg');
-    fs.writeFileSync(globalCfg, '[core]\n\tsshCommand = ssh\n');
+    fs.writeFileSync(globalCfg, '[core]\n\tsshCommand = ssh\n[include]\n\tpath = /nowhere\n');
     const saved = process.env.GIT_CONFIG_GLOBAL;
     process.env.GIT_CONFIG_GLOBAL = globalCfg;
     try {
-      assert.deepEqual(await g.riskyLocalConfig(dir), ['filter.x.smudge']);
+      assert.deepEqual(await g.riskyLocalConfig(dir), ['filter.x.smudge', 'include.path']);
     } finally {
       process.env.GIT_CONFIG_GLOBAL = saved;
     }
+  });
+
+  test('every include is listed by name, whatever it points at now: onbranch: and a path into the working tree apply later', async () => {
+    const dir = initRepo();
+    const marker = path.join(tmpDir(), 'ran');
+    // Relative to .git/config: a file of the working tree, which no branch has yet.
+    git(dir, 'config', 'includeIf.onbranch:feature.path', '../feature.cfg');
+    git(dir, 'config', 'include.path', '../shared.cfg');
+    assert.deepEqual(await g.riskyLocalConfig(dir), ['include.path', 'includeif.onbranch:feature.path']);
+    // What it guards against: the included file arrives with a checkout, and applies on that branch.
+    git(dir, 'checkout', '-q', '-b', 'feature');
+    write(dir, 'feature.cfg', `[filter "x"]\n\tclean = touch '${marker}'; cat\n`);
+    write(dir, '.gitattributes', '* filter=x\n');
+    write(dir, 'README.md', 'changed\n');
+    await g.stage(dir, ['README.md']);
+    assert.equal(fs.existsSync(marker), true);
   });
 
   test('a filter driver from repo config runs during normal use (what the check guards against)', async () => {

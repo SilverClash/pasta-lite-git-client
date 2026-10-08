@@ -25,17 +25,18 @@ const imageSide = (side, key, extra = {}) => ({
 });
 const other = (side, kind, extra = {}) => ({ ...imageSide(side, `k-${side}`, extra), kind, mime: null, bytes: undefined, ...extra });
 
-/** The diff view mounted on a fake DOM over a loaded store; commit b's `file` diff opened (binary, or `diff`). */
-async function mount(tc, { file = 'img/logo.png', diff = null, storage = H.memoryStorage() } = {}) {
-  let n = 0;
-  const urlApi = { createObjectURL: () => `blob:file:///u${++n}`, revokeObjectURL() {} };
-  H.setLocalStorage(storage);
-  const { win, api, store } = await H.loadedStore(H.repoData({ commits: [H.commit(SHA, ['a']), H.commit('a')] }), { urlApi });
+/**
+ * The diff view mounted on a fresh fake DOM over `store` (window `win`). Every test sets up its own
+ * document and layout globals (ResizeObserver, requestAnimationFrame), so none relies on one that ran
+ * before it. `resize()` runs the ResizeObservers' callbacks, as a layout change would.
+ */
+function mountView(tc, win, store) {
   const dom = H.componentDom();
   Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
   win.addEventListener = dom.win.addEventListener;
   win.removeEventListener = dom.win.removeEventListener;
-  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  const observers = [];
+  globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb; observers.push(this); } observe() {} disconnect() {} };
   globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
   globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   for (const f of ['actions.js', 'components/diff-model.js', 'components/diff-staging.js', 'components/image-preview.js', 'components/diff-view.js']) {
@@ -49,6 +50,17 @@ async function mount(tc, { file = 'img/logo.png', diff = null, storage = H.memor
   let disposed = false;
   const dispose = () => { if (!disposed) { disposed = true; unmount(); } };
   tc.after(dispose);
+  const resize = () => { for (const o of observers) o.cb([]); };
+  return { dom, root, dispose, resize };
+}
+
+/** The diff view mounted on a fake DOM over a loaded store; commit b's `file` diff opened (binary, or `diff`). */
+async function mount(tc, { file = 'img/logo.png', diff = null, storage = H.memoryStorage() } = {}) {
+  let n = 0;
+  const urlApi = { createObjectURL: () => `blob:file:///u${++n}`, revokeObjectURL() {} };
+  H.setLocalStorage(storage);
+  const { win, api, store } = await H.loadedStore(H.repoData({ commits: [H.commit(SHA, ['a']), H.commit('a')] }), { urlApi });
+  const { dom, root, dispose, resize } = mountView(tc, win, store);
   const spec = { kind: 'commit', sha: SHA, file };
   store.actions.openDiff(spec);
   api.take('commitDiffView').resolve(diff || binaryDiff(file));
@@ -71,7 +83,7 @@ async function mount(tc, { file = 'img/logo.png', diff = null, storage = H.memor
     img.naturalHeight = height;
     dom.dispatch(img, 'load');
   };
-  return { win, api, store, dom, root, spec, q, qa, land, texts, badges, loaded, dispose, storage };
+  return { win, api, store, dom, root, spec, q, qa, land, texts, badges, loaded, dispose, resize, storage };
 }
 
 test('preview: Before / After images instead of the binary message, with metadata, the delta and an image badge', async (tc) => {
@@ -454,19 +466,7 @@ test('a conflicted binary image: Base, Ours and Theirs panes from the index stag
   const urlApi = { createObjectURL: () => `blob:file:///c${++n}`, revokeObjectURL() {} };
   const st = { ...H.status({ oid: 'a'.repeat(40), branch: 'main' }), state: 'merging', merge: { head: SHA, name: 'feature/x' } };
   const { win, api, store } = await H.loadedStore(H.repoData({ commits: [H.commit('a'.repeat(40))], status: st }), { urlApi });
-  const dom = H.componentDom();
-  Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
-  win.addEventListener = dom.win.addEventListener;
-  win.removeEventListener = dom.win.removeEventListener;
-  for (const f of ['actions.js', 'components/diff-model.js', 'components/diff-staging.js', 'components/image-preview.js', 'components/diff-view.js']) {
-    delete require.cache[require.resolve(R_(f))];
-    require(R_(f));
-  }
-  const root = dom.doc.createElement('section');
-  root.dataset.component = 'diff-view';
-  dom.doc.body.append(root);
-  const unmount = win.Components.mountAll({ querySelectorAll: () => [root], contains: (x) => x === root }, store);
-  tc.after(unmount);
+  const { root } = mountView(tc, win, store);
   store.actions.openDiff({ kind: 'workdir', file: 'a.png', staged: false, untracked: false });
   api.take('workdirDiffView').resolve({ file: null, sections: [], fingerprint: null, truncated: false, conflict: { path: 'a.png', hunks: [], isBinary: true } });
   await H.flush();

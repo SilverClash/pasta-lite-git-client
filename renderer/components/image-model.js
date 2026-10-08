@@ -100,8 +100,26 @@
     return side.side === 'old' && side.source === 'index' && side.kind === 'not-image' && side.size === 0;
   }
 
-  /** The dimensions to show: the decoded ones, else the header's. */
-  const dimsOf = (side, decoded) => (decoded && decoded.width > 0 ? decoded : (side && side.dims) || null);
+  /**
+   * The dimensions to show: the decoded ones, else the header's. An OS thumbnail's are the
+   * original's (the header's): the decoded ones are the thumbnail's.
+   */
+  function dimsOf(side, decoded) {
+    if (side && side.thumbnail && side.dims) return side.dims;
+    return decoded && decoded.width > 0 ? decoded : (side && side.dims) || null;
+  }
+
+  /**
+   * What an OS thumbnail says about itself: 'Preview by macOS', plus ', scaled to 1,024×768' when it
+   * is smaller than the original; '' for any other side.
+   */
+  function thumbnailText(side) {
+    const t = side && side.thumbnail;
+    if (!t) return '';
+    const d = side.dims;
+    const scaled = d && t.width > 0 && t.height > 0 && (t.width < d.width || t.height < d.height);
+    return `Preview by ${t.by}${scaled ? `, scaled to ${dimsText(t)}` : ''}`;
+  }
 
   const sign = (n) => (n < 0 ? '−' : '+');
 
@@ -303,8 +321,10 @@
 
   /**
    * The metadata line of a pane: ['WebP · animated', '512×512', '148.2 KB', 'Working copy'] (the
-   * source only for working-copy diffs; 'LFS <oid>' for a Git LFS pointer or object), and `note` when the content isn't what the name says
-   * ('content is PNG, named .webp'). `path`: the side's file path.
+   * source only for working-copy diffs; 'LFS <oid>' for a Git LFS pointer or object; for an OS
+   * thumbnail of a HEIC / TIFF / PSD, the original's format, dimensions and size, then
+   * thumbnailText), and `note` when the content isn't what the name says ('content is PNG, named
+   * .webp'). `path`: the side's file path.
    */
   function meta(side, { decoded = null, workdir = false, path = '' } = {}) {
     if (!side || isAbsent(side)) return { parts: [], note: null };
@@ -316,7 +336,9 @@
     if (side.dims && side.dims.count > 1) parts.push(`${side.dims.count} sizes`);
     if (Number.isFinite(side.size)) parts.push(formatBytes(side.size));
     if (side.lfs) parts.push(`LFS ${side.lfs.oid.slice(0, 10)}`); // a pointer, or its object from the local LFS cache
-    if (workdir && SOURCES[side.source]) parts.push(SOURCES[side.source]);
+    const source = side.thumbnail ? side.thumbnail.from : side.source;
+    if (workdir && SOURCES[source]) parts.push(SOURCES[source]);
+    if (side.thumbnail) parts.push(thumbnailText(side));
     const ext = F() ? F().extensionOf(path) : null;
     const note = side.mismatch && label && ext ? `content is ${label}, named .${ext}` : null;
     return { parts, note };
@@ -345,7 +367,7 @@
 
   const api = {
     previewKind, wantsPreview, sameTarget, formatBytes, formatLabel, dimsText, isAbsent, delta, deltaParts, fitScale, scaledSize,
-    paneState, isVisual, layout, meta, altText, badge, ZOOM_STEPS, zoomStep, zoomText, pixelated, MODES, modeOf, canCompare,
+    paneState, isVisual, layout, meta, thumbnailText, altText, badge, ZOOM_STEPS, zoomStep, zoomText, pixelated, MODES, modeOf, canCompare,
     nextMode, overlaySize, clampPct,
   };
   if (typeof window !== 'undefined') window.PLImage = api;

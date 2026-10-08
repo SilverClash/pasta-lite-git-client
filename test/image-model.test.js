@@ -306,6 +306,29 @@ test('meta: an image from the local Git LFS cache names its object', () => {
   assert.deepEqual(meta(s, { workdir: true }).parts, ['PNG', '10×20', '1000 B', 'LFS c0ffee0000']);
 });
 
+test('an OS thumbnail (I4): the original\'s format, dimensions, size and source, then who made it and whether it is scaled', () => {
+  const { meta, delta, altText, thumbnailText, paneState, canCompare } = I();
+  const thumb = (extra = {}, t = {}) => side('new', 'image', {
+    source: 'os-thumbnail', format: 'heic', extensionHint: 'heic', dims: { width: 4032, height: 3024 }, size: 2 * MB,
+    thumbnail: { by: 'macOS', from: 'worktree', width: 1024, height: 768, ...t }, ...extra,
+  });
+  const s = thumb();
+  const decoded = { width: 1024, height: 768 }; // the <img> holds the thumbnail
+  assert.deepEqual(meta(s, { decoded, workdir: true, path: 'IMG_1.HEIC' }).parts,
+    ['HEIC', '4,032×3,024', '2 MB', 'Working copy', 'Preview by macOS, scaled to 1,024×768']);
+  assert.deepEqual(meta(s, { decoded }).parts, ['HEIC', '4,032×3,024', '2 MB', 'Preview by macOS, scaled to 1,024×768'], 'a commit: no source');
+  const small = thumb({ dims: { width: 64, height: 64 } }, { by: 'Windows', from: 'index', width: 64, height: 64 });
+  assert.equal(thumbnailText(small), 'Preview by Windows', 'full size: not scaled');
+  assert.deepEqual(meta(small, { workdir: true }).parts.slice(-2), ['Index', 'Preview by Windows']);
+  assert.equal(thumbnailText(side('new', 'image')), '');
+  assert.equal(altText('After', 'a/IMG_1.HEIC', s, decoded), 'After: IMG_1.HEIC (HEIC, 4,032×3,024)');
+  // The delta compares the originals' dimensions; the pane shows the image; the modes apply.
+  const old = thumb({ side: 'old', dims: { width: 2016, height: 1512 }, size: MB }, { width: 1024, height: 768 });
+  assert.deepEqual(delta(old, s, { oldDecoded: decoded, newDecoded: decoded }).dims, { from: { width: 2016, height: 1512 }, to: { width: 4032, height: 3024 } });
+  assert.deepEqual(paneState(slot(s)), { kind: 'image' });
+  assert.equal(canCompare({ old: slot(old), new: slot(s) }), true);
+});
+
 test('the presenter loads under the harness next to the shared catalogue', () => {
   const win = H.loadRenderer();
   assert.equal(typeof win.PLImage.wantsPreview, 'function');

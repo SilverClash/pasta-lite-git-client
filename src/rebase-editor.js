@@ -27,6 +27,11 @@
 // namespace.HELPER_REFUSED. Uses sh, cat, grep and awk only (all in git's own sh environment).
 const { PL_DIR, REBASE_DIR, HELPER_REFUSED } = require('./namespace');
 
+// Git for Windows' grep reads files as text (CR LF becomes LF), so a todo line ending in CR passed
+// the check; it would check other bytes than the ones cat copies and git reads. -U makes it read
+// the bytes as they are. Elsewhere plain grep (BSD grep's -U, on macOS, changes what -v matches).
+const GREP = process.platform === 'win32' ? 'grep -U' : 'grep';
+
 /** Commands the backend may put in a todo (TODO_ACTIONS of src/rebase.js). */
 const TODO_CMDS = Object.freeze(['pick', 'reword', 'edit', 'squash', 'fixup', 'drop']);
 const MAX_TODO_LINES = 10000;
@@ -56,7 +61,7 @@ const SCRIPT = [
   '    { pl_plain "$t" && [ ! -L "$d/rebase-merge" ] && [ "$2" -ef "$t" ]; } || pl_no "not the rebase todo file"',
   '    [ -n "$s" ] && pl_plain "$s/todo" && [ -s "$s/todo" ] || pl_no "no todo was prepared"',
   // grep -v exits 1 only when every line is allowed (0: a line isn't, 2: it couldn't read).
-  `    grep -Evq '^(${TODO_CMDS.join('|')}) ([0-9a-f]{40}|[0-9a-f]{64})$' "$s/todo"`,
+  `    ${GREP} -Evq '^(${TODO_CMDS.join('|')}) ([0-9a-f]{40}|[0-9a-f]{64})$' "$s/todo"`,
   '    [ $? -eq 1 ] || pl_no "the prepared todo has an unsupported line"',
   '    cat -- "$s/todo" > "$t" ;;',
   '  msg)',

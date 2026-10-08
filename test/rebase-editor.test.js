@@ -48,7 +48,7 @@ const BAD_TODOS = [
   '', '\n', `exec ${A}\n`, 'exec make\n', 'x make\n', 'break\n', `label ${A}\n`, `reset ${A}\n`,
   `merge -C ${A} x\n`, `p ${A}\n`, 'pick abc1234\n', `pick ${A} # subject\n`, `pick ${A}\n\n`, `# pick ${A}\n`,
   `pick  ${A}\n`, `pick ${A}\r\n`, `PICK ${A}\n`, `pick ${A.toUpperCase()}\n`, 'update-ref refs/tags/v1\n',
-  'update-ref refs/heads/a\n', `fixup -C ${A}\n`, `pick ${'a'.repeat(41)}\n`, `pick ${A}\nexec touch pwned\n`,
+  'update-ref refs/heads/a\n', `fixup -C ${A}\n`, `pick ${'a'.repeat(41)}\n`, `pick ${A}\nexec touch pwned\n`, `pick ${A}\n\x1a\nexec touch pwned\n`,
 ];
 
 describe('validTodo: the allow-list', () => {

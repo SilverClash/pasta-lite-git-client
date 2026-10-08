@@ -5,7 +5,8 @@
 //   PL_SMOKE_JS=scripts/smoke/image-preview.page.js npx electron . --smoke <demo repo> out.png
 // It opens each image of images/ the way a click does, waits for the <img>s to load and checks what
 // Chromium drew (natural sizes, computed styles), the comparison modes and keys, Preview | Text, the
-// local Git LFS cache, and — in a repository with a merge in progress — a conflict's three panes.
+// local Git LFS cache, HEIC / TIFF / PSD through the OS thumbnailer (macOS: QuickLook), and — in a
+// repository with a merge in progress — a conflict's three panes.
 (async () => {
   const s = window.PL.store;
   // The smoke window is shown transparent and inactive, so Chromium clamps its timers to a second;
@@ -150,9 +151,31 @@
   snap = await added('lfs-missing.png');
   steps.lfsMissing = snap;
   check(snap.states.some((t) => /Stored in Git LFS \(.+\) — not available locally/.test(t)), 'lfs-missing.png: not available locally');
-  snap = await added('scan.heic');
-  steps.heic = snap;
-  check(snap.states.includes('HEIC — preview not supported'), 'scan.heic: not supported');
+  // HEIC, TIFF (two pages: the first one shows) and PSD through the OS thumbnailer: macOS's QuickLook
+  // here; on Windows it depends on the installed codecs; elsewhere "preview not supported".
+  const mac = /Mac/.test(navigator.platform);
+  const win = /Win/.test(navigator.platform);
+  for (const [file, label, size] of [['scan.heic', 'HEIC', '64×64'], ['scan.tiff', 'TIFF', '96×64'], ['layers.psd', 'PSD', '64×64']]) {
+    snap = await added(file);
+    steps[file] = snap;
+    const thumb = allDecoded(snap, 1) && snap.imgs[0].natural.join('×') === size
+      && snap.meta.some((m) => m.includes(`${label} · ${size}`) && /Preview by (macOS|Windows)/.test(m));
+    const unsupported = snap.states.includes(`${label} — preview not supported`);
+    if (mac) check(thumb && snap.meta.some((m) => m.includes('Preview by macOS')), `${file}: a thumbnail by macOS (${snap.meta} ${snap.states})`);
+    else if (win) check(thumb || unsupported, `${file}: a thumbnail by Windows, or not supported`);
+    else check(unsupported, `${file}: not supported`);
+  }
+  await open({ kind: 'commit', sha: first, file: 'images/scan.tiff' });
+  const tiffImg = q('.ip-img');
+  if (mac && tiffImg) { // the first page (an orange to purple gradient), not the second (teal)
+    const c = document.createElement('canvas');
+    c.width = 96;
+    c.height = 64;
+    const g = c.getContext('2d');
+    g.drawImage(tiffImg, 0, 0);
+    steps.tiffPixel = [...g.getImageData(48, 2, 1, 1).data];
+    check(steps.tiffPixel[0] > 200 && steps.tiffPixel[2] < 100, `scan.tiff: the first page (${steps.tiffPixel})`);
+  }
   snap = await added('photo.jpg');
   steps.photo = snap;
   check(allDecoded(snap, 1) && snap.imgs[0].natural.join('×') === '40×80', `photo.jpg: EXIF rotation applied (${snap.imgs.map((i) => i.natural)})`);

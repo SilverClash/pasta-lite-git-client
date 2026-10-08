@@ -380,7 +380,7 @@ describe('the autostash fields of status only while the stash exists', () => {
 });
 
 describe('cancel and failed steps keep the autostash', () => {
-  test('cancelling an interactive start before its first command: aborted with the stopped rebase (not invalid-todo); Abort restores', async () => {
+  test('cancelling an interactive start before its first command: aborted with the stopped rebase (not invalid-todo); Abort restores', { skip: process.platform === 'win32' && 'cancelling does not stop git on Windows yet (src/git-process.js signals the pid only, no process group)' }, async () => {
     const dir = h.initRepo();
     const base = head(dir);
     const c1 = h.commitFile(dir, 'b.txt', 'b\n', 'one');

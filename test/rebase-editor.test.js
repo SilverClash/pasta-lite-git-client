@@ -16,8 +16,12 @@ const editor = require('../src/rebase-editor');
 
 after(h.cleanup);
 
+const WIN = process.platform === 'win32';
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
+
+/** PL_GIT_DIR as the backend sets it for git dir `gd` (forward slashes on Windows: rebase.helperEnv). */
+const gitDirEnv = (gd) => ({ PL_GIT_DIR: rebase.helperEnv(gd).PL_GIT_DIR });
 
 /** A fake git dir with rebase-merge/, COMMIT_EDITMSG and our state folder (no git needed); `name`: its parent folder's name. */
 function fakeGitDir(name = 'repo') {
@@ -26,13 +30,17 @@ function fakeGitDir(name = 'repo') {
   fs.writeFileSync(path.join(gd, 'rebase-merge', 'git-rebase-todo'), `pick ${A} # original\n`);
   fs.writeFileSync(path.join(gd, 'COMMIT_EDITMSG'), 'git text\n');
   const sd = rebaseState.ensureStateDir(gd);
-  return { gd, sd, env: { PL_GIT_DIR: gd }, todo: path.join(gd, 'rebase-merge', 'git-rebase-todo'), msg: path.join(gd, 'COMMIT_EDITMSG') };
+  return { gd, sd, env: gitDirEnv(gd), todo: path.join(gd, 'rebase-merge', 'git-rebase-todo'), msg: path.join(gd, 'COMMIT_EDITMSG') };
 }
 
-/** The editor of `role` as git runs it: `sh -c '<command> "$@"' <command> <files>` (git passes one file). */
+/**
+ * The editor of `role` as git runs it: `sh -c '<command> "$@"' <command> <files>` (git passes one
+ * file, its real path: with forward slashes on Windows, where this is Git for Windows' sh).
+ */
 function run(role, files, env) {
   const cmd = role === 'todo' ? editor.TODO_EDITOR : editor.MSG_EDITOR;
-  const r = spawnSync('sh', ['-c', `${cmd} "$@"`, cmd, ...files], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  const args = WIN ? files.map((f) => f.replace(/\\/g, '/')) : files;
+  const r = spawnSync('sh', ['-c', `${cmd} "$@"`, cmd, ...args], { env: { ...process.env, ...env }, encoding: 'utf8' });
   return { code: r.status, stderr: r.stderr };
 }
 
@@ -85,7 +93,9 @@ describe('todo role', () => {
     assert.equal(run('todo', [path.join(f.gd, 'git-rebase-todo')], f.env).code, 1); // not in rebase-merge/
     assert.equal(run('todo', [f.todo], { PL_GIT_DIR: '' }).code, 1);
     assert.equal(run('todo', [f.todo], { PL_GIT_DIR: 'relative/.git' }).code, 1);
-    assert.equal(run('todo', [f.todo], { PL_GIT_DIR: path.join(h.tmpDir(), '.git') }).code, 1, 'another git dir');
+    assert.equal(run('todo', [f.todo], gitDirEnv(path.join(h.tmpDir(), '.git'))).code, 1, 'another git dir');
+    // backslashes: never absolute to the shell (helperEnv passes C:/... on Windows)
+    assert.equal(run('todo', [f.todo], { PL_GIT_DIR: f.env.PL_GIT_DIR.replace(/\//g, '\\') }).code, 1);
     assert.equal(run('todo', [], f.env).code, 1);
     assert.equal(run('todo', [f.todo, 'extra'], f.env).code, 1);
     assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'x\n');
@@ -131,7 +141,8 @@ describe('todo role', () => {
   });
 
   test('a git dir whose path has spaces, quotes and $: only ever data', () => {
-    const f = fakeGitDir('it\'s a "$(touch x)" `dir`');
+    // Windows file names can't contain a double quote.
+    const f = fakeGitDir(WIN ? 'it\'s a $(touch x) `dir`' : 'it\'s a "$(touch x)" `dir`');
     rebaseState.writeStateFile(f.sd, 'todo', `drop ${A}\n`);
     assert.deepEqual(run('todo', [f.todo], f.env), { code: 0, stderr: '' });
     assert.equal(fs.readFileSync(f.todo, 'utf8'), `drop ${A}\n`);
@@ -210,8 +221,10 @@ describe('msg role', () => {
     rebaseState.writeStateFile(f.sd, 'meta.json', '{}');
     rebaseState.writeStateFile(f.sd, 'meta.json', '{"a":1}'); // a regular file is replaced
     assert.equal(fs.readFileSync(path.join(f.sd, 'meta.json'), 'utf8'), '{"a":1}');
-    assert.equal(fs.statSync(path.join(f.sd, 'meta.json')).mode & 0o777, 0o600);
-    assert.equal(fs.statSync(f.sd).mode & 0o777, 0o700);
+    if (!WIN) { // Windows has no POSIX permission bits
+      assert.equal(fs.statSync(path.join(f.sd, 'meta.json')).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(f.sd).mode & 0o777, 0o700);
+    }
   });
 });
 

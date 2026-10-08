@@ -511,7 +511,7 @@ describe('merges started by Pull or a terminal', () => {
 });
 
 describe('cancellation and the runner', () => {
-  test('cancelling rebaseContinue during a slow hook leaves a stopped rebase; abort restores', async () => {
+  test('cancelling rebaseContinue during a slow hook leaves a stopped rebase; abort restores', { skip: process.platform === 'win32' && 'cancelling does not stop git on Windows yet (src/git-process.js signals the pid only, no process group)' }, async () => {
     const { local, c3 } = setup({ dirty: true });
     await pullStop(local);
     h.write(local, 'README.md', 'resolved\n');

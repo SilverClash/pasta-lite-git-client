@@ -178,10 +178,11 @@ const READ = {
  * The image preview reads (docs/plans/image-preview.md §5): one side ('old' | 'new') of the file
  * diff the view shows, as an ImageSide (src/image-preview.js header): `kind` 'image' with `bytes` (a
  * Uint8Array in the renderer), or why there is no picture ('too-large', 'lfs-pointer',
- * 'unsupported', 'not-image', 'absent', 'special'): those are results, not errors. A Git LFS
- * pointer whose object is in the local LFS cache is that object (source 'lfs-cache'; never
- * fetched). With `thumbnailer` (src/os-thumbnail.js; createRunner's, from main.js) a HEIC, TIFF or
- * PSD side is the OS's PNG of it (source 'os-thumbnail'). Options {knownKey?, force?}: knownKey, the
+ * 'unsupported', 'not-image', 'absent', 'special', 'not-local'): those are results, not errors. A
+ * Git LFS pointer whose object is in the local LFS cache is that object (source 'lfs-cache'; never
+ * fetched); a blob a partial clone doesn't have is 'not-local' (never fetched either). With
+ * `thumbnailer` (src/os-thumbnail.js; createRunner's, from main.js) a HEIC, TIFF or PSD side is the
+ * OS's PNG of it (source 'os-thumbnail'). Options {knownKey?, force?}: knownKey, the
  * `key` of bytes the renderer already holds, gives {side, key, unchanged: true} when the side still
  * has that key, with nothing read; force lifts the soft size cap (the "Load preview" button).
  * Refused: invalid-args; for a worktree file also stale (not a tracked or untracked path any more,

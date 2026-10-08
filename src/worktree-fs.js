@@ -124,4 +124,4 @@ function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec } = {}) {
   }
 }
 
-module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing };
+module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing, O_NOFOLLOW };

@@ -15,6 +15,8 @@
 //   'not-image'    the content is no known image
 //   'absent'       no such side (an added file's old side, a deleted file's new side)
 //   'special'      a symlink, submodule, folder or other non-file: never read
+//   'not-local'    a git blob that isn't in the local object store (a partial clone's: never fetched,
+//                  never read); key null and size null, so a reload asks again (it may be fetched since)
 // The caller returns {side, key, unchanged: true} instead when the renderer already holds `key`.
 // A side read from the local Git LFS cache (source 'lfs-cache', ops.js) is judged like any other,
 // keyed 'lfs:<sha256>', and the caller adds the pointer's `lfs: {oid, size}` to it.
@@ -41,10 +43,10 @@ const policy = () => testHooks.policy || F.POLICY;
 
 /**
  * RevisionKey of a resolved side: the blob's oid, 'wt:<statKey>' for a worktree file, 'lfs:<sha256>'
- * for a Git LFS object, null when absent.
+ * for a Git LFS object, null when absent or not in the local object store (missing).
  */
 function revisionKey(rev) {
-  if (rev.absent) return null;
+  if (rev.absent || rev.missing) return null;
   if (rev.source === 'worktree') return `wt:${rev.statKey}`;
   return rev.source === 'lfs-cache' ? `lfs:${rev.oid}` : rev.oid;
 }
@@ -68,7 +70,7 @@ function thumbnailSide(s, thumb, by) {
 
 /** How many bytes of `rev` to read (0: none). See the header for the caps. */
 function readLimit(rev, { policy: p = F.POLICY, force = false } = {}) {
-  if (rev.absent || rev.special) return 0;
+  if (rev.absent || rev.special || rev.missing) return 0;
   if (rev.size <= (force ? p.maxBytes : p.softMaxBytes)) return rev.size;
   return rev.source === 'worktree' ? Math.min(p.sniffBytes, rev.size) : 0;
 }
@@ -94,6 +96,7 @@ function imageSide(rev, bytes, { policy: p = F.POLICY, path, force = false, thum
   };
   if (rev.absent) return { ...base, kind: 'absent' };
   if (rev.special) return { ...base, kind: 'special' };
+  if (rev.missing) return { ...base, kind: 'not-local' };
   if (!bytes && rev.size === 0) bytes = new Uint8Array(0); // an empty file: nothing to read
   if (!bytes) {
     const over = overSize(rev.size, p, force);

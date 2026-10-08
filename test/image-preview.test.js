@@ -7,6 +7,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const h = require('./helpers');
 const ops = require('../src/ops');
 const exec = require('../src/exec');
@@ -372,6 +374,31 @@ test('worktree guard: a tracked name with a backslash (POSIX) previews that file
   assert.deepEqual([s.kind, s.source, s.dims], ['image', 'worktree', { width: 4, height: 4 }]);
   assert.deepEqual((await workdirSide(dir, 'a\\b.png', {}, 'old')).dims, { width: 3, height: 3 }, 'the index agrees');
   assert.deepEqual((await workdirSide(dir, 'a/b.png', {}, 'new')).dims, { width: 7, height: 7 });
+});
+
+test('a partial clone: a blob it doesn\'t have is not-local (key null) and never fetched', async () => {
+  const src = repoWith({ 'a.png': png(1, 1) });
+  h.git(src, 'config', 'uploadpack.allowFilter', 'true');
+  h.git(src, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+  h.commitFile(src, 'a.png', png(2, 2));
+  const dir = h.tmpDir();
+  h.git(dir, 'clone', '-q', '--filter=blob:none', pathToFileURL(src).href, '.');
+  const old = rev(src, 'HEAD~1:a.png');
+  const has = () => {
+    try {
+      execFileSync('git', ['cat-file', '-e', old], { cwd: dir, env: { ...process.env, GIT_NO_LAZY_FETCH: '1' }, stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  assert.equal(has(), false);
+  const head = rev(dir, 'HEAD');
+  const s = await commitSide(dir, head, 'a.png', null, 'old');
+  assert.deepEqual([s.kind, s.key, s.size, s.source, s.extensionHint, s.bytes], ['not-local', null, null, 'commit', 'png', undefined]);
+  assert.equal((await commitSide(dir, head, 'a.png', null, 'old', { knownKey: old })).kind, 'not-local', 'its oid is not its key');
+  assert.deepEqual((await commitSide(dir, head, 'a.png', null, 'new')).dims, { width: 2, height: 2 }, 'a blob it has');
+  assert.equal(has(), false, 'nothing fetched');
 });
 
 /** A repo where merging `other` into main conflicts on `file`: base, ours (main) and theirs (other) as given (null: deleted). */

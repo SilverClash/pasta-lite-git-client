@@ -65,15 +65,21 @@ function smoke(repo, png) {
   return res.script;
 }
 
-const demo = path.join(tmp, 'demo');
-execFileSync(process.execPath, [path.join(__dirname, 'demo-repo.js'), demo], { stdio: 'ignore' });
-const results = { demo: smoke(demo, out), conflict: smoke(conflictRepo(path.join(tmp, 'conflict')), null) };
-let ok = true;
-for (const [name, r] of Object.entries(results)) {
-  ok = ok && r.ok;
-  console.log(`${r.ok ? 'ok' : 'FAILED'}  ${name}${r.failures.length ? `\n  - ${r.failures.join('\n  - ')}` : ''}`);
+let ok = false;
+try {
+  const demo = path.join(tmp, 'demo');
+  execFileSync(process.execPath, [path.join(__dirname, 'demo-repo.js'), demo], { stdio: 'ignore' });
+  const results = { demo: smoke(demo, out), conflict: smoke(conflictRepo(path.join(tmp, 'conflict')), null) };
+  ok = true;
+  for (const [name, r] of Object.entries(results)) {
+    ok = ok && r.ok;
+    console.log(`${r.ok ? 'ok' : 'FAILED'}  ${name}${r.failures.length ? `\n  - ${r.failures.join('\n  - ')}` : ''}`);
+  }
+  if (process.env.PL_SMOKE_VERBOSE === '1') console.log(JSON.stringify(results, null, 1));
+  if (out) console.log(`capture: ${out}`);
+} catch (err) {
+  console.error(`FAILED  ${err && err.stack ? err.stack : err}`);
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true }); // also when building a repository failed
 }
-if (process.env.PL_SMOKE_VERBOSE === '1') console.log(JSON.stringify(results, null, 1));
-if (out) console.log(`capture: ${out}`);
-fs.rmSync(tmp, { recursive: true, force: true });
 process.exit(ok ? 0 : 1);

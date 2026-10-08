@@ -43,15 +43,6 @@
 .dv-close { font-size: 20px; }
 .dv-icon-btn:focus-visible, .dv-close:focus-visible { outline-offset: -1px; }
 .dv-actions:empty { display: none; }
-/* Preview | Text of a text-backed image (an SVG, a Git LFS pointer) */
-.dv-view-toggle { display: inline-flex; border: 1px solid var(--white-12); border-radius: 4px; overflow: hidden; }
-.dv-view-btn {
-  font: 600 11px/1 var(--font); color: var(--text-2); background: transparent; border: 0; padding: 0 10px; height: 24px; cursor: pointer;
-}
-.dv-view-btn + .dv-view-btn { border-left: 1px solid var(--white-12); }
-.dv-view-btn:hover { color: var(--text-strong); background: var(--panel-3); }
-.dv-view-btn[aria-pressed="true"] { color: var(--text-strong); background: var(--blue-select); }
-.dv-view-btn:focus-visible { outline-offset: -2px; }
 
 /* Body */
 .dv-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }

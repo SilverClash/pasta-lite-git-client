@@ -215,21 +215,13 @@
         return badges;
       }
 
-      function iconBtn(cls, text, title, onClick) {
-        const b = el('button', cls, text);
-        b.type = 'button';
-        b.title = title;
-        b.addEventListener('click', onClick);
-        return b;
-      }
-
       /** Preview | Text for a text-backed image (an SVG, a Git LFS pointer). */
       function viewToggle() {
-        const g = el('div', 'dv-view-toggle');
+        const g = el('div', 'seg dv-view-toggle');
         g.setAttribute('role', 'group');
         g.setAttribute('aria-label', 'Show the change as');
         for (const [view, label, title] of [['preview', 'Preview', 'Show the image before and after'], ['text', 'Text', 'Show the text diff']]) {
-          const b = iconBtn('dv-view-btn', label, title, () => setTextView(view === 'text'));
+          const b = util.button('seg-btn dv-view-btn', label, title, () => setTextView(view === 'text'));
           b.dataset.view = view;
           b.setAttribute('aria-pressed', String(textView === (view === 'text')));
           g.append(b);
@@ -262,14 +254,14 @@
         if (flat && flat.hunkRows.length > 1) {
           const nav = el('div', 'dv-nav');
           nav.append(
-            iconBtn('dv-icon-btn', '↑', 'Previous hunk (p)', () => jumpHunk(-1)),
+            util.button('dv-icon-btn', '↑', 'Previous hunk (p)', () => jumpHunk(-1)),
             el('span', 'dv-hunk-count', `${flat.hunkRows.length} hunks`),
-            iconBtn('dv-icon-btn', '↓', 'Next hunk (n)', () => jumpHunk(1)),
+            util.button('dv-icon-btn', '↓', 'Next hunk (n)', () => jumpHunk(1)),
           );
           right.append(nav);
         }
         right.append(staging.fileActions(d));
-        const close = iconBtn('dv-close', '×', 'Close diff (Esc)', () => store.actions.closeDiff());
+        const close = util.button('dv-close', '×', 'Close diff (Esc)', () => store.actions.closeDiff());
         close.setAttribute('aria-label', 'Close diff');
         right.append(close);
         return right;

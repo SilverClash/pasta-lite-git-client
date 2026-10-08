@@ -193,8 +193,8 @@
     const summaryEl = el('div', 'ip-summary');
     const factsEl = el('div', 'ip-facts');
     const toolsEl = el('div', 'ip-tools');
-    const modeEl = el('div', 'ip-modes');
-    const zoomEl = el('div', 'ip-zoom');
+    const modeEl = el('div', 'seg ip-modes');
+    const zoomEl = el('div', 'seg ip-zoom');
     const levelEl = el('span', 'ip-zoom-level');
     const panesEl = el('div', 'ip-panes');
     modeEl.setAttribute('role', 'group');
@@ -205,25 +205,18 @@
     toolsEl.append(modeEl, levelEl, zoomEl);
     summaryEl.append(factsEl, toolsEl);
 
-    function segButton(cls, text, title, onClick) {
-      const b = el('button', cls, text);
-      b.type = 'button';
-      b.title = title;
-      b.addEventListener('click', onClick);
-      return b;
-    }
     for (const m of Img.MODES) {
-      const b = segButton('ip-mode-btn', m.label, m.title, () => setMode(m.id));
+      const b = util.button('seg-btn ip-mode-btn', m.label, m.title, () => setMode(m.id));
       b.dataset.mode = m.id;
       modeEl.append(b);
     }
     const zoomButton = (value, text, title) => {
-      const b = segButton('ip-zoom-btn', text, title, () => setZoom(value));
+      const b = util.button('seg-btn ip-zoom-btn', text, title, () => setZoom(value));
       b.dataset.zoom = String(value);
       return b;
     };
     const stepButton = (dir, text, title) => {
-      const b = segButton('ip-zoom-step', text, title, () => zoomBy(dir));
+      const b = util.button('seg-btn ip-zoom-step', text, title, () => zoomBy(dir));
       b.setAttribute('aria-label', dir > 0 ? 'Zoom in' : 'Zoom out');
       return b;
     };

@@ -452,6 +452,8 @@ test('modes: offered only for two images; swipe, onion skin and difference overl
   const modes = t.q('.ip-modes');
   assert.equal(modes.hidden, false);
   assert.deepEqual(t.texts('.ip-mode-btn'), ['Side by side', 'Swipe', 'Onion skin', 'Difference']);
+  assert.deepEqual(t.qa('.seg').map((g) => g.className), ['seg ip-modes', 'seg ip-zoom'], 'the shared segmented control (style.css)');
+  assert.ok([...t.qa('.ip-mode-btn'), ...t.qa('.ip-zoom-btn'), ...t.qa('.ip-zoom-step')].every((b) => b.classList.contains('seg-btn') && b.type === 'button'));
   assert.deepEqual(t.qa('.ip-mode-btn').filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.mode), ['side-by-side']);
 
   t.qa('.ip-mode-btn')[1].click(); // swipe
@@ -524,6 +526,7 @@ test('an SVG with a text diff: the preview by default, Preview | Text in the hea
   assert.equal(t.q('.dv-row'), null);
   const [pv, tx] = t.qa('.dv-view-btn');
   assert.deepEqual([pv.textContent, tx.textContent, pv.getAttribute('aria-pressed')], ['Preview', 'Text', 'true']);
+  assert.ok(t.q('.dv-view-toggle').classList.contains('seg') && pv.classList.contains('seg-btn'), 'the shared segmented control');
   const svg = (side) => imageSide(side, `s-${side}`, { format: 'svg', mime: 'image/svg+xml', dims: null });
   await t.land(svg('old'), svg('new'));
   assert.equal(t.qa('img').length, 2);

@@ -13,17 +13,8 @@
 .ip-fact-size.ip-shrank { color: var(--red-bright); }
 .ip-tools { flex: none; display: flex; align-items: center; gap: 10px; }
 .ip-zoom-level { min-width: 44px; text-align: right; font: 11px var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.ip-zoom, .ip-modes { flex: none; display: inline-flex; border: 1px solid var(--white-12); border-radius: 4px; overflow: hidden; }
-.ip-zoom[hidden], .ip-modes[hidden], .ip-zoom-level[hidden] { display: none; }
-.ip-zoom-btn, .ip-zoom-step, .ip-mode-btn {
-  font: 600 11px/1 var(--font); color: var(--text-2); background: transparent; border: 0; padding: 0 10px; height: 24px; cursor: pointer;
-}
+/* The modes and zoom groups are .seg controls (style.css); − and + are wider glyphs, a bit tighter. */
 .ip-zoom-step { font-size: 14px; padding: 0 8px; }
-.ip-zoom > * + *, .ip-modes > * + * { border-left: 1px solid var(--white-12); }
-.ip-zoom-btn:hover, .ip-zoom-step:hover:not(:disabled), .ip-mode-btn:hover { color: var(--text-strong); background: var(--panel-3); }
-.ip-zoom-step:disabled { opacity: 0.4; cursor: default; }
-.ip-zoom-btn[aria-pressed="true"], .ip-mode-btn[aria-pressed="true"] { color: var(--text-strong); background: var(--blue-select); }
-.ip-zoom-btn:focus-visible, .ip-zoom-step:focus-visible, .ip-mode-btn:focus-visible { outline-offset: -2px; }
 
 /* Panes */
 .ip-panes { flex: 1; min-height: 0; display: flex; gap: 1px; background: var(--border); }

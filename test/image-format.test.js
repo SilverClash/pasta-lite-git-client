@@ -9,7 +9,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const F = require('../src/image-format');
 const {
-  bytes, u16le, u32le, u32be, png, jpeg, gif, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, tiff, svg,
+  bytes, u16le, u16be, u32le, u32be, pngChunk, png, jpeg, gif, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, irot, pitm, ipma, heif,
+  bmp, ico, psd, tiff, svg,
 } = require('./image-fixtures');
 
 const { sniff, dimensions, parseLfsPointer, FORMATS, POLICY } = F;
@@ -241,6 +242,32 @@ test('dimensions: from each format\'s header', () => {
   assert.equal(dimensions(FIXTURES.png, 'nope'), null);
 });
 
+test('dimensions: HEIF / AVIF and TIFF turned by their headers give the displayed size (irot; Orientation 5-8)', () => {
+  const heic = (o) => dimensions(heif(['heic', 'mif1'], 4032, 3024, o), 'heic');
+  assert.deepEqual(heic(), { width: 4032, height: 3024 }, 'the primary item (pitm / ipma), not a larger tile');
+  assert.deepEqual(heic({ angle: 1 }), { width: 3024, height: 4032 }, 'irot 90°: an iPhone\'s portrait photo, stored landscape');
+  assert.deepEqual(heic({ angle: 3 }), { width: 3024, height: 4032 }, 'irot 270°');
+  assert.deepEqual(heic({ angle: 2 }), { width: 4032, height: 3024 }, 'irot 180°');
+  assert.deepEqual(dimensions(heif(['avif', 'mif1'], 64, 32, { angle: 1 }), 'avif'), { width: 32, height: 64 });
+  const item = (...props) => bytes(ftyp('heic', 'mif1'), fullBox('meta', ...props));
+  assert.deepEqual(dimensions(item(pitm(1), box('iprp', box('ipco', ispe(40, 30), irot(1)), ipma([[1, [1]], [2, [2]]]))), 'heic'), { width: 40, height: 30 }, 'another item\'s irot');
+  assert.deepEqual(dimensions(item(box('iprp', box('ipco', ispe(40, 30), ispe(4, 3), irot(3)))), 'heic'), { width: 30, height: 40 }, 'no pitm / ipma: the largest extent, any irot');
+  // pitm and ipma version 1 (32-bit item ids), ipma flag 1 (15-bit property indices).
+  const wide = item(box('pitm', [1, 0, 0, 0], u32be(70000)), box('iprp', box('ipco', irot(1), ispe(40, 30)),
+    box('ipma', [1, 0, 0, 1], u32be(1), u32be(70000), [2], u16be(0x8000 | 2), u16be(1))));
+  assert.deepEqual(dimensions(wide, 'heic'), { width: 30, height: 40 });
+  // The primary's properties cut off (a head read): unknown, not maybe unturned.
+  const turned = heif(['heic', 'mif1'], 40, 30, { angle: 1 });
+  assert.equal(dimensions(turned.subarray(0, turned.indexOf('ipma') + 6), 'heic'), null);
+
+  for (const o of [1, 2, 3, 4]) assert.deepEqual(dimensions(tiff(96, 64, { orientation: o }), 'tiff'), { width: 96, height: 64 }, `Orientation ${o}`);
+  for (const o of [5, 6, 7, 8]) assert.deepEqual(dimensions(tiff(96, 64, { orientation: o }), 'tiff'), { width: 64, height: 96 }, `Orientation ${o}`);
+  assert.deepEqual(dimensions(tiff(96, 64, { orientation: 6, be: true }), 'tiff'), { width: 64, height: 96 }, 'MM');
+  assert.deepEqual(dimensions(tiff(96, 64, { orientation: 8, big: true }), 'tiff'), { width: 64, height: 96 }, 'BigTIFF');
+  const t = tiff(96, 64, { orientation: 6 });
+  assert.equal(dimensions(t.subarray(0, t.length - 10), 'tiff'), null, 'cut before the Orientation: unknown');
+});
+
 test('dimensions SVG: width / height, viewBox, units, none', () => {
   const d = (root) => dimensions(Buffer.from(`${root}</svg>`), 'svg');
   assert.deepEqual(d('<svg width="10" height="20">'), { width: 10, height: 20 });
@@ -263,6 +290,7 @@ test('dimensions SVG: width / height, viewBox, units, none', () => {
 test('hostile input: every truncation of every fixture - never a throw, never a wrong answer', () => {
   const all = { ...FIXTURES, apng: png(3, 3, { apng: true }), vp8: webpVp8(9, 9), vp8l: webpVp8l(9, 9), gifs: gif(3, 3, 3), bmp12: bmp(3, 3, 12),
     tiffs: tiff(640, 480), tiffmm: tiff(70000, 3, { be: true }), bigtiff: tiff(9, 8, { big: true, be: true }),
+    tifft: tiff(96, 64, { orientation: 6 }), heift: heif(['heic', 'mif1'], 40, 30, { angle: 1 }),
   };
   for (const [name, b] of Object.entries(all)) {
     const id = sniff(b).format;
@@ -310,6 +338,16 @@ test('hostile input: a JPEG marker loop, a zero-length segment, a GIF with a bro
   broken[13 + 6] = 0x99; // where the NETSCAPE extension starts
   assert.equal(sniff(broken).animated, null);
   assert.equal(sniff(bytes(g.subarray(0, 10), [0xf7, 0, 0])).animated, null, 'a color table past the end');
+});
+
+test('hostile input: crafted files stay bounded - an AVIF ftyp box claiming the whole file, a PNG of countless chunks', () => {
+  // The ftyp box says 4 GB; its 'avis' brand sits past the sniffed head, which is all that is read.
+  const avif = bytes(u32be(0xffffffff), 'ftyp', 'avif', u32be(0), Buffer.alloc(POLICY.sniffBytes, 0x20), 'avis', Buffer.alloc(8 * 1024 * 1024, 0x20));
+  assert.deepEqual([sniff(avif).format, sniff(avif).animated], ['avif', false]);
+  // acTL after thousands of empty chunks: found within the chunk cap, unknown past it.
+  const apng = (n) => bytes(png(1, 1).subarray(0, 33), ...Array(n).fill(pngChunk('tEXt', [])), pngChunk('acTL', bytes(u32be(2), u32be(0))), pngChunk('IEND', []));
+  assert.equal(sniff(apng(9000)).animated, true);
+  assert.equal(sniff(apng(10000)).animated, null);
 });
 
 test('hostile input: ISO-BMFF boxes of size 0, 1 and beyond the buffer', () => {
@@ -385,6 +423,7 @@ test('the demo repository\'s image files (test/fixtures/images, made by real enc
     'sprite.gif': ['gif', true, '96×64'], 'photo.jpg': ['jpeg', false, '80×40'], // stored 80×40, EXIF orientation 6
     'badge.avif': ['avif', false, '64×64'], 'scan.heic': ['heic', false, '64×64'],
     'scan.tiff': ['tiff', false, '96×64'], 'layers.psd': ['psd', false, '64×64'], // two pages; layers
+    'portrait.heic': ['heic', false, '64×96'], 'portrait.tiff': ['tiff', false, '64×96'], // stored 96×64, turned (irot 1, Orientation 6)
     'icon-v1.svg': ['svg', null, '48×48'], 'icon-v2.svg': ['svg', null, '48×48'],
     'mislabeled.png': ['jpeg', false, '48×48'],
   };

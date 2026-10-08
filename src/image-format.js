@@ -195,9 +195,12 @@
     return null;
   }
 
-  /** PNG: an acTL chunk before the first IDAT (APNG). null when the chunks run past the bytes. */
+  // A real PNG has a handful of chunks before IDAT; past this many the answer is unknown (crafted bytes).
+  const PNG_MAX_CHUNKS = 10000;
+
+  /** PNG: an acTL chunk before the first IDAT (APNG). null when the chunks run past the bytes or PNG_MAX_CHUNKS. */
   function pngAnimated(b) {
-    for (let pos = 8; has(b, pos, 8);) {
+    for (let pos = 8, n = 0; n < PNG_MAX_CHUNKS && has(b, pos, 8); n++) {
       const type = ascii(b, pos + 4, 4);
       if (type === 'acTL') return true;
       if (type === 'IDAT' || type === 'IEND') return false;
@@ -243,7 +246,7 @@
         if (chunk === 'VP8X') return has(b, 20, 1) ? (b[20] & 0x02) !== 0 : null; // the animation flag
         return chunk === 'VP8 ' || chunk === 'VP8L' ? false : null;
       }
-      case 'avif': return (ftypBrands(b) || []).includes('avis');
+      case 'avif': return (ftypBrands(b.subarray(0, POLICY.sniffBytes)) || []).includes('avis'); // the box size is the file's
       case 'svg': return null; // SMIL animations run in an <img>; not worth a parse
       default: return format ? false : null;
     }
@@ -326,12 +329,51 @@
   }
 
   const ISOBMFF_CONTAINERS = new Set(['meta', 'iprp', 'ipco']);
+  const ISOBMFF_MAX_ITEMS = 10000;
+
+  /** `d` turned a quarter (width and height swapped). */
+  const swapped = (d) => d && { ...d, width: d.height, height: d.width };
+
+  /** An item property (an ipco child) for the dimensions: ispe {dims}, irot {angle} (quarter turns), else {}. */
+  function itemProperty(b, type, body, end) {
+    if (type === 'ispe') return end - body >= 12 ? { dims: dims(u32be(b, body + 4), u32be(b, body + 8)) } : {}; // a full box
+    if (type === 'irot') return end - body >= 1 ? { angle: b[body] & 3 } : {};
+    return {};
+  }
+
+  /** pitm (a full box): the primary item's id, or null. */
+  function primaryItem(b, body, end) {
+    if (!has(b, body, 4)) return null;
+    const wide = b[body] !== 0; // version 1: a 32-bit id
+    return body + (wide ? 8 : 6) <= end ? (wide ? u32be(b, body + 4) : u16be(b, body + 4)) : null;
+  }
+
+  /** ipma (a full box): item id -> the 1-based ipco indices of its properties, into `assoc`. Whole entries only. */
+  function itemAssociations(b, body, end, assoc) {
+    if (!(body + 8 <= end)) return;
+    const wideId = b[body] !== 0; // version 1
+    const wideIndex = (b[body + 3] & 1) !== 0; // flags bit 0
+    const count = u32be(b, body + 4);
+    let p = body + 8;
+    for (let k = 0; k < Math.min(count, ISOBMFF_MAX_ITEMS); k++) {
+      const idSize = wideId ? 4 : 2;
+      if (!(p + idSize + 1 <= end)) return;
+      const id = wideId ? u32be(b, p) : u16be(b, p);
+      const n = b[p + idSize];
+      p += idSize + 1;
+      if (!(p + n * (wideIndex ? 2 : 1) <= end)) return;
+      const list = [];
+      for (let i = 0; i < n; i++, p += wideIndex ? 2 : 1) list.push(wideIndex ? u16be(b, p) & 0x7fff : b[p] & 0x7f); // less the essential bit
+      if (!assoc.has(id)) assoc.set(id, list);
+    }
+  }
 
   /**
-   * Every `ispe` (image spatial extents) box in meta / iprp / ipco, depth at most 4. A box running
-   * past `end` is cut there (a head read); size 0 = to the end, 1 = a 64-bit size follows.
+   * The item properties of meta / iprp (depth at most 4) into `info`: `props` the ipco children in
+   * order (itemProperty), `primary` the pitm id, `assoc` the ipma associations, `cut` when a box ran
+   * past `end` (a head read) and was cut there. Box size 0 = to the end, 1 = a 64-bit size follows.
    */
-  function ispeBoxes(b, start, end, depth, found) {
+  function itemProperties(b, start, end, depth, info, inIpco = false) {
     let pos = start;
     for (let n = 0; n < 1000 && pos + 8 <= end; n++) {
       let size = u32be(b, pos);
@@ -346,26 +388,46 @@
       if (size < header) return;
       const type = ascii(b, pos + 4, 4);
       const boxEnd = Math.min(pos + size, end);
-      if (type === 'ispe' && boxEnd - pos >= header + 12) {
-        const d = dims(u32be(b, pos + header + 4), u32be(b, pos + header + 8));
-        if (d) found.push(d);
-      } else if (ISOBMFF_CONTAINERS.has(type) && depth < 4) {
-        ispeBoxes(b, pos + header + (type === 'meta' ? 4 : 0), boxEnd, depth + 1, found); // meta is a full box
+      if (boxEnd < pos + size) info.cut = true;
+      const body = pos + header;
+      if (inIpco) info.props.push(itemProperty(b, type, body, boxEnd));
+      else if (type === 'pitm') info.primary = primaryItem(b, body, boxEnd);
+      else if (type === 'ipma') itemAssociations(b, body, boxEnd, info.assoc);
+      else if (ISOBMFF_CONTAINERS.has(type) && depth < 4) {
+        itemProperties(b, body + (type === 'meta' ? 4 : 0), boxEnd, depth + 1, info, type === 'ipco'); // meta is a full box
       }
       pos += size;
     }
   }
 
+  /**
+   * HEIF / AVIF: the primary item's `ispe` (image spatial extents), turned by its `irot` (an odd
+   * number of quarter turns swaps width and height), so these are the displayed dimensions, as a
+   * decoder or the OS shows the image (an iPhone's portrait photo is stored landscape). Without a
+   * pitm / ipma: the largest extent (a grid image lists its tiles too: the largest is the canvas) and
+   * any irot. null when the primary's properties were cut off (a head read): they may turn it.
+   */
   function isobmffDims(b) {
-    const found = [];
-    ispeBoxes(b, 0, b.length, 0, found);
-    // A grid image lists its tiles too: the largest extent is the canvas.
-    return found.reduce((best, d) => (!best || d.width * d.height > best.width * best.height ? d : best), null);
+    const info = { props: [], primary: null, assoc: new Map(), cut: false };
+    itemProperties(b, 0, b.length, 0, info);
+    const own = info.primary !== null && info.assoc.has(info.primary)
+      ? info.assoc.get(info.primary).map((i) => info.props[i - 1]).filter(Boolean) : null;
+    let d = own && (own.find((p) => p.dims) || {}).dims;
+    let props = own;
+    if (!d) {
+      if (info.primary !== null && info.cut) return null;
+      d = info.props.reduce((best, p) => (p.dims && (!best || p.dims.width * p.dims.height > best.width * best.height) ? p.dims : best), null);
+      props = info.props;
+    }
+    const rot = props.find((p) => p.angle !== undefined);
+    return d && rot && rot.angle % 2 ? swapped(d) : d;
   }
 
   /**
    * TIFF / BigTIFF: ImageWidth (256) and ImageLength (257) of the first IFD (the first page), a
-   * SHORT, LONG or (BigTIFF) LONG8 value. null when the IFD is past the bytes (a head read).
+   * SHORT, LONG or (BigTIFF) LONG8 value, swapped when its Orientation (274) is 5-8 (turned a
+   * quarter), so these are the displayed dimensions. null when the IFD is past the bytes or cut
+   * before its Orientation could be read (a head read; entries are sorted by tag).
    */
   function tiffDims(b) {
     if (!has(b, 0, 8)) return null;
@@ -381,10 +443,12 @@
     const count = big ? u64(ifd) : u16(ifd);
     let width = 0;
     let height = 0;
-    for (let k = 0; k < Math.min(count, 1000) && !(width && height); k++) {
+    let orientation = 1;
+    for (let k = 0; k < Math.min(count, 1000); k++) {
       const e = ifd + countSize + k * entrySize;
       if (!has(b, e, entrySize)) return null;
       const tag = u16(e);
+      if (tag > 274) break;
       const type = u16(e + 2);
       let v = 0;
       if (type === 3) v = u16(e + valueAt);
@@ -392,8 +456,10 @@
       else if (type === 16 && big) v = u64(e + valueAt);
       if (tag === 256) width = v;
       else if (tag === 257) height = v;
+      else if (tag === 274) orientation = v;
     }
-    return dims(width, height);
+    const d = dims(width, height);
+    return orientation >= 5 && orientation <= 8 ? swapped(d) : d;
   }
 
   /** A length in user units: a plain number or px; anything else (%, em, mm) -> null. */

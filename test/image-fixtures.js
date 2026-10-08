@@ -65,6 +65,19 @@ const fullBox = (type, ...data) => box(type, [0, 0, 0, 0], ...data);
 const ftyp = (major, ...compat) => box('ftyp', major, u32be(0), ...compat);
 const ispe = (w, h) => fullBox('ispe', u32be(w), u32be(h));
 const isobmff = (brands, w, h) => bytes(ftyp(...brands), fullBox('meta', box('iprp', box('ipco', ispe(w, h)))), box('mdat', Buffer.alloc(16)));
+const irot = (angle) => box('irot', [angle & 3]);
+const pitm = (id) => fullBox('pitm', u16be(id));
+/** ipma (version 0, 7-bit indices): [[item id, [1-based ipco indices]]], each marked essential. */
+const ipma = (entries) => fullBox('ipma', u32be(entries.length), ...entries.map(([id, props]) => bytes(u16be(id), [props.length], props.map((p) => 0x80 | p))));
+/**
+ * A HEIF with items, as encoders write it: the primary item 1, w×h, turned `angle` quarter turns
+ * (irot), and item 2, a tile `tile` ([w, h]) larger than the canvas (sips pads a grid's tiles).
+ */
+const heif = (brands, w, h, { angle = 0, tile = [w * 2, h] } = {}) => bytes(
+  ftyp(...brands),
+  fullBox('meta', pitm(1), box('iprp', box('ipco', ispe(...tile), ispe(w, h), irot(angle)), ipma([[2, [1]], [1, [2, 3]]]))),
+  box('mdat', Buffer.alloc(16)),
+);
 
 function bmp(w, h, dib = 40) {
   const header = dib === 12 ? bytes(u32le(12), u16le(w), u16le(h), u16le(1), u16le(24))
@@ -82,10 +95,10 @@ function ico(entries, type = 1) {
 const psd = (w, h, version = 1) => bytes('8BPS', u16be(version), Buffer.alloc(6), u16be(3), u32be(h), u32be(w), u16be(8), u16be(3));
 /**
  * A TIFF header and its first IFD: ImageWidth, ImageLength (SHORT, or LONG over 65535; BigTIFF:
- * LONG8) and Compression. `be`: big-endian (MM); `big`: BigTIFF; `at`: the IFD offset written
- * instead (no IFD follows: a head read).
+ * LONG8) and Compression, plus Orientation when `orientation` is given. `be`: big-endian (MM); `big`:
+ * BigTIFF; `at`: the IFD offset written instead (no IFD follows: a head read).
  */
-function tiff(w, h, { be = false, big = false, at = null } = {}) {
+function tiff(w, h, { be = false, big = false, at = null, orientation = null } = {}) {
   const n = (v, size) => {
     const b = Buffer.alloc(size);
     if (size === 8) b.writeBigUInt64LE(BigInt(v));
@@ -98,7 +111,7 @@ function tiff(w, h, { be = false, big = false, at = null } = {}) {
     const [type, size] = big ? [16, 8] : v > 0xffff ? [4, 4] : [3, 2];
     return bytes(n(tag, 2), n(type, 2), n(1, big ? 8 : 4), value(v, size));
   };
-  const entries = [entry(256, w), entry(257, h), entry(259, 1)];
+  const entries = [entry(256, w), entry(257, h), entry(259, 1), ...(orientation === null ? [] : [entry(274, orientation)])];
   const head = big ? bytes(be ? 'MM' : 'II', n(43, 2), n(8, 2), n(0, 2), n(at ?? 16, 8)) : bytes(be ? 'MM' : 'II', n(42, 2), n(at ?? 8, 4));
   if (at !== null) return head;
   return bytes(head, n(entries.length, big ? 8 : 2), ...entries, n(0, big ? 8 : 4));
@@ -107,5 +120,5 @@ function tiff(w, h, { be = false, big = false, at = null } = {}) {
 const svg = (head, root = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20">') => Buffer.from(`${head}${root}<rect/></svg>\n`, 'utf8');
 
 module.exports = {
-  bytes, u16le, u16be, u24le, u32le, u32be, i32le, pngChunk, png, jpeg, gif, riff, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, tiff, svg,
+  bytes, u16le, u16be, u24le, u32le, u32be, i32le, pngChunk, png, jpeg, gif, riff, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, irot, pitm, ipma, heif, bmp, ico, psd, tiff, svg,
 };

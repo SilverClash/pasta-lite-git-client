@@ -6,12 +6,14 @@
 // (staged + unstaged + untracked, incl. a Latin-1 file and a rename).
 // Images (the diff view's image preview, docs/plans/image-preview.md §10.4) under images/: a PNG logo
 // and an SVG icon changed by a later commit, an animated WebP changed in the working tree, an
-// EXIF-rotated JPEG, an animated GIF, an AVIF, a HEIC, a two-page TIFF and a PSD (shown through the OS
-// thumbnailer on macOS and Windows, else "preview not supported"), a .png
+// EXIF-rotated JPEG, an animated GIF, an AVIF, a HEIC, a two-page TIFF, a PSD, and a HEIC and a TIFF
+// stored landscape but turned to portrait by their headers (all five shown through the OS thumbnailer
+// on macOS, else "preview not supported"), a .png
 // holding JPEG bytes, and two Git LFS pointers: lfs-cached.png, whose object is put in the local LFS
 // cache (.git/lfs/objects), and lfs-missing.png, whose object isn't. The bytes are the small files in
 // test/fixtures/images, made once with ImageMagick 7 (PNG, WebP, GIF, JPEG; the JPEG's EXIF
-// orientation 6 added by hand; TIFF, PSD), ffmpeg + SVT-AV1 (AVIF) and macOS sips (HEIC).
+// orientation 6 added by hand; TIFF, PSD; portrait.tiff's Orientation 6 with -orient RightTop),
+// ffmpeg + SVT-AV1 (AVIF) and macOS sips (HEIC; portrait.heic's irot angle set to 1 by hand).
 // scripts/smoke-image-preview.js checks the image preview on this repository.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -94,6 +96,8 @@ commit('feat(images): logo, icons and photos', {
   'images/scan.heic': image('scan.heic'),
   'images/scan.tiff': image('scan.tiff'),
   'images/layers.psd': image('layers.psd'),
+  'images/portrait.heic': image('portrait.heic'),
+  'images/portrait.tiff': image('portrait.tiff'),
   'images/mislabeled.png': image('mislabeled.png'),
   'images/lfs-cached.png': lfsPointer(image('logo-v2.png')),
   'images/lfs-missing.png': lfsPointer(image('hero-v2.webp')),

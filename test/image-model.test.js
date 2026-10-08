@@ -273,7 +273,8 @@ test('zoomStep / zoomText / pixelated: ×2 / ÷2 steps from 12.5% to 3200%, from
   assert.equal(zoomStep('fit', 1, 0.37), 0.5, 'from Fit: the next step past the scale on screen');
   assert.equal(zoomStep('fit', -1, 0.37), 0.25);
   assert.equal(zoomStep('fit', 1, 1), 2, 'Fit of a small image is 100%');
-  assert.equal(zoomStep('fit', -1, 0.1), 0.125, 'below the smallest step');
+  assert.equal(zoomStep('fit', -1, 0.1), 'fit', 'Fit below the smallest step: zoom out stays (never zooms in)');
+  assert.equal(zoomStep('fit', 1, 0.1), 0.125);
   assert.deepEqual([zoomText(1), zoomText(0.125), zoomText(32), zoomText(0.37)], ['100%', '12.5%', '3200%', '37%']);
   assert.deepEqual([pixelated(1), pixelated(2), pixelated(0.5), pixelated(NaN)], [false, true, false, false]);
 });

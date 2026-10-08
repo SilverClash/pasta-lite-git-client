@@ -386,6 +386,24 @@ test('zoom: − / + step ×2 from the scale on screen, the level shows it, pixel
   t.dispose();
 });
 
+test('zoom: at Fit below 12.5% (a huge image), - zooms nothing and + goes to 12.5%', async (tc) => {
+  const t = await mount(tc);
+  await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const [a, b] = t.qa('img');
+  t.loaded(a, 40000, 20000); // Fit: 400×200, 1%
+  t.loaded(b, 16, 16);
+  const level = t.q('.ip-zoom-level');
+  const [out] = t.qa('.ip-zoom-step');
+  assert.deepEqual([a.style.width, level.textContent, out.disabled], ['400px', '1%', true]);
+  const e = t.dom.key('-', {}, t.dom.doc.body);
+  assert.equal(e.defaultPrevented, true);
+  assert.deepEqual([a.style.width, level.textContent], ['400px', '1%'], 'still Fit: - never zooms in');
+  assert.equal(t.qa('.ip-zoom-btn')[0].getAttribute('aria-pressed'), 'true');
+  t.dom.key('+', {}, t.dom.doc.body);
+  assert.deepEqual([a.style.width, level.textContent], ['5000px', '12.5%']);
+  t.dispose();
+});
+
 test('keys: + - 0 1 zoom and m cycles the mode while a picture is shown; not in a text field, not with ⌘', async (tc) => {
   const t = await mount(tc);
   const [a] = await decodedPair(t);

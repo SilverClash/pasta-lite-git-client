@@ -256,14 +256,15 @@
 
   /**
    * The zoom after one step in (`dir` > 0) or out from `zoom` ('fit' or a scale), whose scale on
-   * screen is `shown` (Fit's computed scale; a number zoom is its own): the next step past it, kept
-   * within ZOOM_STEPS.
+   * screen is `shown` (Fit's computed scale; a number zoom is its own): the next step past it, or
+   * `zoom` itself when there is none that way (at 3200%, at 12.5%, or Fit already below 12.5%: zoom
+   * out never zooms in).
    */
   function zoomStep(zoom, dir, shown = zoom === 'fit' ? 1 : Number(zoom)) {
     const at = Number.isFinite(shown) && shown > 0 ? shown : 1;
     const eps = 1e-9;
-    if (dir > 0) return ZOOM_STEPS.find((z) => z > at + eps) || ZOOM_STEPS[ZOOM_STEPS.length - 1];
-    return [...ZOOM_STEPS].reverse().find((z) => z < at - eps) || ZOOM_STEPS[0];
+    if (dir > 0) return ZOOM_STEPS.find((z) => z > at + eps) || zoom;
+    return [...ZOOM_STEPS].reverse().find((z) => z < at - eps) || zoom;
   }
 
   /** '100%', '12.5%', '3200%': a scale as a percentage. */

@@ -419,6 +419,33 @@ test('zoom: a resize at Fit updates the level and − / +, silently: the level i
   t.dispose();
 });
 
+test('preview: a side that changes while the file is open (a save) drops the previous <img>', async (tc) => {
+  const t = await mount(tc);
+  await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const [a, b] = t.qa('img');
+  t.loaded(a, 40, 40);
+  t.loaded(b, 40, 40);
+  const reload = async (newSide) => {
+    const p = t.store.actions.reloadDiff();
+    t.api.take('commitDiffView').resolve(binaryDiff('img/logo.png'));
+    await p;
+    await H.flush();
+    t.api.take('commitImageSide', (c) => c.args[3] === 'old').resolve({ side: 'old', key: 'k1', unchanged: true });
+    t.api.take('commitImageSide', (c) => c.args[3] === 'new').resolve(newSide);
+    await H.flush();
+  };
+  await reload(imageSide('new', 'k3')); // saved: a new key, a new URL
+  const [a2, b2] = t.qa('img');
+  assert.equal(a2, a, 'the unchanged side keeps its <img>');
+  assert.equal(b2.src, 'blob:file:///u3');
+  await reload(imageSide('new', 'k2')); // saved back: the cache still has k2's URL
+  const b3 = t.qa('img')[1];
+  assert.equal(b3.src, b.src);
+  assert.notEqual(b3, b, 'the <img> of a URL no slot showed any more was dropped, not kept for the file\'s lifetime');
+  assert.equal(b3.classList.contains('is-sized'), false, 'and so was its decode result');
+  t.dispose();
+});
+
 test('zoom: at Fit below 12.5% (a huge image), - zooms nothing and + goes to 12.5%', async (tc) => {
   const t = await mount(tc);
   await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));

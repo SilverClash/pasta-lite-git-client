@@ -97,12 +97,14 @@
         img.draggable = false;
         img.dataset.side = which;
         img.addEventListener('load', () => {
+          if (imgs.get(key) !== img) return; // dropped meanwhile (another file, or pruned)
           decoded.set(url, { width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
-          if (imgs.get(key) === img) render();
+          render();
         });
         img.addEventListener('error', () => {
+          if (imgs.get(key) !== img) return;
           failed.add(url);
-          if (imgs.get(key) === img) render();
+          render();
         });
         img.src = url;
         img.dataset.url = url;
@@ -489,9 +491,23 @@
       return Op && typeof Op.conflictSides === 'function' ? Op.conflictSides(store.state.status, store.state.refsBySha) : null;
     }
 
+    /**
+     * Forget the <img>s and decode results of URLs no slot shows any more: a working-copy file saved
+     * while it is open gets a new key, so a new URL and <img>, with every save.
+     */
+    function prune(p) {
+      const shown = ['old', 'new', 'base'].map((w) => [w, slotOf(p, w)]).filter(([, s]) => s && s.url);
+      const keys = new Set(shown.map(([w, s]) => `${w} ${s.url}`));
+      const urls = new Set(shown.map(([, s]) => s.url));
+      for (const key of [...imgs.keys()]) if (!keys.has(key)) imgs.delete(key);
+      for (const url of [...decoded.keys()]) if (!urls.has(url)) decoded.delete(url);
+      for (const url of [...failed]) if (!urls.has(url)) failed.delete(url);
+    }
+
     function render() {
       if (!spec) return;
       const p = preview();
+      if (p) prune(p);
       const fails = failures(p);
       const lay = Img.layout(p, fails, { names: p && p.conflict ? conflictNames() : null });
       if (lay.fallback) {

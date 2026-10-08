@@ -853,6 +853,30 @@ test('mounted diff view: Esc closes the diff; not in a text field, with a menu o
   t.dispose();
 });
 
+test('mounted diff view: with lines picked, the first Esc clears them and the next closes the diff (VIEW_KEYS closeDiff)', async (tc) => {
+  const t = await mountComponent(tc, ['diff-model.js', 'diff-staging.js', 'image-preview.js', 'diff-view.js'], 'diff-view', graphData());
+  t.store.set({ status: H.status({ oid: SHA('a'), unstaged: [{ path: 'a.txt', status: 'M' }] }) });
+  const f = {
+    oldPath: 'a.txt', newPath: 'a.txt', isBinary: false, oldMode: '100644', newMode: '100644',
+    hunks: [{ header: '@@ -1 +1 @@', oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [{ type: 'del', text: 'a', oldNo: 1 }, { type: 'add', text: 'b', newNo: 1 }] }],
+  };
+  const data = { file: f, sections: [f], fingerprint: 'fp', truncated: false, conflict: null };
+  t.store.set({ diff: { spec: { kind: 'workdir', file: 'a.txt', staged: false, untracked: false }, loading: false, data, error: null } });
+  const row = (i) => t.root.querySelectorAll('.dv-row').find((r) => r.dataset.row === String(i));
+  t.dom.dispatch(row(2).querySelector('.dv-gutter'), 'mousedown', { button: 0 });
+  t.dom.dispatch(t.dom.doc.body, 'mouseup');
+  assert.ok(row(2).classList.contains('is-picked'), 'the added line is picked');
+  assert.equal(t.dom.key('Escape', { metaKey: true }).defaultPrevented, false, 'not with a modifier');
+  assert.ok(row(2).classList.contains('is-picked'));
+  const e = t.dom.key('Escape');
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(row(2).classList.contains('is-picked'), false, 'the first Esc clears the line selection');
+  assert.ok(t.store.state.diff, 'and leaves the diff open');
+  t.dom.key('Escape');
+  assert.equal(t.store.state.diff, null, 'the next one closes it');
+  t.dispose();
+});
+
 test('mounted graph + WIP panel: arrows with a WIP-panel button focused (Stage All Changes) stay there; the selection stays on WIP', async (tc) => {
   const t = await mountComponent(tc, ['graph-view.js', ...DETAILS], 'graph-view', wipData());
   const details = t.dom.doc.createElement('div');

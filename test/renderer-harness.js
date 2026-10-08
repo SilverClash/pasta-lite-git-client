@@ -252,7 +252,7 @@ function fakeDom() {
  * sidebar.js, graph-view.js and diff-view.js. Elements with children, attributes, classList, dataset, style (setProperty),
  * document fragments (appending one moves its children),
  * closest / querySelector(All) for '.a.b', 'tag', '[attr="v"]', '[data-x]' and descendant ('a b')
- * selectors, focus, click(), and event dispatch (capture on window / document, then target -> ancestors ->
+ * selectors and lists of them ('a, b'), focus, click(), and event dispatch (capture on window / document, then target -> ancestors ->
  * document -> window). Returns {doc, win, El, dispatch, key}.
  */
 function componentDom() {
@@ -271,6 +271,7 @@ function componentDom() {
 
   const matches = (n, sel) => {
     if (!n || n.nodeType !== 1) return false;
+    if (sel.includes(',')) return sel.split(',').some((s) => matches(n, s)); // a selector list: 'a, b'
     const parts = sel.trim().split(/\s+/);
     if (parts.length > 1) { // descendant selector: 'a b'
       if (!matches(n, parts.pop())) return false;

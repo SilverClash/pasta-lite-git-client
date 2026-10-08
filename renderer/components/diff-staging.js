@@ -438,14 +438,14 @@
      * dialogs). true = handled (default prevented).
      */
     function onKey(e) {
-      if (e.key === 'Escape') {
+      const k = diffKey(e);
+      if (k && k.id === 'closeDiff') {
         if (drag) endDrag();
         if (!picked.size) return false; // Esc then closes the diff
         e.preventDefault();
         clearPicked(true); // first Esc clears the line selection
         return true;
       }
-      const k = diffKey(e);
       if (k && (k.id === 'stageHunk' || k.id === 'unstageHunk')) {
         const want = k.id === 'stageHunk' ? 'unstaged' : 'staged';
         if (mode() !== want || !focusInDiff()) return false;

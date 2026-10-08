@@ -602,8 +602,13 @@ test('an SVG with a text diff: the preview by default, Preview | Text in the hea
 
   const again = await mount(tc, { file: 'icon.svg', diff: svgText(), storage: t.storage });
   assert.equal(again.q('.ip'), null, 'Text remembered');
+  assert.equal(again.api.count('commitImageSide'), 0, 'no side is read while the text shows');
   again.qa('.dv-view-btn').find((b) => b.dataset.view === 'preview').click();
   assert.ok(again.q('.ip'));
+  assert.deepEqual(again.texts('.ip-state'), ['Loading image…', 'Loading image…'], 'Preview reads the sides now, its slots in place at once');
+  assert.equal(again.api.pending('commitImageSide').length, 2);
+  await again.land(svg('old'), svg('new'));
+  assert.equal(again.qa('img').length, 2);
   assert.equal(again.storage.getItem('pl.imageView'), '"preview"');
   again.dispose();
 });

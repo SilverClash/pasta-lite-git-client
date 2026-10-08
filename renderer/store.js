@@ -55,8 +55,11 @@
 //                whose object isn't in the local cache is read again: it may have been downloaded), and null
 //                whenever state.diff is closed or shows another file (set() drops it, cancelling the reads in flight).
 //                The bytes live only in the URL cache, never in a state key (diffs are compared as JSON).
+//                A text-backed image (PLImage.previewKind 'text': an SVG, a Git LFS pointer) shown as Text reads
+//                no sides until Preview is chosen (setImageView).
 //                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side),
-//                releaseImagePreview() (also empties the URL cache: the diff view unmounting)
+//                setImageView('preview' | 'text') (diff-view.js's Preview | Text choice, told on mount and on
+//                change), releaseImagePreview() (also empties the URL cache: the diff view unmounting)
 //   undo         undo.getState() result | null: {undo: {action, description, entry}|null, redo: same|null,
 //                busy, undoBlocked: string|null, redoBlocked: string|null}
 //   remotes      configured remote names (ops 'remotes'), e.g. ['origin'], null until first read; read on the first load and
@@ -765,6 +768,7 @@
     const SIDES = ['old', 'new', 'base'];
     const sideGen = { old: 0, new: 0, base: 0 }; // the latest read per side; an older one never lands after it
     const inflight = { old: null, new: null, base: null }; // op id of each side's running read
+    let imageText = false; // a text-backed image is shown as its text (setImageView): its preview waits until Preview is chosen
 
     /** Cancel `which` side's running read (main kills its git process); it then rejects 'aborted'. */
     function cancelSide(which) {
@@ -877,10 +881,29 @@
       return startPreview(spec, state.diff ? state.diff.data : null, { force, side });
     }
 
-    /** The diff of `spec` is about to land with `data` (null: it failed): load its preview, or drop one it no longer wants. */
+    const previewShown = (spec) => !!state.imagePreview && Img().sameTarget(state.imagePreview.spec, spec);
+
+    /**
+     * The diff of `spec` is about to land with `data` (null: it failed): load its preview, or drop one it no
+     * longer wants. A text-backed image (an SVG, a Git LFS pointer) shown as Text reads no sides until
+     * Preview is chosen; one whose preview is already loaded reloads it, each side with its key.
+     */
     function previewFor(spec, data) {
-      if (Img().wantsPreview(spec, data)) startPreview(spec, data);
+      const kind = Img().previewKind(spec, data);
+      if (kind && (kind !== 'text' || !imageText || previewShown(spec))) startPreview(spec, data);
       else if (state.imagePreview) closePreview();
+    }
+
+    /**
+     * How the diff view shows a text-backed image: 'preview' (the default) or 'text' (its rows). The
+     * view tells the store its stored choice when it mounts and each time it changes; choosing Preview
+     * for an open text-backed image loads its sides now.
+     */
+    function setImageView(view) {
+      imageText = view === 'text';
+      const d = state.diff;
+      if (imageText || !d || !d.data || Img().previewKind(d.spec, d.data) !== 'text' || previewShown(d.spec)) return Promise.resolve();
+      return startPreview(d.spec, d.data);
     }
 
     function closePreview() {
@@ -1013,7 +1036,7 @@
       setToast: (fn) => { toastFn = fn; },
       actions: {
         loadRepo, refresh: () => refresh().catch(toast), loadMore: () => loadMore().catch(toast),
-        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty, loadImagePreview, releaseImagePreview,
+        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty, loadImagePreview, setImageView, releaseImagePreview,
         select, selectRelative, openDiff, closeDiff, toast, write, loadRemotes, cancelRemote,
         notify: (message) => toastFn({ message: String(message), level: 'info' }),
         openRebaseEditor, closeRebaseEditor, editRebase, undoRebaseEdit, redoRebaseEdit, resetRebaseEditor, patchRebaseEditor,

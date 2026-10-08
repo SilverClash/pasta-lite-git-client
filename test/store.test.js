@@ -1884,9 +1884,50 @@ test('image preview: a text diff of an image (an SVG) asks for both sides; a Git
   assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, {}], 'the pointer is read again: its object may have arrived');
 });
 
-test('image preview: the store\'s actions are loadImagePreview and releaseImagePreview (closing is the store\'s own)', async () => {
+test('image preview: a text-backed image shown as Text reads no sides until Preview is chosen; then reloads with its keys', async () => {
+  const { api, store } = await loadedStore(repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }), { urlApi: fakeUrls() });
+  const spec = pngSpec('icon.svg');
+  const svgText = () => {
+    const f = { oldPath: 'icon.svg', newPath: 'icon.svg', hunks: [{ header: '@@ -1 +1 @@', lines: [] }], isBinary: false, oldMode: '100644', newMode: '100644' };
+    return { file: f, sections: [f], fingerprint: null, truncated: false, conflict: null };
+  };
+  store.actions.setImageView('text');
+  store.actions.openDiff(spec);
+  api.take('commitDiffView').resolve(svgText());
+  await flush();
+  assert.equal(api.count('commitImageSide'), 0, 'Text: no side read');
+  assert.equal(store.state.imagePreview, null);
+  let p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(svgText());
+  await p;
+  await flush();
+  assert.equal(api.count('commitImageSide'), 0, 'not on a reload either');
+
+  store.actions.setImageView('preview');
+  assert.deepEqual(api.pending('commitImageSide').map((c) => c.args.slice(3)), [['old', {}], ['new', {}]], 'Preview chosen: both sides now');
+  assert.equal(store.state.imagePreview.old.loading, true);
+  await landSides(api, imageSide('old', 'k1', { format: 'svg', mime: 'image/svg+xml' }), imageSide('new', 'k2', { format: 'svg', mime: 'image/svg+xml' }));
+  store.actions.setImageView('preview');
+  assert.equal(api.pending('commitImageSide').length, 0, 'already loaded: nothing again');
+
+  // back to Text: the loaded preview stays, and a reload only checks its keys
+  store.actions.setImageView('text');
+  p = store.actions.reloadDiff();
+  api.take('commitDiffView').resolve(svgText());
+  await p;
+  await flush();
+  assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, { knownKey: 'k2' }]);
+
+  // a binary image never waits for the choice
+  store.actions.openDiff(pngSpec());
+  api.take('commitDiffView').resolve(binaryDiff());
+  await flush();
+  assert.equal(api.pending('commitImageSide', (c) => c.args[1] === 'a.png').length, 2);
+});
+
+test('image preview: the store\'s actions are loadImagePreview, setImageView and releaseImagePreview (closing is the store\'s own)', async () => {
   const { store } = await loadedStore(repoData({ commits: chain(['b', 'a']) }), { urlApi: fakeUrls() });
-  for (const a of ['loadImagePreview', 'releaseImagePreview']) assert.equal(typeof store.actions[a], 'function', a);
+  for (const a of ['loadImagePreview', 'setImageView', 'releaseImagePreview']) assert.equal(typeof store.actions[a], 'function', a);
   assert.equal(store.actions.closeImagePreview, undefined);
 });
 

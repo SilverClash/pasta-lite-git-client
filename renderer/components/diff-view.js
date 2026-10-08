@@ -12,8 +12,9 @@
 // place of the "Binary file — no preview" message when PLImage.wantsPreview; its header badge then
 // reads `image` instead of `binary` once the preview knows (PLImage.badge). A text diff of an image
 // (an SVG, a Git LFS pointer: PLImage.previewKind 'text') gets a Preview | Text switch in the header,
-// one choice for the app (Components.util.storage), Preview by default; a conflicted image (a binary
-// one, or a modify/delete conflict of an image file) shows its base / ours / theirs stages.
+// one choice for the app (Components.util.storage), Preview by default, which the view tells the store
+// (setImageView: no side is read while Text is shown); a conflicted image (a binary one, or a
+// modify/delete conflict of an image file) shows its base / ours / theirs stages.
 //
 // Data (ops.commitDiffView / workdirDiffView): {file, sections?, fingerprint, truncated, maxLines?,
 // maxLineChars?, conflict?}. `sections` (several file views, e.g. a typechange = deletion + new file)
@@ -162,6 +163,7 @@
       const preview = window.PLImagePreview.create({ store });
       let kindBadge = null; // the shown diff's `binary` / `image` badge (PLImage.badge), updated in place
       let textView = util.storage.get(VIEW_KEY, 'preview') === 'text'; // a text-backed image shows its rows
+      store.actions.setImageView(textView ? 'text' : 'preview'); // the store reads such a preview only while it is wanted
 
       /** Shown only while the store's centre pane is the diff (state.centre, derived from state.diff). */
       const syncHidden = () => { root.hidden = store.state.centre !== 'diff'; };
@@ -234,6 +236,7 @@
         if (textView === on) return;
         textView = on;
         util.storage.set(VIEW_KEY, on ? 'text' : 'preview');
+        store.actions.setImageView(on ? 'text' : 'preview'); // Preview: its slots are in place before the body renders
         const d = store.state.diff;
         if (!d) return;
         renderBody(d, false);

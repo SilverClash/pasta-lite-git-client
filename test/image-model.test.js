@@ -318,9 +318,9 @@ test('an OS thumbnail (I4): the original\'s format, dimensions, size and source,
   assert.deepEqual(meta(s, { decoded, workdir: true, path: 'IMG_1.HEIC' }).parts,
     ['HEIC', '4,032×3,024', '2 MB', 'Working copy', 'Preview by macOS, scaled to 1,024×768']);
   assert.deepEqual(meta(s, { decoded }).parts, ['HEIC', '4,032×3,024', '2 MB', 'Preview by macOS, scaled to 1,024×768'], 'a commit: no source');
-  const small = thumb({ dims: { width: 64, height: 64 } }, { by: 'Windows', from: 'index', width: 64, height: 64 });
-  assert.equal(thumbnailText(small), 'Preview by Windows', 'full size: not scaled');
-  assert.deepEqual(meta(small, { workdir: true }).parts.slice(-2), ['Index', 'Preview by Windows']);
+  const small = thumb({ dims: { width: 64, height: 64 } }, { from: 'index', width: 64, height: 64 });
+  assert.equal(thumbnailText(small), 'Preview by macOS', 'full size: not scaled');
+  assert.deepEqual(meta(small, { workdir: true }).parts.slice(-2), ['Index', 'Preview by macOS']);
   assert.equal(thumbnailText(side('new', 'image')), '');
   assert.equal(altText('After', 'a/IMG_1.HEIC', s, decoded), 'After: IMG_1.HEIC (HEIC, 4,032×3,024)');
   // The delta compares the originals' dimensions; the pane shows the image; the modes apply.

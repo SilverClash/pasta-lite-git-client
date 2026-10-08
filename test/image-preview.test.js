@@ -149,10 +149,10 @@ test('imageSide with thumbnails: HEIC / TIFF / PSD capped like tier 1; thumbnail
   assert.equal(thumbnailKey(null), null);
   const orig = imageSide(git(heic), heic, { policy: p, path: 'a.heic', thumbnails: true });
   const pngBytes = png(1024, 768);
-  s = thumbnailSide(orig, { png: pngBytes, width: 1024, height: 768 }, 'Windows');
+  s = thumbnailSide(orig, { png: pngBytes, width: 1024, height: 768 }, 'macOS');
   assert.deepEqual(
     [s.kind, s.source, s.key, s.mime, s.format, s.dims, s.size, s.bytes, s.thumbnail],
-    ['image', 'os-thumbnail', 'os:abc', 'image/png', 'heic', { width: 4032, height: 3024 }, heic.length, pngBytes, { by: 'Windows', from: 'index', width: 1024, height: 768 }],
+    ['image', 'os-thumbnail', 'os:abc', 'image/png', 'heic', { width: 4032, height: 3024 }, heic.length, pngBytes, { by: 'macOS', from: 'index', width: 1024, height: 768 }],
   );
 });
 

@@ -133,8 +133,12 @@
       return overlay.scale;
     }
 
-    /** Size every shown image for the zoom (Fit needs its stage's size; a stage without one waits for the resize). */
-    function sizeImages() {
+    /**
+     * Size every shown image for the zoom (Fit needs its stage's size; a stage without one waits for the
+     * resize). announce: the user zoomed, so the level is read out; a resize or a redraw at Fit changes
+     * it silently (the live region is off then), and an unchanged level isn't written at all.
+     */
+    function sizeImages({ announce = false } = {}) {
       let scale = null;
       if (compareEls && compareEls.node.parentNode === root) scale = sizeOverlay();
       else {
@@ -155,10 +159,18 @@
       if (scale !== null) shownScale = scale;
       const shown = zoom === 'fit' ? shownScale : Number(zoom);
       root.classList.toggle('is-pixelated', Img.pixelated(shown));
-      levelEl.textContent = Img.zoomText(shown);
+      const live = announce ? 'polite' : 'off';
+      if (levelEl.getAttribute('aria-live') !== live) levelEl.setAttribute('aria-live', live);
+      const text = Img.zoomText(shown);
+      if (levelEl.textContent !== text) levelEl.textContent = text;
     }
 
-    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (spec) sizeImages(); }) : null;
+    // A resize re-fits the images, and at Fit moves the scale the − / + buttons are enabled by.
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+      if (!spec) return;
+      sizeImages();
+      syncZoom();
+    }) : null;
     if (ro) ro.observe(root);
 
     /**
@@ -226,7 +238,7 @@
       zoomButton(1, '100%', hint('Actual size: one image pixel per screen point', 'zoomActual')),
       stepButton(1, '+', hint('Zoom in', 'zoomIn')),
     );
-    levelEl.setAttribute('aria-live', 'polite');
+    levelEl.setAttribute('aria-live', 'off'); // 'polite' only while a zoom the user asked for is shown (sizeImages)
 
     function syncZoom() {
       root.classList.toggle('is-actual', zoom !== 'fit');
@@ -240,7 +252,7 @@
     function setZoom(value) {
       if (zoom === value) return;
       zoom = value;
-      sizeImages();
+      sizeImages({ announce: true });
       syncZoom();
     }
 

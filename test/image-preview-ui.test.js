@@ -386,6 +386,39 @@ test('zoom: − / + step ×2 from the scale on screen, the level shows it, pixel
   t.dispose();
 });
 
+test('zoom: a resize at Fit updates the level and − / +, silently: the level is live only after a zoom the user asked for', async (tc) => {
+  const t = await mount(tc);
+  await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const [a, b] = t.qa('img');
+  t.loaded(a, 1000, 500); // Fit in 400×300: 40%
+  t.loaded(b, 16, 16);
+  const level = t.q('.ip-zoom-level');
+  const [out] = t.qa('.ip-zoom-step');
+  assert.deepEqual([level.textContent, out.disabled, level.getAttribute('aria-live')], ['40%', false, 'off']);
+  let writes = 0;
+  const text = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(level), 'textContent');
+  Object.defineProperty(level, 'textContent', { configurable: true, get() { return text.get.call(this); }, set(v) { writes++; text.set.call(this, v); } });
+  t.resize();
+  t.resize();
+  assert.equal(writes, 0, 'an unchanged level is never rewritten');
+
+  const stage = a.parentNode;
+  stage.clientWidth = 124; // a narrow window: 100×50 for the image, 10%
+  stage.clientHeight = 74;
+  t.resize();
+  assert.deepEqual([a.style.width, level.textContent], ['100px', '10%']);
+  assert.equal(out.disabled, true, 'below the smallest step: − is disabled at once');
+  assert.equal(level.getAttribute('aria-live'), 'off', 'a resize is not announced');
+  assert.equal(writes, 1);
+
+  t.qa('.ip-zoom-step')[1].click(); // +
+  assert.deepEqual([level.textContent, level.getAttribute('aria-live')], ['12.5%', 'polite'], 'the user\'s zoom is read out');
+  assert.equal(out.disabled, true);
+  t.resize();
+  assert.equal(level.getAttribute('aria-live'), 'off');
+  t.dispose();
+});
+
 test('zoom: at Fit below 12.5% (a huge image), - zooms nothing and + goes to 12.5%', async (tc) => {
   const t = await mount(tc);
   await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));

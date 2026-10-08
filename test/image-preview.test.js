@@ -365,6 +365,15 @@ test('worktree guards: a path through a symlinked folder, a path git doesn\'t li
   await assert.rejects(workdirSide(dir, 'nope.png', {}, 'new'), { kind: 'stale' });
 });
 
+test('worktree guard: a tracked name with a backslash (POSIX) previews that file, not a/b.png', { skip: !POSIX }, async () => {
+  const dir = repoWith({ 'a\\b.png': png(3, 3), 'a/b.png': png(7, 7) });
+  h.write(dir, 'a\\b.png', png(4, 4));
+  const s = await workdirSide(dir, 'a\\b.png', {}, 'new');
+  assert.deepEqual([s.kind, s.source, s.dims], ['image', 'worktree', { width: 4, height: 4 }]);
+  assert.deepEqual((await workdirSide(dir, 'a\\b.png', {}, 'old')).dims, { width: 3, height: 3 }, 'the index agrees');
+  assert.deepEqual((await workdirSide(dir, 'a/b.png', {}, 'new')).dims, { width: 7, height: 7 });
+});
+
 /** A repo where merging `other` into main conflicts on `file`: base, ours (main) and theirs (other) as given (null: deleted). */
 function conflicted({ file = 'a.png', base = png(1, 1), ours = png(3, 3), theirs = png(2, 2) } = {}) {
   const dir = repoWith(base ? { [file]: base } : { 'x.txt': 'x' });

@@ -61,3 +61,7 @@ jobs:
 
       # The tests set their own git identity and ignore the global config (test/helpers.js).
       - run: npm test
+
+      # Lint once (the pinned ESLint from devDependencies; it doesn't depend on the OS).
+      - if: matrix.node == 24
+        run: npm run lint

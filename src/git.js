@@ -3,7 +3,7 @@
 // the index and worktree (stage, discard, commit), branches (checkout, create, delete), linked
 // worktrees (list, remove, prune, lock / unlock, the batched dirty check, the unreachable
 // count), plus re-exports of the modules below it (status, pull, remote, hooks, git-reads,
-// stash), so main.js and ops use one module. Every function takes a path inside the repo as `cwd` first and shells
+// stash, repo-risk), so main.js and ops use one module. Every function takes a path inside the repo as `cwd` first and shells
 // out through exec.run/out, which always run at the worktree root: paths passed in and returned
 // are root-relative. No parsing or behaviour depends on user config.
 const fs = require('node:fs');
@@ -29,10 +29,12 @@ const remote = require('./remote');
 const { status } = require('./status');
 const { PULL_MODES, pull } = require('./pull');
 const stash = require('./stash');
+const risk = require('./repo-risk');
 
 const { baseOf, verify, refExists, resolveCommit, remotes, upstreamOf, refFields, isCurrentBranch } = reads;
 const { hookRefused, hookOutput, COMMIT_HOOKS } = hooks;
 const { withAutostash } = stash;
+const { RISKY_CONFIG, RISKY_VALUES, riskyLocalConfig, riskyHooks } = risk;
 
 const LITERAL = { env: LITERAL_ENV };
 
@@ -41,88 +43,6 @@ const LITERAL = { env: LITERAL_ENV };
 /** Worktree root containing `dir`. Throws (GitError) when `dir` is not inside a worktree. */
 async function root(dir) {
   return (await out(dir, ['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
-}
-
-// Repo config (local or worktree scope, includes followed) that makes git run a command during
-// normal use: filter drivers on `status`/`add`/`checkout`, ssh / credential / proxy programs on
-// fetch and push, hooks from another folder, signing programs (and gpg.ssh.defaultKeyCommand, run
-// to find the signing key), merge drivers, core.alternateRefsCommand (fetch/push with
-// alternates). core.fsmonitor and protocol.ext.allow are not listed: git-process.js always
-// overrides them. Matched against git's canonical key (section and name lower-cased, subsection
-// as written).
-// Programs the app never runs but a terminal git in the same repo would, on everyday commands:
-// core.editor / sequence.editor (the app overrides them with GIT_EDITOR / GIT_SEQUENCE_EDITOR,
-// git-process.js, src/rebase.js), the pager (core.pager, pager.<cmd>: the app's git has no tty),
-// external diff and textconv drivers (the app passes --no-ext-diff --no-textconv), merge/diff
-// tools, and trailer commands (`commit --trailer`).
-// Not listed: uploadpack.packObjectsHook (git only reads it from global/system config),
-// url.*.insteadOf (can only reach ext::, forbidden), remote.*.vcs and alias.* (run installed
-// helpers, or only when the user types the repo's own alias name), and mail/browser programs
-// (sendemail.*, imap.tunnel, browser.*: only on explicit send-email / help --web).
-// Includes (include.path, includeIf.<condition>.path) are listed whatever they point at: the
-// check sees an included file only as it is now and only when its condition holds now, but
-// `onbranch:` holds once a branch is checked out, and a relative path can point into the working
-// tree, which a checkout or a merge rewrites.
-const RISKY_CONFIG = '^(filter\\..+\\.(clean|smudge|process)'
-  + '|core\\.(sshcommand|hookspath|gitproxy|askpass|editor|pager|alternaterefscommand)|pager\\..+'
-  + '|sequence\\.editor|credential\\.(.+\\.)?helper|gpg\\.(.+\\.)?program|gpg\\.ssh\\.defaultkeycommand'
-  + '|merge\\..+\\.driver|remote\\..+\\.(uploadpack|receivepack)'
-  + '|diff\\.external|diff\\..+\\.(command|textconv)|(merge|diff)tool\\..+\\.(cmd|path)|trailer\\..+\\.(cmd|command)'
-  + '|include\\.path|includeif\\..+\\.path)$';
-
-// Keys that only run a command with some values: [key regexp, value regexp]. protocol.allow /
-// protocol.<name>.allow = always (any case) re-enables ext:: (and file:// for submodules) for a
-// terminal git; submodule.<name>.update = !<command> runs it on `git submodule update`.
-const RISKY_VALUES = [
-  ['^protocol\\.(.+\\.)?allow$', '^[Aa][Ll][Ww][Aa][Yy][Ss]$'],
-  ['^submodule\\..+\\.update$', '^!'],
-];
-
-/**
- * Keys of the repo's own config (not global/system/-c) that can run a command, sorted and
- * de-duplicated; [] when there are none. A repo from elsewhere (downloaded, unpacked) should only
- * be opened after the user has agreed to these. Values are matched by git, never read here (a
- * credential helper line can hold a token).
- */
-async function riskyLocalConfig(cwd) {
-  const query = (args) => out(cwd, ['config', '--includes', '--show-scope', '-z', '--name-only', '--get-regexp', ...args], { okCodes: [0, 1] });
-  const raws = await Promise.all([query([RISKY_CONFIG]), ...RISKY_VALUES.map((pair) => query(pair))]);
-  const keys = new Set();
-  for (const raw of raws) {
-    const f = raw.split('\0');
-    for (let i = 0; i + 1 < f.length; i += 2) {
-      if (f[i] === 'local' || f[i] === 'worktree') keys.add(f[i + 1]);
-    }
-  }
-  return [...keys].sort(); // NOSONAR(S2871): config keys are ASCII; code-unit order is the intended, stable order
-}
-
-/**
- * The hooks git would run in the repository ('hooks/<name>', sorted; [] when none): the
- * executable files of its hooks folder (`rev-parse --git-path hooks`, so core.hooksPath is
- * followed, and a linked worktree's are the main repo's), except git's `*.sample` files and
- * dot-files. A clone's .git/hooks holds only samples, but a folder from elsewhere can carry
- * hooks: a downloaded or unzipped working tree its .git/hooks (run on commit, checkout, merge),
- * a bare repo a project tracks its hooks folder (a checked-out file keeps its executable bit;
- * run on the first fetch). main asks before opening either. On Windows git runs a hook
- * whatever its mode, so every file counts.
- */
-async function riskyHooks(cwd) {
-  const dir = (await out(cwd, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'])).replace(/\n$/, '');
-  let entries;
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return []; // no hooks folder
-  }
-  const runs = (file) => {
-    const st = fs.statSync(file, { throwIfNoEntry: false }); // a symlink counts as what it points at
-    return !!st && st.isFile() && (process.platform === 'win32' || (st.mode & 0o111) !== 0);
-  };
-  return entries
-    .filter((e) => !e.name.startsWith('.') && !e.name.endsWith('.sample') && runs(path.join(dir, e.name)))
-    .map((e) => `hooks/${e.name}`)
-    .sort();
 }
 
 /**
@@ -209,7 +129,9 @@ async function worktreeAdminDir(cwd, w) {
  * record of it. Never `-f -f`: a locked worktree is refused even with force (the user unlocks
  * it first). Kinds: 'worktree-dirty' (modified or untracked files; `submodules: true` when it
  * has submodules, which git only removes with force), 'worktree-locked', 'main-worktree',
- * 'not-found' (not a worktree). Resolves {path}.
+ * 'not-found' (not a worktree). Resolves {path}. Without force git first runs `status` in that
+ * worktree, with the config git reads there (its config.worktree, includeIf sections that hold
+ * only there): the trust check read it when the repository was opened (repo-risk riskyNested).
  */
 async function removeWorktree(cwd, wtPath, { force = false } = {}) {
   try {
@@ -727,7 +649,7 @@ async function removeBranch(cwd, { name, sha, upstream }, { force = false } = {}
 module.exports = {
   OID, REFSPEC_SAFE, splitN, trimTrailingNewlines,
   validateBranchName, isUntracked,
-  root, bareGitDir, isBare, riskyLocalConfig, riskyHooks, refs, log,
+  root, bareGitDir, isBare, riskyLocalConfig, riskyHooks, riskyNested: risk.riskyNested, refs, log,
   worktrees, worktreeList, worktreeAdminDir, removeWorktree, pruneWorktrees, lockWorktree, unlockWorktree, worktreesDirty, unreachableCount,
   commitFiles, diffCommitFile, diffWorkdir,
   stage, stageAll, unstage, unstageAll, discard, argvChunks,

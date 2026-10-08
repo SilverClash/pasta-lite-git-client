@@ -90,6 +90,8 @@ const GLOBAL_ARGS = [
   // and push (also passed --no-recurse-submodules / --recurse-submodules=no: .gitmodules can
   // override these per submodule). status and diff take --ignore-submodules=dirty
   // (working-state.js, diff-args.js), and a submodule's diff is never shown inline (diff.submodule).
+  // `add -A`, `stash push` and an autostash still look inside a populated submodule (no flag
+  // stops them), so the trust check reads every submodule's config and hooks (git.riskyNested).
   '-c', 'submodule.recurse=false',
   '-c', 'fetch.recurseSubmodules=false',
   '-c', 'push.recurseSubmodules=no',

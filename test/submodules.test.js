@@ -135,3 +135,85 @@ describe('the app\'s git never works inside a submodule', () => {
     assert.equal(ran(s.marker), true, 'a git that recurses runs it');
   });
 });
+
+describe('the trust check reads every submodule and worktree (git.riskyNested)', () => {
+  const executable = (file, body) => {
+    write(path.dirname(file), path.basename(file), body);
+    fs.chmodSync(file, 0o755);
+  };
+
+  test('a populated submodule\'s config and hooks are listed; add -A and stash push run them (what the check guards against)', async () => {
+    const s = superWithSubmodule();
+    assert.deepEqual(await g.riskyNested(s.dir), [], 'a plain submodule: nothing');
+    subFilter(s);
+    executable(path.join(s.dir, '.git', 'modules', 'sub', 'hooks', 'post-checkout'), '#!/bin/sh\n');
+    assert.deepEqual(await g.riskyNested(s.dir), ['submodule sub: filter.x.clean', 'submodule sub: hooks/post-checkout']);
+    assert.deepEqual(await g.riskyLocalConfig(s.dir), [], 'the superproject\'s own config is clean');
+    // Nothing turns these off for a submodule .gitmodules marks `ignore = none`:
+    touchSubFile(s);
+    await g.stageAll(s.dir);
+    assert.equal(ran(s.marker), true, 'add -A');
+    fs.rmSync(s.marker);
+    write(s.dir, 'README.md', 'changed\n');
+    touchSubFile(s);
+    await g.stashPush(s.dir);
+    assert.equal(ran(s.marker), true, 'stash push');
+  });
+
+  test('submodules inside submodules, and git dirs in .git/modules with no checkout, are listed too', async () => {
+    const s = superWithSubmodule();
+    const inner = initRepo();
+    git(s.sub, ...allowFile, 'submodule', 'add', '-q', inner, 'inner');
+    git(s.sub, 'commit', '-q', '-m', 'inner');
+    const innerDir = path.join(s.sub, 'inner');
+    git(innerDir, 'config', 'core.sshCommand', 'ssh -o x');
+    // A second submodule, deinitialised: its git dir stays in .git/modules, a checkout can bring it back.
+    const other = initRepo();
+    git(s.dir, ...allowFile, 'submodule', 'add', '-q', other, 'libs/other');
+    git(s.dir, 'commit', '-q', '-m', 'other');
+    git(path.join(s.dir, 'libs', 'other'), 'config', 'credential.helper', 'store');
+    git(s.dir, 'submodule', 'deinit', '-q', '-f', 'libs/other');
+    assert.equal(fs.existsSync(path.join(s.dir, 'libs', 'other', '.git')), false);
+    assert.deepEqual(await g.riskyNested(s.dir), [
+      'submodule modules/libs/other: credential.helper',
+      'submodule sub/inner: core.sshcommand',
+    ]);
+  });
+
+  test('a gitlink folder whose .git is broken is not a submodule git looks into: skipped', async () => {
+    const s = superWithSubmodule();
+    fs.rmSync(path.join(s.sub, '.git'));
+    write(s.sub, '.git', 'gitdir: /nowhere\n');
+    fs.rmSync(path.join(s.dir, '.git', 'modules'), { recursive: true });
+    assert.deepEqual(await g.riskyNested(s.dir), []);
+  });
+
+  test('another worktree\'s own config is listed; `git worktree remove` runs status there with it', async () => {
+    const dir = initRepo();
+    const marker = path.join(tmpDir(), 'ran');
+    const wt = path.join(tmpDir(), 'wt');
+    git(dir, 'worktree', 'add', '-q', '-b', 'side', wt);
+    git(dir, 'config', 'extensions.worktreeConfig', 'true');
+    git(wt, 'config', '--worktree', 'filter.x.clean', `touch '${marker}'; cat`);
+    const id = path.basename(git(wt, 'rev-parse', '--absolute-git-dir').trim());
+    assert.deepEqual(await g.riskyLocalConfig(dir), [], 'the main worktree\'s own config is clean');
+    assert.deepEqual(await g.riskyNested(dir), [`worktree worktrees/${id}: filter.x.clean`]);
+    // From the linked worktree it is its own config, and the main worktree has nothing extra.
+    assert.deepEqual(await g.riskyLocalConfig(wt), ['filter.x.clean']);
+    assert.deepEqual(await g.riskyNested(wt), []);
+    // An includeIf that holds only on the other worktree's branch.
+    const inc = path.join(tmpDir(), 'side.cfg');
+    fs.writeFileSync(inc, '[core]\n\tsshCommand = ssh -o y\n');
+    git(dir, 'config', 'includeIf.onbranch:side.path', inc);
+    assert.deepEqual(await g.riskyNested(dir), [`worktree worktrees/${id}: core.sshcommand`, `worktree worktrees/${id}: filter.x.clean`]);
+
+    // What it guards against: a clean check of the worktree before removing it.
+    write(wt, '.gitattributes', '* filter=x\n');
+    git(wt, 'add', '.gitattributes');
+    git(wt, 'commit', '-q', '-m', 'attrs');
+    fs.rmSync(marker, { force: true });
+    fs.utimesSync(path.join(wt, 'README.md'), 2100000000, 2100000000);
+    await g.removeWorktree(dir, wt);
+    assert.equal(ran(marker), true);
+  });
+});

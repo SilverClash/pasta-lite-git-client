@@ -24,10 +24,21 @@ test('describeRiskyConfig lists a bare repo\'s hooks apart from its config keys'
   assert.ok(both.indexOf('core.sshcommand') < both.indexOf('has hooks') && both.indexOf('has hooks') < both.indexOf('hooks/pre-push'));
 });
 
+test('describeRiskyConfig lists submodules\' and other worktrees\' entries under their own heading, one line each', () => {
+  const { message, detail } = describeRiskyConfig('/r/a\nb', ['filter.x.clean', 'submodule lib: hooks/post-checkout', 'worktree worktrees/wt: filter.y.clean', 'submodule x\ny: filter.z.clean']);
+  assert.equal(message.includes('\n'), false, 'a newline in the folder name is not a new line');
+  assert.match(detail, /^Its submodules or other worktrees have their own settings or hooks that run commands:$/m);
+  assert.match(detail, /^ {2}submodule lib: hooks\/post-checkout$/m);
+  assert.match(detail, /^ {2}worktree worktrees\/wt: filter\.y\.clean$/m);
+  assert.match(detail, /^ {2}submodule x\?y: filter\.z\.clean$/m);
+  assert.doesNotMatch(detail, /has hooks that git runs/, 'a submodule\'s hook is not the repository\'s own');
+  assert.ok(detail.indexOf('  filter.x.clean') < detail.indexOf('Its submodules'));
+});
+
 // ---------------------------------------------------------------- the policy
 
 /** A trust over fake git checks (`config` / `hooks` keys per root), a fake store and dialog. */
-function setup({ config = [], hooks = [], trusted = {}, answers = [], interactive = true, trustThrows = false } = {}) {
+function setup({ config = [], hooks = [], nested = [], trusted = {}, answers = [], interactive = true, trustThrows = false } = {}) {
   const asked = [];
   const saved = [];
   const records = [];
@@ -36,7 +47,7 @@ function setup({ config = [], hooks = [], trusted = {}, answers = [], interactiv
     trust: (root, keys) => { if (trustThrows) throw new Error('EACCES'); saved.push([root, keys]); },
   };
   const trust = createRepoTrust({
-    git: { riskyLocalConfig: async () => config, riskyHooks: async () => hooks },
+    git: { riskyLocalConfig: async () => config, riskyHooks: async () => hooks, riskyNested: async () => nested },
     store: () => store,
     ui: { interactive, confirm: async (opts) => { asked.push(opts); return answers.shift(); } },
     log: { info: (msg, f) => records.push(['info', msg, f]), warn: (msg, f) => records.push(['warn', msg, f]) },
@@ -52,6 +63,17 @@ test('no risky keys: opens without asking; hooks ask like config keys, bare or n
   assert.equal(await u.trust.confirm('/r/a'), false, 'the hook asks (no answer = declined)');
   assert.equal(u.asked.length, 1);
   assert.match(u.asked[0].detail, /^ {2}hooks\/pre-commit$/m);
+});
+
+test('a submodule\'s or another worktree\'s entries ask like the repo\'s own, and are remembered with them', async () => {
+  const t = setup({ config: ['core.sshcommand'], nested: ['submodule lib: filter.x.clean'], answers: [true] });
+  assert.equal(await t.trust.confirm('/r/a'), true);
+  assert.equal(t.asked.length, 1);
+  assert.match(t.asked[0].detail, /^ {2}submodule lib: filter\.x\.clean$/m);
+  assert.deepEqual(t.saved, [['/r/a', ['core.sshcommand', 'submodule lib: filter.x.clean']]]);
+  const u = setup({ nested: ['worktree worktrees/wt: filter.y.clean'], trusted: { '/r/a': ['core.sshcommand'] }, answers: [false] });
+  assert.equal(await u.trust.confirm('/r/a'), false, 'trusted for other keys only: asks again');
+  assert.equal(u.asked.length, 1);
 });
 
 test('trusted earlier for every key: opens without asking; a new key asks again', async () => {

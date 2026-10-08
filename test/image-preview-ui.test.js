@@ -133,12 +133,76 @@ test('preview: Fit shrinks a large image into its pane and never enlarges a smal
   assert.ok(t.q('.ip').classList.contains('is-actual'));
   // at 100% the panes scroll together
   const [sa, sb] = t.qa('.ip-stage');
+  const frame = scrolling(t, [[sa, { left: 4000, top: 2000 }], [sb, { left: 4000, top: 2000 }]]);
   sa.scrollLeft = 120;
   sa.scrollTop = 40;
-  t.dom.dispatch(sa, 'scroll');
+  frame();
   assert.deepEqual([sb.scrollLeft, sb.scrollTop], [120, 40]);
   fit.click();
   assert.equal(a.style.width, '400px');
+  t.dispose();
+});
+
+/**
+ * Stages that scroll like a browser's: a position is clamped to the stage's range (`max`), and a change
+ * queues one scroll event per stage, fired by the returned frame() (a frame later, not during the write).
+ */
+function scrolling(t, stages) {
+  const queued = new Set();
+  for (const [stage, max] of stages) {
+    const pos = { left: 0, top: 0 };
+    for (const [prop, k] of [['scrollLeft', 'left'], ['scrollTop', 'top']]) {
+      Object.defineProperty(stage, prop, {
+        configurable: true,
+        get: () => pos[k],
+        set: (v) => {
+          const n = Math.max(0, Math.min(max[k], Math.round(v)));
+          if (n === pos[k]) return;
+          pos[k] = n;
+          queued.add(stage);
+        },
+      });
+    }
+  }
+  return () => {
+    const due = [...queued];
+    queued.clear();
+    for (const s of due) t.dom.dispatch(s, 'scroll');
+  };
+}
+
+test('zoom: the panes scroll together; a mirrored pane\'s own scroll event never pulls the driven one back', async (tc) => {
+  const t = await mount(tc);
+  await t.land(imageSide('old', 'k1'), imageSide('new', 'k2'));
+  const [a, b] = t.qa('img');
+  t.loaded(a, 4000, 2000);
+  t.loaded(b, 1000, 500);
+  t.qa('.ip-zoom-btn')[1].click(); // 100%
+  const [sa, sb] = t.qa('.ip-stage');
+  // the After image is smaller: its pane scrolls only up to 600 × 200 (1000×500 at 100% in a 400×300 box)
+  const frame = scrolling(t, [[sa, { left: 3600, top: 1700 }], [sb, { left: 600, top: 200 }]]);
+  sa.scrollLeft = 900;
+  sa.scrollTop = 300;
+  frame(); // Before's event: After follows, clamped
+  assert.deepEqual([sb.scrollLeft, sb.scrollTop], [600, 200]);
+  frame(); // After's echo of that write
+  assert.deepEqual([sa.scrollLeft, sa.scrollTop], [900, 300], 'the driven pane stays where the user put it');
+
+  // momentum: several writes on Before before After's echo arrives
+  sa.scrollLeft = 950;
+  frame();
+  sa.scrollLeft = 1000;
+  sa.scrollTop = 150;
+  frame();
+  frame();
+  assert.deepEqual([sa.scrollLeft, sa.scrollTop], [1000, 150]);
+  assert.deepEqual([sb.scrollLeft, sb.scrollTop], [600, 150]);
+
+  // the user scrolls After: Before follows, and After's echo-free event is the user's
+  sb.scrollLeft = 100;
+  frame();
+  frame();
+  assert.deepEqual([sa.scrollLeft, sb.scrollLeft], [100, 100]);
   t.dispose();
 });
 

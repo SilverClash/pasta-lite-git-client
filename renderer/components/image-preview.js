@@ -63,7 +63,7 @@
     let compareEls = null; // the comparison view's parts, made once per file
     let decoded = new Map(); // url -> {width, height} once it loaded
     let failed = new Set(); // urls that didn't decode
-    let syncing = false; // a scroll being mirrored to the other pane
+    const echoes = new WeakMap(); // stage -> {left, top} a mirrored write moved it to (its scroll event is ours, not the user's)
     let dragging = false; // the swipe divider follows the pointer
 
     const preview = () => {
@@ -161,16 +161,28 @@
     const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { if (spec) sizeImages(); }) : null;
     if (ro) ro.observe(root);
 
-    /** At any zoom but Fit the panes scroll together (the same image region side by side). */
+    /**
+     * At any zoom but Fit the panes scroll together (the same image region side by side). Scroll
+     * events come a frame later, so a pane we moved fires one too: it is recognised by the position
+     * the write left it at (clamped when its image is smaller) and not mirrored back, which would
+     * pull the pane the user drives back into the smaller one's range.
+     */
     function mirrorScroll(e) {
-      if (syncing || zoom === 'fit') return;
       const from = e.target;
+      const echo = echoes.get(from);
+      if (echo) {
+        echoes.delete(from);
+        if (echo.left === from.scrollLeft && echo.top === from.scrollTop) return;
+      }
+      if (zoom === 'fit') return;
       for (const p of panes.values()) {
-        if (p.stage === from || !p.node.parentNode) continue;
-        syncing = true;
-        p.stage.scrollLeft = from.scrollLeft;
-        p.stage.scrollTop = from.scrollTop;
-        syncing = false;
+        const to = p.stage;
+        if (to === from || !p.node.parentNode) continue;
+        const was = { left: to.scrollLeft, top: to.scrollTop };
+        to.scrollLeft = from.scrollLeft;
+        to.scrollTop = from.scrollTop;
+        // A write that moved nothing fires no event of its own (an earlier write's echo may still be due).
+        if (to.scrollLeft !== was.left || to.scrollTop !== was.top) echoes.set(to, { left: to.scrollLeft, top: to.scrollTop });
       }
     }
 

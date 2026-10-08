@@ -2,13 +2,15 @@
 
 ## Supported versions
 
-Pasta Lite is alpha software and runs from source. Only the latest 0.1.x code on `main` gets
-security fixes.
+Pasta Lite is alpha software. Releases are distributed as DMGs for macOS, signed with a Developer
+ID and notarized by Apple, on the repository's
+[GitHub Releases page](https://github.com/SilverClash/pasta-lite-git-client/releases); it also runs
+from source. Only the latest 0.2.x release (and the code on `main`) gets security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x   | Yes       |
-| < 0.1   | No        |
+| 0.2.x   | Yes       |
+| < 0.2   | No        |
 
 ## Reporting a vulnerability
 
@@ -24,8 +26,8 @@ There is no security email address. All reports go through GitHub.
   sent them").
 - Steps to reproduce: a minimal repository or a script that builds one, and the exact actions in
   the app.
-- The Pasta Lite commit (`git rev-parse HEAD` in your checkout), your OS and version, and
-  `git --version`.
+- The Pasta Lite version (Help → Copy Diagnostics), or the commit (`git rev-parse HEAD`) when you
+  run it from source, your OS and version, and `git --version`.
 - Logs or a proof of concept if you have one. Help → Copy Diagnostics collects versions and recent
   log lines with credentials and the home folder redacted. Check it before you attach it.
 - Whether you want to be credited in the advisory, and under what name.
@@ -49,13 +51,18 @@ Reports about these areas are especially welcome.
 
 **Repositories that run commands.** Before it opens a repository, the app checks the repository's
 own git config for settings that run programs, such as filter drivers, `core.sshCommand`,
-`core.hooksPath`, `core.editor`, credential helpers and merge or diff tools. It also checks the
-hooks folder of every repository, bare or with a working tree, for hooks git would run (following
-`core.hooksPath`; a linked worktree reports the main repository's hooks). If it finds any, it shows
-a **Trust and Open** prompt that defaults to Cancel. The app always runs git with
-`core.fsmonitor=false` and `protocol.ext.allow=never`, so the `ext::` transport (which runs its URL
-as a shell command) is always blocked, whatever the repository's config says. It never opens an
-editor or terminal prompt, and passes on only an allowlisted set of `GIT_*` environment variables.
+`core.hooksPath`, `core.editor`, credential helpers and merge or diff tools, and for any
+`include.path` or `includeIf` (an include can bring such settings in later, after a checkout). It
+also checks the hooks folder of every repository, bare or with a working tree, for hooks git would
+run (following `core.hooksPath`; a linked worktree reports the main repository's hooks), and the
+same config and hooks of every submodule and the config git reads in each of the repository's other
+worktrees. If it finds any, it shows a **Trust and Open** prompt that defaults to Cancel. The app
+always runs git with `core.fsmonitor=false` and `protocol.ext.allow=never`, so the `ext::` transport
+(which runs its URL as a shell command) is always blocked, whatever the repository's config says.
+It keeps git out of submodules wherever a flag can (status, diffs, checkout, fetch and push). It
+never opens an editor or terminal prompt, and passes on only an allowlisted set of `GIT_*`
+environment variables. It never continues or skips a rebase whose remaining steps run commands
+(`exec` lines), whoever started it: only Abort is offered.
 Examples of vulnerabilities in this area:
 
 - a way for a repository's config or hooks to run a command without the prompt
@@ -64,7 +71,9 @@ Examples of vulnerabilities in this area:
 
 **Electron sandboxing.** Every page (the tab strip and each tab) runs with `contextIsolation`,
 `sandbox` and `webSecurity` on, with `nodeIntegration` off, and with a strict Content Security
-Policy. The pages reach the main process only through the preload bridges. The main process
+Policy. The packaged app has its Electron fuses set: it can't be run as plain Node
+(`ELECTRON_RUN_AS_NODE`), ignores `NODE_OPTIONS` and the `--inspect` flags, loads its code only from
+its `app.asar`, and checks that archive against the hash embedded in the signed app. The pages reach the main process only through the preload bridges. The main process
 accepts only the IPC channels and operations on its allowlist (`src/ipc-contract.js`,
 `src/ops.js`). It checks which page sent each call and supplies that tab's repository itself, so
 the renderer never passes a repository path. Examples of vulnerabilities in this area:

@@ -78,12 +78,24 @@ const GLOBAL_ARGS = [
   // A repo's own config could otherwise run a command on every `status` (e.g. a downloaded folder).
   // This only covers fsmonitor (and ext::, below): filter drivers, core.sshCommand, credential helpers, hooks etc.
   // from the repo's config still run, so main asks before opening such a repo
-  // (git.riskyLocalConfig).
+  // (git.riskyLocalConfig and the others repo-trust.js asks).
   '-c', 'core.fsmonitor=false',
   // The ext:: transport runs its URL as a shell command. A repo's protocol.ext.allow=always plus
   // an ext:: remote (or a url.*.insteadOf rewriting to one) would run it on fetch; the command
   // line wins over every config file, and child gits (submodules, hooks) inherit it.
   '-c', 'protocol.ext.allow=never',
+  // Work inside a submodule as little as possible. Its config (filter drivers, core.sshCommand,
+  // ...) and hooks are its own, so a child git there runs them: checkout, reset, merge, rebase
+  // etc. don't recurse whatever the repo's config says (submodule.recurse), and neither do fetch
+  // and push (also passed --no-recurse-submodules / --recurse-submodules=no: .gitmodules can
+  // override these per submodule). status and diff take --ignore-submodules=dirty
+  // (working-state.js, diff-args.js), and a submodule's diff is never shown inline (diff.submodule).
+  '-c', 'submodule.recurse=false',
+  '-c', 'fetch.recurseSubmodules=false',
+  '-c', 'push.recurseSubmodules=no',
+  '-c', 'diff.ignoreSubmodules=dirty',
+  '-c', 'diff.submodule=short',
+  '-c', 'status.submoduleSummary=false',
 ];
 
 const DIFF_ARGS = [

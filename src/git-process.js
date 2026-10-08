@@ -61,6 +61,9 @@ function kindError(kind, message, extra = {}) {
 /** Tag an existing error with a kind (and extras) and return it, for `throw tagError(e, ...)`. */
 const tagError = (err, kind, extra = {}) => Object.assign(err, { kind }, extra);
 
+/** The error of a cancelled operation (kind 'aborted'), for work that notices the cancel itself (not a killed git). */
+const abortedError = () => kindError('aborted', 'Operation was cancelled');
+
 // Config overrides so user config can never change output we parse.
 const GLOBAL_ARGS = [
   '-c', 'core.quotePath=false',
@@ -278,5 +281,5 @@ function argvChunks(paths, { maxCount = 1000, maxBytes = 64 * 1024 } = {}) {
 
 module.exports = {
   setGitBinary, withSignal, killChildren, MAX_OUTPUT_BYTES,
-  GitError, kindError, tagError, spawnGit, gitAt, tryGitAt, GLOBAL_ARGS, DIFF_ARGS, DIFF_OPTS, LITERAL_ENV, nulList, argvChunks,
+  GitError, kindError, tagError, abortedError, spawnGit, gitAt, tryGitAt, GLOBAL_ARGS, DIFF_ARGS, DIFF_OPTS, LITERAL_ENV, nulList, argvChunks,
 };

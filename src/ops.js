@@ -330,7 +330,7 @@ async function guardedDiscard(repo, paths, fn, signal) {
   let fnError = null;
   try {
     const res = await exec.withSignal(snap.signal, () => undo.withDiscardBackup(repo, paths, async () => {
-      if (snap.signal.aborted) throw kindError('aborted', 'Operation was cancelled');
+      if (snap.signal.aborted) throw exec.abortedError();
       phase = 'discard';
       try {
         return await exec.withSignal(signal, fn);

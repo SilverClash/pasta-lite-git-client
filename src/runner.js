@@ -9,9 +9,7 @@ const { invalid } = require('./op-validators');
 const { kindOf, logError } = require('./ipc-errors');
 const { logger } = require('./log');
 
-const { kindError } = exec;
-
-const abortedError = () => kindError('aborted', 'Operation was cancelled');
+const { kindError, abortedError } = exec;
 
 /**
  * @param {{ops: object, writeOps: Set<string>, gate?: (repo, name, args) => Promise<Error|null>,

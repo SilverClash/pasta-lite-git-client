@@ -328,13 +328,26 @@ async function rewordRetry(cwd, ctx) {
 }
 
 /**
+ * Kind 'rebase-exec' when the rest of the rebase's todo runs shell commands (exec lines), which
+ * a Continue or Skip would make git run. We never write one (src/rebase-editor.js), so it came
+ * from a terminal or with the folder: whoever started it, only Abort is offered.
+ */
+function refuseExec(r) {
+  if (r && r.runsCommands) {
+    throw kindError('rebase-exec', 'The rest of this rebase runs commands (exec lines in its todo), which Pasta Lite never runs. '
+      + 'Continue it in a terminal if you trust it, or abort it', { state: 'rebasing' });
+  }
+}
+
+/**
  * Run `rebase <flag>` for a stopped rebase, with the helper as GIT_EDITOR when a message waits.
  * `message`: the message for the stopped commit (msgs/<sha>, see continue_). The state folder
  * of a rebase that isn't ours is left from an earlier one (aborted or finished in a terminal):
  * it is cleared first, so none of its prepared messages reaches this rebase; the helper then
- * runs only for the message given now.
+ * runs only for the message given now. Refused (refuseExec) when the todo runs commands.
  */
 async function step(cwd, ctx, flag, { message } = {}) {
+  refuseExec(ctx.rebase);
   const { ours } = ctx.rebase;
   if (!ours) rs.clearState(ctx.gd);
   if (message !== undefined) {
@@ -702,5 +715,5 @@ async function pullRebase(cwd, { onto, ontoName, branch, before }) {
 module.exports = {
   REBASE_CONFIG, START_FLAGS, HELPER, PLAN_LIMIT,
   start, plan, startInteractive, interactiveRefusal, todoGroups, TODO_ACTIONS,
-  continue_, skip, abort, pullRebase, helperEnv,
+  continue_, skip, abort, pullRebase, helperEnv, refuseExec,
 };

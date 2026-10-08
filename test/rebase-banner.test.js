@@ -128,6 +128,20 @@ test('bannerModel: external rebase, detached HEAD, onto named by refs, our autos
   assert.deepEqual(det.lines, ['1 conflicted file', 'Your local changes are stashed (7777777) and come back when the rebase ends']);
 });
 
+test('bannerModel: a rebase whose todo runs commands offers only Abort, and says why', () => {
+  const { Op } = loadOp();
+  const st = rebasing({ ours: false, runsCommands: true, conflicted: 0 }, { conflicted: [] });
+  const m = Op.bannerModel({ status: st });
+  assert.ok(m.lines.includes('The rest of this rebase runs commands (exec lines in its todo), which Pasta Lite never runs. Continue it in a terminal if you trust it, or abort it.'));
+  const byId = Object.fromEntries(m.buttons.map((b) => [b.id, b]));
+  assert.equal(byId.continue.disabled, true);
+  assert.equal(byId.skip.disabled, true);
+  assert.match(byId.continue.title, /runs commands: continue it in a terminal, or abort it/);
+  assert.equal(byId.abort.disabled, undefined);
+  const plain = Op.bannerModel({ status: rebasing({ ours: false, conflicted: 0 }, { conflicted: [] }) });
+  assert.equal(plain.buttons.find((b) => b.id === 'skip').disabled, undefined);
+});
+
 test('bannerModel: display-safe names (bidi / control characters escaped)', () => {
   const { Op } = loadOp();
   const m = Op.bannerModel({ status: rebasing({ branch: 'fe\u202eat', ontoName: 'ma\nin', current: { cmd: 'pick', sha: SHA('d'), subject: 'x\u202ey' } }) });

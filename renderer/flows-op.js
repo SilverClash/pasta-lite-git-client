@@ -15,7 +15,7 @@
   const K = window.PLFlowKit;
   const { C, settle, report, dialog, dn, short, Op, status, upstreamOf, stashNote, reportOutcome, forcePush } = K;
 
-  const REBASE_QUIET = ['aborted', 'conflicts', 'dirty', 'not-rebasing', 'hook-failed'];
+  const REBASE_QUIET = ['aborted', 'conflicts', 'dirty', 'not-rebasing', 'hook-failed', 'rebase-exec'];
   const MERGE_QUIET = ['conflicts', 'dirty', 'not-merging', 'hook-failed', 'nothing-to-commit'];
 
   const opState = (store) => Op().opStateOf(status(store));
@@ -117,6 +117,12 @@
           title: 'A hook refused the commit',
           message: `A commit hook failed, so the ${what} stopped. Fix the problem, then continue${what === 'merge' ? '' : ', skip the commit'} or abort.`,
           detail: String(e.message || '').trim() || '(the hook printed nothing)',
+        });
+        break;
+      case 'rebase-exec':
+        await a({
+          title: "Pasta Lite doesn't continue this rebase",
+          message: `${Op().EXEC_TODO} If you trust where this repository came from, continue the rebase in a terminal (git rebase --continue); otherwise abort it.`,
         });
         break;
       default:

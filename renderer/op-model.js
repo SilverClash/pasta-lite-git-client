@@ -9,7 +9,8 @@
 //   status.rebase            RebaseState | null  {backend, interactive, ours, branch, onto, origHead, ontoName,
 //                            step: {done, total}, current: {cmd, sha, subject} | null,
 //                            stop: 'conflict'|'edit'|'empty'|'hook'|'other', stopMessage, conflicted,
-//                            todoEditable, autostash, stoppedSha, hookOutput?, signingFailed?}
+//                            todoEditable, runsCommands, autostash, stoppedSha, hookOutput?, signingFailed?}
+//                            runsCommands: the rest of the todo has exec lines (Continue / Skip refused, 'rebase-exec')
 //                            autostash: our stash's sha, only while that stash still exists
 //   status.merge             {head, name, message, autostash} | null   autostash: the sha of our stash that comes back when
 //                            the merge ends (only while it exists; mergeCommit then refuses unstaged changes)
@@ -141,6 +142,9 @@
 
   const btn = (id, label, flow, title, extra = {}) => ({ id, label, flow, args: [], title, ...extra });
   const RESOLVE_FIRST = 'Resolve and mark all conflicted files first';
+  /** Why Continue / Skip are off while the rest of the todo runs commands (rebase.runsCommands; ops kind 'rebase-exec'). */
+  const EXEC_TODO = 'The rest of this rebase runs commands (exec lines in its todo), which Pasta Lite never runs.';
+  const EXEC_OFF = 'The rest of this rebase runs commands: continue it in a terminal, or abort it';
   /** ops refuseAtPickStop's reason (kind 'rebasing'): commits are only made at an edit stop. */
   const COMMIT_REFUSED = 'Use Continue Rebase to commit the resolved changes';
 
@@ -199,11 +203,15 @@
     const stop = stopOf(rb, st);
     const { title, lines, detailLabel, detail } = rebaseText(st, refsBySha, rb, stop, n);
 
-    const why = n > 0 ? RESOLVE_FIRST : unstagedBlocker(st);
+    const exec = !!rb && rb.runsCommands === true;
+    if (exec) lines.push(`${EXEC_TODO} Continue it in a terminal if you trust it, or abort it.`);
+    let why = n > 0 ? RESOLVE_FIRST : unstagedBlocker(st);
+    if (exec) why = EXEC_OFF;
     const cont = btn('continue', 'Continue Rebase', 'rebaseContinue',
       stop === 'edit' ? 'Continue the rebase: staged changes are amended into the stopped commit' : 'Commit the resolved changes and continue with the next commit',
       { primary: true, ...(why ? { disabled: true, title: why } : {}) });
-    const skip = btn('skip', 'Skip Commit', 'rebaseSkip', 'Leave the current commit out and continue with the next one', { danger: true });
+    const skip = btn('skip', 'Skip Commit', 'rebaseSkip', 'Leave the current commit out and continue with the next one',
+      { danger: true, ...(exec ? { disabled: true, title: EXEC_OFF } : {}) });
     const abort = btn('abort', 'Abort Rebase', 'rebaseAbort', 'Stop the rebase and put the branch back where it was', { danger: true });
     return {
       kind: 'rebase', stop, title, lines, detailLabel, detail,
@@ -466,7 +474,7 @@
   const api = {
     opStateOf, rebaseStateOf, mergeStateOf, pendingAutostashOf, inProgress, opName, stopOf, conflictCount,
     ontoName, rebaseNames, inProgressTitle, finishFirstTitle, pendingStashTitle, unstagedBlocker, bannerModel, bareWorktrees, composerMode, conflictHeading,
-    wipLabel, stoppedNotice, editStopText, RESOLVE_FIRST, COMMIT_REFUSED, refShort, conflictCode, missingSides, conflictSides, resolveChoices,
+    wipLabel, stoppedNotice, editStopText, RESOLVE_FIRST, COMMIT_REFUSED, EXEC_TODO, refShort, conflictCode, missingSides, conflictSides, resolveChoices,
     baseName, fsBaseName,
   };
   if (typeof window !== 'undefined') window.PLOp = api;

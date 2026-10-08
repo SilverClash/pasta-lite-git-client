@@ -52,6 +52,7 @@
     'nothing-to-commit': 'nothing is staged to commit',
     outside: 'a path leaves the working tree or enters the git dir',
     rebasing: 'a commit at a rebase\'s conflict stop (Continue Rebase commits it)',
+    'rebase-exec': 'Continue / Skip of a rebase whose remaining todo runs commands (exec lines): only Abort is offered',
     rejected: 'the remote rejected the push for another reason (`reason`)',
     'rejected-behind': 'the push was rejected: the remote branch has commits we lack',
     'rejected-hook': 'the push was rejected by a remote hook (`remoteMessage`)',

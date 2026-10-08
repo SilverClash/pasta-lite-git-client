@@ -482,3 +482,64 @@ test("serializeError keeps a finished op's result, stash fields included", () =>
   assert.equal(s.stash, 'a'.repeat(40));
   assert.equal(s.reason, 'conflict');
 });
+
+describe('a rebase whose todo runs commands: only Abort', () => {
+  /** A rebase a terminal started with `--exec`, stopped at A's conflict, resolved and staged. */
+  function execRebase() {
+    const { dir, M } = diverged();
+    const marker = path.join(h.tmpDir(), 'ran');
+    assert.throws(() => term(dir, ['rebase', '-i', '--exec', `touch '${marker}'`, 'main']));
+    h.write(dir, 'a.txt', 'resolved\n');
+    h.git(dir, 'add', 'a.txt');
+    return { dir, M, marker };
+  }
+
+  test("a terminal's rebase with exec lines: Continue and Skip are refused, nothing runs; Abort works", async () => {
+    const { dir, marker } = execRebase();
+    const st = await g.status(dir);
+    assert.equal(st.rebase.ours, false);
+    assert.equal(st.rebase.runsCommands, true);
+    const runner = ops.createRunner();
+    await assert.rejects(runner.run(dir, 'rebaseContinue', []), (e) => e.kind === 'rebase-exec' && /runs commands/.test(e.message));
+    await assert.rejects(runner.run(dir, 'rebaseContinue', [{ message: 'A' }]), (e) => e.kind === 'rebase-exec');
+    await assert.rejects(runner.run(dir, 'rebaseSkip', []), (e) => e.kind === 'rebase-exec');
+    await assert.rejects(rebase.continue_(dir), (e) => e.kind === 'rebase-exec', 'the backend refuses it too');
+    await assert.rejects(rebase.skip(dir), (e) => e.kind === 'rebase-exec');
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal((await g.status(dir)).state, 'rebasing', 'nothing changed');
+    assert.equal((await runner.run(dir, 'rebaseAbort', [])).status, 'aborted');
+    assert.equal(fs.existsSync(marker), false);
+    // What the refusal guards against: a git that continues runs it.
+    const again = execRebase();
+    term(again.dir, ['rebase', '--continue']);
+    assert.equal(fs.existsSync(again.marker), true);
+  });
+
+  test('also when the rebase reads as ours: an exec line added to its todo is refused', async () => {
+    const { dir } = diverged();
+    const marker = path.join(h.tmpDir(), 'ran');
+    assert.equal((await ops.OPS.rebase(dir, 'main')).status, 'stopped');
+    fs.appendFileSync(path.join(gitDirOf(dir), 'rebase-merge', 'git-rebase-todo'), `  x touch '${marker}'\n`);
+    h.write(dir, 'a.txt', 'resolved\n');
+    h.git(dir, 'add', 'a.txt');
+    const st = await g.status(dir);
+    assert.equal(st.rebase.ours, true);
+    assert.equal(st.rebase.runsCommands, true);
+    await assert.rejects(ops.createRunner().run(dir, 'rebaseContinue', []), (e) => e.kind === 'rebase-exec');
+    assert.equal(fs.existsSync(marker), false);
+  });
+
+  test('a todo that can\'t be read whole counts as one that runs commands; a plain one doesn\'t', async () => {
+    const { dir } = diverged();
+    assert.equal((await ops.OPS.rebase(dir, 'main')).status, 'stopped');
+    assert.equal((await g.status(dir)).rebase.runsCommands, false);
+    const todo = path.join(gitDirOf(dir), 'rebase-merge', 'git-rebase-todo');
+    const elsewhere = path.join(h.tmpDir(), 'todo');
+    fs.renameSync(todo, elsewhere);
+    fs.symlinkSync(elsewhere, todo);
+    assert.equal((await g.status(dir)).rebase.runsCommands, true, 'a symlink');
+    fs.rmSync(todo);
+    fs.writeFileSync(todo, `${'# a comment line\n'.repeat(70000)}pick ${head(dir)}\n`);
+    assert.equal((await g.status(dir)).rebase.runsCommands, true, 'over the size we read');
+  });
+});

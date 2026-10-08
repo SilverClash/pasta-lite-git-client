@@ -12,6 +12,18 @@
   }
 
   /**
+   * A plain <button type="button"> with a tooltip and a click handler: button('cls', 'text', 'title', fn).
+   * In a segmented control (style.css `.seg`) it has the class `seg-btn` and aria-pressed for the chosen one.
+   */
+  function button(className, text, title, onClick) {
+    const b = el('button', className, text);
+    b.type = 'button';
+    b.title = title;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  /**
    * The bridge rejects with a plain {message, kind, ...} object; make it a real Error. Only objects
    * have their fields copied (Object.assign on a string would copy its characters as "0", "1", ...).
    */
@@ -335,7 +347,7 @@
     el,
     util: {
       toError, plural, short, OID_RE, report, modKey, IS_MAC, relTime, absTime, initials, displayName, pathTree, storage, repoKey, isEditable, inTextField, modalOpen,
-      log, logToast, isUnexpectedError, EXPECTED_KINDS, QUIET_KINDS, UNEXPECTED_KINDS, load,
+      button, log, logToast, isUnexpectedError, EXPECTED_KINDS, QUIET_KINDS, UNEXPECTED_KINDS, load,
     },
     register(name, def) {
       if (registry.has(name)) throw new Error(`component ${name} registered twice`);

@@ -11,6 +11,10 @@ const { isAtOrUnder } = require('./fs-paths');
 
 // O_NOFOLLOW is POSIX only; elsewhere (Windows) it is 0 and only the lstat walk protects.
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+// The separators of a repository-relative path: '/' (git's), and on Windows '\' too. On POSIX '\' is
+// an ordinary file name character (git tracks 'a\b.png' as one name), so the guard checks the very
+// file git means, not 'a/b.png'.
+const SEPARATORS = process.platform === 'win32' ? /[\\/]+/ : /\/+/;
 const realpath = (p) => fs.realpathSync.native(p); // native: canonical case on case-insensitive fs
 
 // Real path of `abs`, which may not exist yet: realpath of the deepest existing ancestor plus the rest.
@@ -49,7 +53,7 @@ async function worktreeGuard(cwd) {
 
   function check(rel, { allowFinalLink = false } = {}) {
     if (typeof rel !== 'string' || !rel || path.isAbsolute(rel)) throw kindError('outside', `not a repository-relative path: ${rel}`);
-    const parts = rel.split(/[\\/]+/).filter((s) => s && s !== '.');
+    const parts = rel.split(SEPARATORS).filter((s) => s && s !== '.');
     if (!parts.length || parts.some((s) => s === '..' || s.toLowerCase() === '.git')) {
       throw kindError('outside', `path leaves the worktree: ${rel}`);
     }
@@ -120,4 +124,4 @@ function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec } = {}) {
   }
 }
 
-module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing };
+module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing, O_NOFOLLOW };

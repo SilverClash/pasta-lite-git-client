@@ -25,6 +25,11 @@ async function emptyTree(cwd) {
   return emptyTreeCache.get(fmt);
 }
 
+/** First parent of `sha`, or the empty tree for a root commit (the base its diff is shown against). */
+async function baseOf(cwd, sha) {
+  return (await verify(cwd, `${sha}^1`)) || emptyTree(cwd);
+}
+
 /**
  * Object id `rev` (any revision: name, sha, 'refs/stash@{1}', 'HEAD~1') resolves to, or null.
  * `commit`: peel it to a commit (null when it isn't one). Never read as an option.
@@ -84,6 +89,6 @@ async function commitPaths(cwd, commit) {
 }
 
 module.exports = {
-  objectFormat, zeroOid, emptyTree, verify, resolveCommit, refExists, isAncestor, isCurrentBranch, commitPaths,
+  objectFormat, zeroOid, emptyTree, baseOf, verify, resolveCommit, refExists, isAncestor, isCurrentBranch, commitPaths,
   remotes, refFields, upstreamOf,
 };

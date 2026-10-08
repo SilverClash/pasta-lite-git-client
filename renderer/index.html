@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pasta Lite Git client</title>
   <link rel="stylesheet" href="style.css">
@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="components/graph-view.css">
   <link rel="stylesheet" href="components/details.css">
   <link rel="stylesheet" href="components/diff-view.css">
+  <link rel="stylesheet" href="components/image-preview.css">
   <link rel="stylesheet" href="components/op-banner.css">
   <link rel="stylesheet" href="components/rebase-editor.css">
   <link rel="stylesheet" href="components/repo-picker.css">
@@ -44,6 +45,7 @@
 
   <script src="graph.js"></script>
   <script src="../src/error-kinds.js"></script>
+  <script src="../src/image-format.js"></script>
   <script src="components.js"></script>
   <script src="keys.js"></script>
   <script src="icons.js"></script>
@@ -51,6 +53,8 @@
   <script src="policy.js"></script>
   <script src="history-model.js"></script>
   <script src="components/rebase-model.js"></script>
+  <script src="image-cache.js"></script>
+  <script src="components/image-model.js"></script>
   <script src="store.js"></script>
   <script src="dialog.js"></script>
   <script src="menu.js"></script>
@@ -77,6 +81,7 @@
   <script src="components/details.js"></script>
   <script src="components/diff-model.js"></script>
   <script src="components/diff-staging.js"></script>
+  <script src="components/image-preview.js"></script>
   <script src="components/diff-view.js"></script>
   <script src="components/rebase-editor.js"></script>
   <script src="components/panels.js"></script>

@@ -84,6 +84,9 @@
   --diff-del-strong: color-mix(in srgb, var(--red) 35%, transparent);
   --diff-add-ln: rgba(168, 216, 142, 0.7);
   --diff-del-ln: rgba(245, 154, 140, 0.7);
+  /* image preview: the checkerboard behind transparent pixels (a light theme redefines just these two) */
+  --checker-a: #3b3530;
+  --checker-b: #2b2622;
 
   /* feedback: toasts, spinners, focus */
   --toast-error-bg: color-mix(in srgb, var(--red) 15%, var(--bg));
@@ -158,6 +161,18 @@ body[data-view="repo"] .titlebar { display: none; }
 .btn:hover { background: var(--panel-2-hover); }
 .btn-primary { background: var(--blue); border-color: transparent; color: var(--text-strong); font-weight: 600; padding: 9px 22px; }
 .btn-primary:hover { background: var(--primary-hover); }
+
+/* Segmented control: a .seg group of .seg-btn buttons (Components.util.button), the chosen one
+   aria-pressed="true": the diff header's Preview | Text, the image preview's modes and zoom. */
+.seg { flex: none; display: inline-flex; border: 1px solid var(--white-12); border-radius: 4px; overflow: hidden; }
+.seg > * + * { border-left: 1px solid var(--white-12); }
+.seg-btn {
+  font: 600 11px/1 var(--font); color: var(--text-2); background: transparent; border: 0; padding: 0 10px; height: 24px; cursor: pointer;
+}
+.seg-btn:hover:not(:disabled) { color: var(--text-strong); background: var(--panel-3); }
+.seg-btn:disabled { opacity: 0.4; cursor: default; }
+.seg-btn[aria-pressed="true"] { color: var(--text-strong); background: var(--blue-select); }
+.seg-btn:focus-visible { outline-offset: -2px; }
 
 kbd {
   font: 600 11px var(--font);

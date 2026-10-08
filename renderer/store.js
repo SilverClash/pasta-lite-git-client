@@ -44,6 +44,22 @@
 //   diff         null | {spec, loading, data|null, error}; data = ops diffView result:
 //                {file (=sections[0]|null), sections, fingerprint, truncated, maxLines, maxLineChars, conflict|null}
 //                spec: {kind:'workdir', file, staged, untracked} | {kind:'commit', sha, file, orig}
+//   imagePreview null | the open diff's image preview (docs/plans/image-preview.md §6.3): {spec, conflict,
+//                old: Slot, new: Slot, base?: Slot}, Slot = {loading, side: ImageSide without its bytes
+//                (src/image-preview.js header) | null, url: a blob: URL of the bytes (window.PLImageCache) | null,
+//                error: message | null}. conflict: an unmerged path (PLImage.previewKind 'conflict'), whose
+//                old / new / base slots are its ours / theirs / base stages (`base` only then).
+//                Loaded by the store itself after a diff lands when PLImage.wantsPreview(spec, data) (one op per
+//                side, commitImageSide / workdirImageSide, each cancellable), reloaded with each side's
+//                `knownKey` whenever the diff is re-fetched (an unchanged side keeps its URL; a Git LFS pointer
+//                whose object isn't in the local cache is read again: it may have been downloaded), and null
+//                whenever state.diff is closed or shows another file (set() drops it, cancelling the reads in flight).
+//                The bytes live only in the URL cache, never in a state key (diffs are compared as JSON).
+//                A text-backed image (PLImage.previewKind 'text': an SVG, a Git LFS pointer) shown as Text reads
+//                no sides until Preview is chosen (setImageView).
+//                actions: loadImagePreview(spec, {force?, side?}) (force: the Load preview button, one side),
+//                setImageView('preview' | 'text') (diff-view.js's Preview | Text choice, told on mount and on
+//                change), releaseImagePreview() (also empties the URL cache: the diff view unmounting)
 //   undo         undo.getState() result | null: {undo: {action, description, entry}|null, redo: same|null,
 //                busy, undoBlocked: string|null, redoBlocked: string|null}
 //   remotes      configured remote names (ops 'remotes'), e.g. ['origin'], null until first read; read on the first load and
@@ -112,14 +128,15 @@
   // The loaded history's ancestor sets and tip walks (history-model.js loads before this script).
   const { ancestorsOf, headAncestors, tipsContaining } = window.PLHistory;
 
-  function create(api) {
+  /** create(api, {urlApi}): urlApi (createObjectURL / revokeObjectURL, default URL) is for the tests. */
+  function create(api, { urlApi } = {}) {
     const listeners = new Set();
     const state = {
       repo: null, status: null, refs: null, refsBySha: new Map(), stashes: [],
       stashError: null, commits: [], hasMore: false, next: null, graph: { width: 0, rows: [] }, rows: [],
       selection: null, commitFiles: null, diff: null, undo: null, undoError: null, busy: false, loading: false,
       loadError: null, remotes: null, remotesError: null, remoteOp: null, pullMode: null, continueDraft: null,
-      rebaseEditor: null, worktrees: null, worktreeDirty: null, worktreeReveal: 0, centre: 'graph',
+      rebaseEditor: null, worktrees: null, worktreeDirty: null, worktreeReveal: 0, centre: 'graph', imagePreview: null,
     };
     let loadSeq = 0; // guards against out-of-order loads (repo switch, rapid refreshes)
     // History bookkeeping for state.commits: hashes loaded (paging de-dup), the ref-tips signature
@@ -147,6 +164,12 @@
         }
       }
       if (!changed.length) return;
+      // The image preview belongs to the open diff: it goes when the diff closes or shows another file.
+      if (changed.includes('diff') && state.imagePreview && !(state.diff && Img().sameTarget(state.diff.spec, state.imagePreview.spec))) {
+        dropPreview();
+        state.imagePreview = null;
+        if (!changed.includes('imagePreview')) changed.push('imagePreview');
+      }
       const centre = centreOf(state);
       if (centre !== state.centre) {
         state.centre = centre;
@@ -280,11 +303,13 @@
       dirtyAt = 0;
       dirtyKey = '';
       dirtyInFlight = null;
+      dropPreview();
+      images.clear();
       set({
         repo, loading: true, status: null, refs: null, refsBySha: new Map(), stashes: [], stashError: null,
         commits: [], hasMore: false, next: null, rows: [], graph: { width: 0, rows: [] }, selection: null,
         commitFiles: null, diff: null, undo: null, undoError: null, loadError: null, remotes: null, remotesError: null,
-        remoteOp: null, continueDraft: null, rebaseEditor: null, worktrees: null, worktreeDirty: null,
+        remoteOp: null, continueDraft: null, rebaseEditor: null, worktrees: null, worktreeDirty: null, imagePreview: null,
       });
       try {
         await refresh({ first: true });
@@ -678,10 +703,13 @@
       if (next >= rows.length - 50) loadMore().catch(toast);
     }
 
+    /** The {staged, untracked, orig?} options of a working-copy spec, as the workdir ops take them. */
+    const workdirArgs = (spec) => ({ staged: !!spec.staged, untracked: !!spec.untracked, ...(spec.orig ? { orig: spec.orig } : {}) });
+
     async function fetchDiff(spec) {
       return spec.kind === 'commit'
         ? invoke('commitDiffView', spec.sha, spec.file, spec.orig)
-        : invoke('workdirDiffView', spec.file, { staged: !!spec.staged, untracked: !!spec.untracked, ...(spec.orig ? { orig: spec.orig } : {}) });
+        : invoke('workdirDiffView', spec.file, workdirArgs(spec));
     }
 
     // Every diff fetch gets a generation; only the latest one for the open spec may land.
@@ -704,9 +732,15 @@
         if (!current()) return;
         // The working-copy change is gone (file reverted/committed): close the diff.
         if (keepData && spec.kind === 'workdir' && !data.file && !data.conflict) set({ diff: null });
-        else land(data, null);
+        else {
+          // The preview's slots are in place before the body that shows them renders.
+          previewFor(spec, data);
+          land(data, null);
+        }
       } catch (e) {
-        if (current()) land(null, e.message);
+        if (!current()) return;
+        previewFor(spec, null);
+        land(null, e.message);
       }
     }
 
@@ -724,6 +758,165 @@
     const reloadDiff = () => (state.diff ? loadDiff(state.diff.spec, { keepData: true }) : Promise.resolve());
 
     const closeDiff = () => set({ diff: null });
+
+    // ---------------------------------------------------------------- image preview
+
+    const Img = () => window.PLImage;
+    const images = window.PLImageCache.create(urlApi || URL);
+    const LOADING_SLOT = Object.freeze({ loading: true, side: null, url: null, error: null });
+    let previewGen = 0; // bumped when the preview is dropped: reads started before never land
+    const SIDES = ['old', 'new', 'base'];
+    const sideGen = { old: 0, new: 0, base: 0 }; // the latest read per side; an older one never lands after it
+    const inflight = { old: null, new: null, base: null }; // op id of each side's running read
+    let imageText = false; // a text-backed image is shown as its text (setImageView): its preview waits until Preview is chosen
+
+    /** Cancel `which` side's running read (main kills its git process); it then rejects 'aborted'. */
+    function cancelSide(which) {
+      const opId = inflight[which];
+      inflight[which] = null;
+      if (!opId || !api.app || typeof api.app.cancel !== 'function') return;
+      Promise.resolve().then(() => api.app.cancel(opId)).catch((e) => logError('[store] could not cancel an image read:', e));
+    }
+
+    /** Forget the preview's reads: cancel them all, let none land, unpin its URLs. (set() / close.) */
+    function dropPreview() {
+      previewGen++;
+      for (const w of SIDES) cancelSide(w);
+      images.pin([]);
+    }
+
+    /** One side's read: commitImageSide / workdirImageSide with an op id (cancellable). */
+    function fetchImageSide(opId, spec, which, o) {
+      const call = (op, ...args) => (opId && typeof api.invokeCancellable === 'function'
+        ? api.invokeCancellable(opId, op, ...args) : api.invoke(op, ...args));
+      return spec.kind === 'commit'
+        ? call('commitImageSide', spec.sha, spec.file, spec.orig || null, which, o)
+        : call('workdirImageSide', spec.file, workdirArgs(spec), which, o);
+    }
+
+    /**
+     * The key a reload may send for a shown side: its bytes are still cached (or it has none to show).
+     * None for a Git LFS pointer: its object may have reached the local LFS cache since; none for a
+     * side a partial clone hadn't downloaded (key null, 'not-local'): it may have been fetched since.
+     */
+    function knownKeyOf(slot) {
+      const side = slot && !slot.error ? slot.side : null;
+      if (!side || !side.key || side.kind === 'lfs-pointer') return null;
+      return side.kind !== 'image' || images.has(side.key) ? side.key : null;
+    }
+
+    /** Keep the URLs on screen from being evicted. */
+    function pinShown() {
+      const p = state.imagePreview;
+      images.pin(p ? SIDES.map((w) => p[w]).filter((s) => s && s.url).map((s) => s.side.key) : []);
+    }
+
+    async function loadSide(spec, which, { force, knownKey }) {
+      const seq = loadSeq;
+      const gen = previewGen;
+      const mine = ++sideGen[which];
+      cancelSide(which);
+      const opId = typeof api.newOpId === 'function' ? api.newOpId() : null;
+      inflight[which] = opId;
+      const current = () => seq === loadSeq && gen === previewGen && mine === sideGen[which]
+        && !!state.imagePreview && Img().sameTarget(state.imagePreview.spec, spec);
+      const o = { ...(knownKey && { knownKey }), ...(force && { force: true }) };
+      let res = null;
+      let error = null;
+      try {
+        res = await fetchImageSide(opId, spec, which, o);
+      } catch (e) {
+        error = toError(e);
+      } finally {
+        if (inflight[which] === opId) inflight[which] = null;
+      }
+      if (!current()) return;
+      const p = state.imagePreview;
+      const slot = p[which];
+      if (error) {
+        if (error.kind === 'aborted') return; // cancelled: a newer read (or none) owns the side
+        // Saved while it was read: keep what is shown, the watcher's reload follows.
+        if (error.kind === 'stale' && slot.side) return;
+        set({ imagePreview: { ...p, [which]: { loading: false, side: null, url: null, error: error.message || String(error) } } });
+        return;
+      }
+      if (res && res.unchanged) {
+        if (slot.side && slot.side.key === res.key) return;
+        await loadSide(spec, which, { force, knownKey: null }); // the slot moved on meanwhile: read it all
+        return;
+      }
+      const { bytes, ...side } = res || {};
+      const url = side.kind === 'image' && bytes ? images.put(side.key, bytes, side.mime) : null;
+      set({ imagePreview: { ...p, [which]: { loading: false, side, url, error: null } } });
+      pinShown();
+    }
+
+    /**
+     * Load the open diff's image preview (every side, or `side` only): old and new, plus base for a
+     * conflict (`data`, the diff's data, says: PLImage.previewKind). The same file as the preview shown
+     * reloads each side with its key (unchanged sides keep their URL, nothing flickers); another
+     * file, or a file that became or stopped being a conflict, starts over. force: lift the soft size
+     * cap (Load preview). Not for a spec that isn't open.
+     */
+    function startPreview(spec, data, { force = false, side = null } = {}) {
+      const d = state.diff;
+      if (!spec || !d || !Img().sameTarget(d.spec, spec)) return Promise.resolve();
+      const conflict = Img().previewKind(spec, data) === 'conflict';
+      const all = conflict ? SIDES : ['old', 'new'];
+      let p = state.imagePreview;
+      const keep = !!p && Img().sameTarget(p.spec, spec) && !!p.conflict === conflict;
+      if (keep) {
+        if (p.spec !== spec) p = { ...p, spec };
+      } else {
+        dropPreview();
+        p = { spec, conflict, old: LOADING_SLOT, new: LOADING_SLOT, ...(conflict ? { base: LOADING_SLOT } : {}) };
+      }
+      const sides = all.includes(side) ? [side] : all;
+      if (force) for (const w of sides) p = { ...p, [w]: LOADING_SLOT };
+      set({ imagePreview: p });
+      return Promise.all(sides.map((w) => loadSide(spec, w, { force, knownKey: keep && !force ? knownKeyOf(p[w]) : null })));
+    }
+
+    /** The Load preview button (force, one side), or a reload of the open diff's preview: startPreview with the diff shown. */
+    function loadImagePreview(spec, { force = false, side = null } = {}) {
+      return startPreview(spec, state.diff ? state.diff.data : null, { force, side });
+    }
+
+    const previewShown = (spec) => !!state.imagePreview && Img().sameTarget(state.imagePreview.spec, spec);
+
+    /**
+     * The diff of `spec` is about to land with `data` (null: it failed): load its preview, or drop one it no
+     * longer wants. A text-backed image (an SVG, a Git LFS pointer) shown as Text reads no sides until
+     * Preview is chosen; one whose preview is already loaded reloads it, each side with its key.
+     */
+    function previewFor(spec, data) {
+      const kind = Img().previewKind(spec, data);
+      if (kind && (kind !== 'text' || !imageText || previewShown(spec))) startPreview(spec, data);
+      else if (state.imagePreview) closePreview();
+    }
+
+    /**
+     * How the diff view shows a text-backed image: 'preview' (the default) or 'text' (its rows). The
+     * view tells the store its stored choice when it mounts and each time it changes; choosing Preview
+     * for an open text-backed image loads its sides now.
+     */
+    function setImageView(view) {
+      imageText = view === 'text';
+      const d = state.diff;
+      if (imageText || !d || !d.data || Img().previewKind(d.spec, d.data) !== 'text' || previewShown(d.spec)) return Promise.resolve();
+      return startPreview(d.spec, d.data);
+    }
+
+    function closePreview() {
+      dropPreview();
+      set({ imagePreview: null });
+    }
+
+    /** Drop the preview and revoke every cached URL (the diff view unmounting). */
+    function releaseImagePreview() {
+      closePreview();
+      images.clear();
+    }
 
     /**
      * Run a write op (stage, commit, discard, ...). Errors are toasted and re-thrown so callers can
@@ -844,7 +1037,7 @@
       setToast: (fn) => { toastFn = fn; },
       actions: {
         loadRepo, refresh: () => refresh().catch(toast), loadMore: () => loadMore().catch(toast),
-        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty,
+        reloadDiff, watchEvent, setWorktreeDirtyWanted, loadWorktreeDirty, loadImagePreview, setImageView, releaseImagePreview,
         select, selectRelative, openDiff, closeDiff, toast, write, loadRemotes, cancelRemote,
         notify: (message) => toastFn({ message: String(message), level: 'info' }),
         openRebaseEditor, closeRebaseEditor, editRebase, undoRebaseEdit, redoRebaseEdit, resetRebaseEditor, patchRebaseEditor,

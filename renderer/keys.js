@@ -13,6 +13,9 @@
 //   keyGlyph(name, mac?) -> a single key as the platform writes it: 'enter' '↵' | 'Enter',
 //                                   'backspace' '⌫' | 'Delete'
 //   modClick(mac?) -> '⌘-click' | 'Ctrl-click'
+//   VIEW_KEYS                       the single-key shortcuts of the centre views: frozen [{id, keys, view}]
+//   matchViewKey(keydown, view) -> VIEW_KEYS entry of `view` | null   no ⌘ / Ctrl / Alt, not while composing
+//   viewKeyHint(id) -> '+' | 'N' | 'Esc': the first key of an entry, for tooltips ('' if unknown)
 // `mac` defaults to Components.util.IS_MAC, read on every call.
 (function () {
   const C = window.Components;
@@ -49,6 +52,43 @@
     { id: 'repoPicker', key: 'p', shift: false, flow: null, args: NONE, gate: null, wip: null, inField: true, nav: false },
   ].map((k) => Object.freeze(k)));
   const KEY_BY_ID = new Map(KEYS.map((k) => [k.id, k]));
+
+  // The single-key shortcuts of the centre views (no ⌘ / Ctrl / Alt: e.key as typed, so Shift is
+  // whatever the layout needs for it, and 'S' is not 's'). Each view runs its own entries while it is
+  // shown, never in a text field or a dialog (the views check), and every key of a view that sits
+  // inside another (image inside diff) must differ from that view's keys:
+  //   diff   components/diff-view.js (n / p next / previous hunk, Esc close) and diff-staging.js
+  //          (s / u stage / unstage the focused hunk or the selected lines)
+  //   image  components/image-preview.js, inside the diff view while it shows an image preview with a
+  //          picture: + / - zoom in / out (= and _ too, the same keys unshifted / shifted), 0 Fit,
+  //          1 100%, m the next comparison mode (side by side, swipe, onion skin, difference)
+  // The graph's j / k / arrows (graph-view.js) only act while the graph is shown, never with the diff.
+  const VIEW_KEYS = Object.freeze([
+    { id: 'nextHunk', keys: ['n'], view: 'diff' },
+    { id: 'prevHunk', keys: ['p'], view: 'diff' },
+    { id: 'stageHunk', keys: ['s'], view: 'diff' },
+    { id: 'unstageHunk', keys: ['u'], view: 'diff' },
+    { id: 'closeDiff', keys: ['Escape'], view: 'diff' },
+    { id: 'zoomIn', keys: ['+', '='], view: 'image' },
+    { id: 'zoomOut', keys: ['-', '_'], view: 'image' },
+    { id: 'zoomFit', keys: ['0'], view: 'image' },
+    { id: 'zoomActual', keys: ['1'], view: 'image' },
+    { id: 'cycleMode', keys: ['m'], view: 'image' },
+  ].map((k) => Object.freeze({ ...k, keys: Object.freeze(k.keys) })));
+  const VIEW_KEY_BY_ID = new Map(VIEW_KEYS.map((k) => [k.id, k]));
+
+  /** The VIEW_KEYS entry of `view` keydown `e` presses, or null (any of ⌘ / Ctrl / Alt, or composing: null). */
+  function matchViewKey(e, view) {
+    if (!e || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return null;
+    return VIEW_KEYS.find((k) => k.view === view && k.keys.includes(e.key)) || null;
+  }
+
+  /** The first key of VIEW_KEYS entry `id` as a tooltip writes it ('n' -> 'N', 'Escape' -> 'Esc'), or ''. */
+  function viewKeyHint(id) {
+    const k = VIEW_KEY_BY_ID.get(id);
+    if (!k) return '';
+    return k.keys[0] === 'Escape' ? 'Esc' : k.keys[0].toUpperCase();
+  }
 
   // Hint glyphs: '⇧⌘Z' / '⌘↵' on macOS, 'Ctrl+Shift+Z' / 'Ctrl+Enter' elsewhere.
   const GLYPHS = {
@@ -90,7 +130,7 @@
   /** '⌘-click' on macOS, 'Ctrl-click' elsewhere (a click with the command modifier, util.modKey). */
   const modClick = (mac) => glyphs(mac).click;
 
-  const api = { KEYS, matchKey, repeatBlocked, keyHint, withKeyHint, keyGlyph, modClick };
+  const api = { KEYS, matchKey, repeatBlocked, keyHint, withKeyHint, keyGlyph, modClick, VIEW_KEYS, matchViewKey, viewKeyHint };
   if (typeof window !== 'undefined') window.PLKeys = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

@@ -8,6 +8,13 @@
 // (components/diff-staging.js): file / hunk buttons, line selection with a floating action bar, and
 // `s` / `u` shortcuts; hunks cut short by the caps (`data-truncated`, clipped lines) refuse them.
 // Pure row / spec / staging rules live in components/diff-model.js (window.PLDiff).
+// A binary file gets an image preview (components/image-preview.js, docs/plans/image-preview.md) in
+// place of the "Binary file — no preview" message when PLImage.wantsPreview; its header badge then
+// reads `image` instead of `binary` once the preview knows (PLImage.badge). A text diff of an image
+// (an SVG, a Git LFS pointer: PLImage.previewKind 'text') gets a Preview | Text switch in the header,
+// one choice for the app (Components.util.storage), Preview by default, which the view tells the store
+// (setImageView: no side is read while Text is shown); a conflicted image (a binary one, or a
+// modify/delete conflict of an image file) shows its base / ours / theirs stages.
 //
 // Data (ops.commitDiffView / workdirDiffView): {file, sections?, fingerprint, truncated, maxLines?,
 // maxLineChars?, conflict?}. `sections` (several file views, e.g. a typechange = deletion + new file)
@@ -19,11 +26,15 @@
 (function () {
   const { el, util } = window.Components;
   const { displayName: dn, inTextField, modalOpen, short } = util;
+  const { matchViewKey } = window.Components.actions; // keys.js VIEW_KEYS
   const D = window.PLDiff;
+  const Img = window.PLImage;
   const { CONTROLS, CONTROLS_G, ctlLabel, sectionsOf, sectionLabel } = D;
   const ROW_H = 20;
   const OVERSCAN = 30;
   const MAX_CONTENT_W = 100000; // px: horizontal scroll range cap (ops clips very long lines)
+  const VIEW_KEY = 'pl.imageView'; // a text-backed image shown as 'preview' (the default) or 'text'
+  const MODIFY_DELETE = 'Modified on one side, deleted on the other — no content conflict to show';
 
   /** The +/- column of a diff line by its type (context lines get a space). */
   const LINE_SIGNS = Object.freeze({ add: '+', del: '-' });
@@ -149,6 +160,10 @@
       const staging = window.PLDiffStaging.create({
         root, store, scroller, spacer, bodyWrap, rowH: ROW_H, current: () => current, topHunk,
       });
+      const preview = window.PLImagePreview.create({ store });
+      let kindBadge = null; // the shown diff's `binary` / `image` badge (PLImage.badge), updated in place
+      let textView = util.storage.get(VIEW_KEY, 'preview') === 'text'; // a text-backed image shows its rows
+      store.actions.setImageView(textView ? 'text' : 'preview'); // the store reads such a preview only while it is wanted
 
       /** Shown only while the store's centre pane is the diff (state.centre, derived from state.diff). */
       const syncHidden = () => { root.hidden = store.state.centre !== 'diff'; };
@@ -190,7 +205,11 @@
           if (file.isDeleted) badges.append(badge('deleted', 'deleted'));
           if (file.isRename || (origEntry && origEntry.status === 'R')) badges.append(badge('renamed', 'renamed'));
           if (file.isCopy || (origEntry && origEntry.status === 'C')) badges.append(badge('copied', 'renamed'));
-          if (file.isBinary) badges.append(badge('binary', 'binary'));
+          if (file.isBinary) {
+            const kind = Img.badge(spec, d.data, store.state.imagePreview);
+            kindBadge = badge(kind, kind);
+            badges.append(kindBadge);
+          }
           if (file.oldMode && file.newMode && file.oldMode !== file.newMode) {
             badges.append(badge(`mode ${file.oldMode} → ${file.newMode}`, 'mode'));
           }
@@ -198,17 +217,37 @@
         return badges;
       }
 
-      function iconBtn(cls, text, title, onClick) {
-        const b = el('button', cls, text);
-        b.type = 'button';
-        b.title = title;
-        b.addEventListener('click', onClick);
-        return b;
+      /** Preview | Text for a text-backed image (an SVG, a Git LFS pointer). */
+      function viewToggle() {
+        const g = el('div', 'seg dv-view-toggle');
+        g.setAttribute('role', 'group');
+        g.setAttribute('aria-label', 'Show the change as');
+        for (const [view, label, title] of [['preview', 'Preview', 'Show the image before and after'], ['text', 'Text', 'Show the text diff']]) {
+          const b = util.button('seg-btn dv-view-btn', label, title, () => setTextView(view === 'text'));
+          b.dataset.view = view;
+          b.setAttribute('aria-pressed', String(textView === (view === 'text')));
+          g.append(b);
+        }
+        return g;
+      }
+
+      /** Switch a text-backed image between its preview and its rows (remembered for the app); focus stays on the switch. */
+      function setTextView(on) {
+        if (textView === on) return;
+        textView = on;
+        util.storage.set(VIEW_KEY, on ? 'text' : 'preview');
+        store.actions.setImageView(on ? 'text' : 'preview'); // Preview: its slots are in place before the body renders
+        const d = store.state.diff;
+        if (!d) return;
+        renderBody(d, false);
+        const b = [...header.querySelectorAll('.dv-view-btn')].find((x) => x.dataset.view === (on ? 'text' : 'preview'));
+        if (b) b.focus();
       }
 
       /** Stats, hunk navigation, file actions and the close button. */
       function headerRight(d) {
         const right = el('div', 'dv-header-right');
+        if (Img.previewKind(d.spec, d.data) === 'text') right.append(viewToggle());
         const flat = current && current.flat;
         if (flat && flat.rows.length && !(d.data && d.data.conflict)) {
           const stats = el('span', 'dv-stats');
@@ -218,20 +257,21 @@
         if (flat && flat.hunkRows.length > 1) {
           const nav = el('div', 'dv-nav');
           nav.append(
-            iconBtn('dv-icon-btn', '↑', 'Previous hunk (p)', () => jumpHunk(-1)),
+            util.button('dv-icon-btn', '↑', 'Previous hunk (p)', () => jumpHunk(-1)),
             el('span', 'dv-hunk-count', `${flat.hunkRows.length} hunks`),
-            iconBtn('dv-icon-btn', '↓', 'Next hunk (n)', () => jumpHunk(1)),
+            util.button('dv-icon-btn', '↓', 'Next hunk (n)', () => jumpHunk(1)),
           );
           right.append(nav);
         }
         right.append(staging.fileActions(d));
-        const close = iconBtn('dv-close', '×', 'Close diff (Esc)', () => store.actions.closeDiff());
+        const close = util.button('dv-close', '×', 'Close diff (Esc)', () => store.actions.closeDiff());
         close.setAttribute('aria-label', 'Close diff');
         right.append(close);
         return right;
       }
 
       function renderHeader(d) {
+        kindBadge = null;
         const sections = sectionsOf(d.data);
         const file = sections[0] || null;
         const multi = sections.length > 1;
@@ -377,14 +417,23 @@
         if (data && data.truncated) parts.push(el('div', 'dv-banner', truncatedText(data)));
         const note = staging.notePart(d);
         if (note) parts.push(note);
+        const kind = Img.previewKind(d.spec, data);
+        if (kind === 'conflict') {
+          parts.push(el('div', 'dv-banner dv-banner-conflict', 'Conflicted image — the base, ours and theirs versions. Keep one side or mark the file resolved in the WIP panel.'));
+          parts.push(preview.attach(d, conflict.isBinary ? 'Binary file — no preview' : MODIFY_DELETE));
+          return parts;
+        }
         if (conflict) {
           parts.push(el('div', 'dv-banner dv-banner-conflict', 'Conflicted file — combined diff against both sides. Keep one side or mark the file resolved in the WIP panel.'));
           if (!conflict.hunks || !conflict.hunks.length) {
-            parts.push(message('Modified on one side, deleted on the other — no content conflict to show'));
+            parts.push(message(MODIFY_DELETE));
             return parts;
           }
         } else if (!sections.length) {
           parts.push(message('No changes'));
+          return parts;
+        } else if (kind === 'binary' || (kind === 'text' && !textView)) {
+          parts.push(preview.attach(d, kind === 'text' ? 'No image to preview — Text shows the change' : D.emptyText(sections[0])));
           return parts;
         } else if (sections.length === 1 && !sections[0].hunks.length) {
           parts.push(message(D.emptyText(sections[0]), sections[0].isBinary ? 'binary' : null));
@@ -416,6 +465,7 @@
         // canPick (hunk / line actions possible) is decided once per render (PLDiff.hunkDataOk).
         const canPick = D.hunkDataOk(d.spec, d.data, store.state.status);
         current = { spec: d.spec, data: d.data, flat: null, nodes: new Map(), maxChars: Infinity, canPick };
+        preview.detach(); // layoutBody attaches it again when this diff has one
         spacer.replaceChildren();
         pinned.hidden = true;
         pinned.dataset.hunk = '';
@@ -441,6 +491,8 @@
       function close() {
         current = null;
         lastSpec = null;
+        kindBadge = null;
+        preview.detach();
         staging.reset();
         spacer.replaceChildren();
         bodyWrap.replaceChildren();
@@ -486,24 +538,36 @@
         if (!store.state.diff || root.hidden || e.defaultPrevented) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         if (inTextField(e) || modalOpen()) return;
-        if (staging.onKey(e)) return;
-        if (e.key === 'Escape') {
+        if (staging.onKey(e) || preview.onKey(e)) return;
+        const k = matchViewKey(e, 'diff');
+        if (k && k.id === 'closeDiff') {
           e.preventDefault();
           store.actions.closeDiff();
-        } else if (e.key === 'n' || e.key === 'p') {
+        } else if (k && (k.id === 'nextHunk' || k.id === 'prevHunk')) {
           e.preventDefault();
-          jumpHunk(e.key === 'n' ? 1 : -1);
+          jumpHunk(k.id === 'nextHunk' ? 1 : -1);
         }
       }
       document.addEventListener('keydown', onKey);
 
       const unsub = store.subscribe(['diff'], update);
+      // The preview redraws itself; only the header's binary / image badge follows it here.
+      const unsubPreview = store.subscribe(['imagePreview'], (s) => {
+        if (!kindBadge || !s.diff || !s.diff.data) return;
+        const kind = Img.badge(s.diff.spec, s.diff.data, s.imagePreview);
+        if (kindBadge.textContent === kind) return;
+        kindBadge.textContent = kind;
+        kindBadge.className = `dv-badge dv-badge-${kind}`;
+      });
       const unsubBusy = store.subscribe(['busy'], staging.syncBusy);
       update(store.state);
       return () => {
         unsub();
         unsubBusy();
+        unsubPreview();
         staging.dispose();
+        preview.dispose();
+        store.actions.releaseImagePreview();
         ro.disconnect();
         if (raf) cancelAnimationFrame(raf);
         raf = 0;

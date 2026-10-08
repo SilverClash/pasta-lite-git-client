@@ -8,6 +8,28 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- Image preview in the diff view: PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files show before and
+  after side by side, with dimensions, file size and the size change, on a checkerboard for
+  transparency. Large images load on request; formats that can't be shown say so.
+- Image comparison: besides side by side, **Swipe** (drag the divider between before and after),
+  **Onion skin** (fade after over before) and **Difference** (unchanged pixels turn black). Zoom
+  from 12.5% to 3200%, with Fit and 100%; pixels show as squares above 100%. Keys while an image
+  shows: + and - zoom, 0 fits, 1 is 100%, M switches the comparison mode.
+- An SVG's change opens as the rendered image, with a **Preview | Text** switch for its text diff.
+  The choice is remembered.
+- Images stored in Git LFS preview when their object is already downloaded (in `.git/lfs`); nothing
+  is ever fetched, and an object that isn't there says "not available locally". In a partial clone
+  (`--filter=blob:none`) a version the clone hasn't downloaded isn't fetched for the preview either:
+  its pane says "Not downloaded in this partial clone", and shows it once it has been fetched.
+- A conflicted image shows the base, ours and theirs versions side by side.
+- HEIC, TIFF and PSD images preview on macOS through the system's thumbnailer (QuickLook). The pane
+  says "Preview by macOS" and, for a large image, the size it was scaled to; dimensions and file size
+  are the original's (turned, for a photo stored landscape and shown portrait). A multi-page TIFF
+  shows its first page. On Windows and Linux, or when the system can't read the file, they still say
+  "preview not supported".
+
 ## [0.2.1] - 2026-10-04
 
 ### Added

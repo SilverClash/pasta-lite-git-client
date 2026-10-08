@@ -46,7 +46,7 @@ module.exports = {
   run, out, tryOut,
   // src/git-process.js
   setGitBinary: proc.setGitBinary, withSignal: proc.withSignal, killChildren: proc.killChildren, MAX_OUTPUT_BYTES: proc.MAX_OUTPUT_BYTES,
-  GitError, kindError: proc.kindError, tagError: proc.tagError, nulList: proc.nulList, argvChunks: proc.argvChunks, DIFF_OPTS: proc.DIFF_OPTS, LITERAL_ENV: proc.LITERAL_ENV,
+  GitError, kindError: proc.kindError, tagError: proc.tagError, abortedError: proc.abortedError, nulList: proc.nulList, argvChunks: proc.argvChunks, DIFF_OPTS: proc.DIFF_OPTS, LITERAL_ENV: proc.LITERAL_ENV,
   // src/repo-dirs.js
   resolveRoot: dirs.resolveRoot, forgetRoot: dirs.forgetRoot, gitDirKey: dirs.gitDirKey, bareGitDir: dirs.bareGitDir, isBare: dirs.isBare,
   headState: dirs.headState, repoState: dirs.repoState, stateAt: dirs.stateAt, gitDir: dirs.gitDir, repoDirs: dirs.repoDirs,

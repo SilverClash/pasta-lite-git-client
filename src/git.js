@@ -30,16 +30,11 @@ const { status } = require('./status');
 const { PULL_MODES, pull } = require('./pull');
 const stash = require('./stash');
 
-const { emptyTree, verify, refExists, resolveCommit, remotes, upstreamOf, refFields, isCurrentBranch } = reads;
+const { baseOf, verify, refExists, resolveCommit, remotes, upstreamOf, refFields, isCurrentBranch } = reads;
 const { hookRefused, hookOutput, COMMIT_HOOKS } = hooks;
 const { withAutostash } = stash;
 
 const LITERAL = { env: LITERAL_ENV };
-
-/** First parent of `sha`, or the empty tree for a root commit. */
-async function baseOf(cwd, sha) {
-  return (await verify(cwd, `${sha}^1`)) || emptyTree(cwd);
-}
 
 // ---------------------------------------------------------------- read ops
 

@@ -111,7 +111,7 @@ const FLOW_OPS = {
   markResolved: ['markAllResolved', 'stage'], commit: ['commit', 'commitAll'],
   stageSelection: ['stageSelection'], unstageSelection: ['unstageSelection'], discardSelection: ['discardSelection'],
 };
-const NO_FLOW = new Set(['diffWorkdir', 'workdirDiffView']);
+const NO_FLOW = new Set(['diffWorkdir', 'workdirDiffView', 'workdirImageSide']);
 
 test("WORKTREE_OPS covers exactly the ops of the renderer's WORKTREE_FLOWS (PLPolicy, loaded through the harness)", () => {
   const H = require('./renderer-harness.js');

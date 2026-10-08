@@ -26,7 +26,8 @@ npm start -- /path/to/repo   # launch it with a repository open
 ```
 
 To try the app on a realistic repository, build a demo one. It has branches, merges, an octopus
-merge, tags, stashes, a bare "origin" and a dirty working tree:
+merge, tags, stashes, a bare "origin", a dirty working tree and an `images/` folder for the image
+preview:
 
 ```sh
 node scripts/demo-repo.js /tmp/demo   # creates /tmp/demo and /tmp/demo.origin.git next to it
@@ -63,7 +64,9 @@ npx electron . --smoke out.png                 # the start screen (no repository
 It uses a throwaway `userData` folder, so your recent list and tabs are left alone, and it times
 out after 30 seconds. Packaged builds ignore `--smoke`. `main/smoke.js` documents the `PL_SMOKE_*`
 environment variables. `PL_SMOKE_JS` runs a script in the page, for example, which can drive the
-real controls through DOM events to check a flow end to end.
+real controls through DOM events to check a flow end to end. `node scripts/smoke-image-preview.js
+[out.png]` does that for the image preview: it builds the demo repository and a conflicted merge
+in a temporary folder and checks every image of the demo's `images/` folder in the real app.
 
 ## Lint
 
@@ -190,6 +193,19 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
 - **`renderer/`** is plain JavaScript and CSS with no framework and no build step: window-global
   modules loaded by `<script>` tags (see below), a store, components in `renderer/components/` and
   the user-facing flows in `renderer/flows-*.js`.
+- **Image preview** ([docs/plans/image-preview.md](docs/plans/image-preview.md)) is a second read
+  next to the text diff, which stays as it is: the ops `commitImageSide` / `workdirImageSide`
+  resolve one side of a diff to a git blob, worktree file, conflict stage or object in the local
+  Git LFS cache (never fetched) and read its bytes under size caps (`src/blob-revisions.js`), and
+  `src/image-preview.js` turns them into an `ImageSide` (an image with its bytes, or why there is
+  none). HEIC, TIFF and PSD sides go to the OS thumbnailer (`src/os-thumbnail.js`, an adapter around
+  Electron's `nativeImage.createThumbnailFromPath` that `main.js` passes to `ops.createRunner`; macOS
+  only). `src/image-format.js` sniffs the format from the content and is shared with the
+  renderer, like `src/error-kinds.js`. In the renderer the store loads the sides into
+  `state.imagePreview` after a binary diff, an image's text diff or a conflicted image lands, the
+  bytes go into a blob: URL cache (`renderer/image-cache.js`) and never into state, and
+  `renderer/components/image-preview.js` shows them in place of the binary message or the rows
+  (rules, zoom and comparison modes in `components/image-model.js`).
 - **`test/`** has one `node:test` file per area. Git-layer tests run against throwaway repos
   (`test/helpers.js`); renderer tests load the scripts with a fake `window` and DOM
   (`test/renderer-harness.js`).

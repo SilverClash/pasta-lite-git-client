@@ -69,6 +69,42 @@ test('KEYS: one frozen table of {id, key, shift, flow, args, gate, wip, inField,
   assert.deepEqual([by.open.key, by.open.shift, by.repoPicker.key, by.repoPicker.shift], ['o', false, 'p', false], '⌘O / ⌘P (⇧⌘O stays main\'s menu accelerator)');
 });
 
+test('VIEW_KEYS: the centre views\' single keys; no key twice in a view or between the diff and the image preview inside it', () => {
+  const { VIEW_KEYS } = load().Components.actions;
+  assert.ok(Object.isFrozen(VIEW_KEYS));
+  assert.deepEqual(VIEW_KEYS.map((k) => `${k.view}:${k.id}`), [
+    'diff:nextHunk', 'diff:prevHunk', 'diff:stageHunk', 'diff:unstageHunk', 'diff:closeDiff',
+    'image:zoomIn', 'image:zoomOut', 'image:zoomFit', 'image:zoomActual', 'image:cycleMode',
+  ]);
+  for (const k of VIEW_KEYS) {
+    assert.ok(Object.isFrozen(k) && Object.isFrozen(k.keys), k.id);
+    assert.deepEqual(Object.keys(k).sort(), ['id', 'keys', 'view'], k.id);
+  }
+  const all = VIEW_KEYS.flatMap((k) => k.keys);
+  assert.equal(new Set(all).size, all.length, 'the image keys work inside the diff view: no key is both');
+  assert.equal(new Set(VIEW_KEYS.map((k) => k.id)).size, VIEW_KEYS.length);
+  // The graph's own keys (graph-view.js) stay the graph's.
+  for (const graphKey of ['j', 'k', 'ArrowDown', 'ArrowUp', 'Home', 'End', 'PageDown', 'PageUp']) assert.ok(!all.includes(graphKey), graphKey);
+});
+
+test('matchViewKey / viewKeyHint: e.key as typed, never with ⌘ / Ctrl / Alt or while composing', () => {
+  const { matchViewKey, viewKeyHint } = load().Components.actions;
+  const k = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...extra });
+  assert.equal(matchViewKey(k('+', { shiftKey: true }), 'image').id, 'zoomIn', 'Shift as the layout needs it');
+  assert.equal(matchViewKey(k('='), 'image').id, 'zoomIn');
+  assert.equal(matchViewKey(k('-'), 'image').id, 'zoomOut');
+  assert.equal(matchViewKey(k('0'), 'image').id, 'zoomFit');
+  assert.equal(matchViewKey(k('1'), 'image').id, 'zoomActual');
+  assert.equal(matchViewKey(k('m'), 'image').id, 'cycleMode');
+  assert.equal(matchViewKey(k('M', { shiftKey: true }), 'image'), null, '⇧M is not m');
+  assert.equal(matchViewKey(k('n'), 'image'), null, 'another view\'s key');
+  assert.equal(matchViewKey(k('n'), 'diff').id, 'nextHunk');
+  assert.equal(matchViewKey(k('Escape'), 'diff').id, 'closeDiff');
+  for (const mod of ['metaKey', 'ctrlKey', 'altKey', 'isComposing']) assert.equal(matchViewKey(k('+', { [mod]: true }), 'image'), null, mod);
+  assert.equal(matchViewKey(null, 'image'), null);
+  assert.deepEqual(['zoomIn', 'zoomOut', 'cycleMode', 'closeDiff', 'nope'].map(viewKeyHint), ['+', '-', 'M', 'Esc', '']);
+});
+
 test('matchKey: ⌘ on macOS, Ctrl elsewhere; exact Shift; Caps Lock; repeats match', () => {
   const { KEYS, matchKey } = load().Components.actions;
   for (const mac of [true, false]) {

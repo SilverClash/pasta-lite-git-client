@@ -10,7 +10,10 @@
 // createRunner() (src/runner.js) adds what the app needs on top: write ops for one repo run one at
 // a time (reads don't queue), 'busy' / 'changed' events for the watcher, cancellation by op id,
 // and the bare-repository gate (src/bare-gate.js). The argument checks are src/op-validators.js,
-// the display model of diffs src/diff-view.js, the IPC error shape src/ipc-errors.js.
+// the display model of diffs src/diff-view.js, the IPC error shape src/ipc-errors.js. The image
+// preview reads (commitImageSide / workdirImageSide) resolve and read one side of a diff through
+// src/blob-revisions.js and judge it with src/image-preview.js; a HEIC, TIFF or PSD side goes to
+// the OS thumbnailer (src/os-thumbnail.js) when createRunner is given one.
 //
 // Linked worktrees (remove, lock, unlock, the unreachable count) are named by the path git prints
 // for them: each check re-reads `git worktree list` and takes only an entry whose path is exactly
@@ -32,6 +35,8 @@ const {
   remoteName, branchName, localBranch, refspecSafe, commitId, commitMessage,
 } = require('./op-validators');
 const { diffView, refuseTruncated } = require('./diff-view');
+const blobRevisions = require('./blob-revisions');
+const imagePreview = require('./image-preview');
 const { bareGate } = require('./bare-gate');
 const { serializeError } = require('./ipc-errors');
 const runner = require('./runner');
@@ -166,7 +171,40 @@ const READ = {
     if (!w.detached || !w.head) return { count: 0 };
     return { count: await git.unreachableCount(repo, w.head) };
   }, { bare: true }),
+  ...imageOps(null),
 };
+
+/**
+ * The image preview reads (docs/plans/image-preview.md §5): one side ('old' | 'new') of the file
+ * diff the view shows, as an ImageSide (src/image-preview.js header): `kind` 'image' with `bytes` (a
+ * Uint8Array in the renderer), or why there is no picture ('too-large', 'lfs-pointer',
+ * 'unsupported', 'not-image', 'absent', 'special', 'not-local'): those are results, not errors. A
+ * Git LFS pointer whose object is in the local LFS cache is that object (source 'lfs-cache'; never
+ * fetched); a blob a partial clone doesn't have is 'not-local' (never fetched either). With
+ * `thumbnailer` (src/os-thumbnail.js; createRunner's, from main.js) a HEIC, TIFF or PSD side is the
+ * OS's PNG of it (source 'os-thumbnail'). Options {knownKey?, force?}: knownKey, the
+ * `key` of bytes the renderer already holds, gives {side, key, unchanged: true} when the side still
+ * has that key, with nothing read; force lifts the soft size cap (the "Load preview" button).
+ * Refused: invalid-args; for a worktree file also stale (not a tracked or untracked path any more,
+ * or changed while read), symlink / outside (the path goes through a symlinked folder or leaves the
+ * worktree).
+ */
+function imageOps(thumbnailer) {
+  return {
+    // commitImageSide(commit, file, orig, side, o): the sides of commitDiffView's file.
+    commitImageSide: read(op(
+      (repo, commit, file, orig, side, o) => [commitSpec(commit, file, orig), sideArg(side), previewOpts(o)],
+      (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal, thumbnailer),
+    ), { bare: true }),
+    // workdirImageSide(file, {staged?, untracked?, orig?}, side, o): the sides of workdirDiffView's
+    // file. An unmerged path's sides are its index stages: 'old' ours (2), 'new' theirs (3), and side
+    // 'base' (1), which only a conflict has (absent otherwise).
+    workdirImageSide: read(op(
+      (repo, file, wo, side, o) => [{ kind: 'workdir', file: relPath(file), ...workdirOpts(wo) }, sideArg(side, { base: true }), previewOpts(o)],
+      (repo, spec, side, o, signal) => previewSide(repo, spec, side, o, signal, thumbnailer),
+    )),
+  };
+}
 
 /** checkout's [ref, {kind}] from the renderer's (target, kind): an existing branch, remote branch or commit. */
 async function checkoutTarget(repo, target, kind) {
@@ -192,6 +230,68 @@ function workdirOpts(o) {
     if (res.untracked) throw invalid('an untracked file has no rename source (orig)');
   }
   return res;
+}
+
+/** The DiffSpec of a commit's file, from commitImageSide's (commit, file, orig) as commitFileArgs checks them. */
+function commitSpec(commit, file, orig) {
+  const [oid, rel, from] = commitFileArgs(commit, file, orig);
+  return { kind: 'commit', sha: oid, file: rel, orig: from };
+}
+
+/** An image preview side: 'old' (before) or 'new' (after); with `base`, also 'base' (a conflict's stage 1). */
+function sideArg(v, { base = false } = {}) {
+  if (v === 'old' || v === 'new' || (base && v === 'base')) return v;
+  throw invalid(base ? "side must be 'old', 'new' or 'base'" : "side must be 'old' or 'new'");
+}
+
+const KNOWN_KEY_MAX = 200;
+
+/** commitImageSide / workdirImageSide options: {knownKey?: a RevisionKey string, force?}. */
+function previewOpts(o) {
+  const { knownKey, force } = opts(o);
+  if (knownKey != null && (typeof knownKey !== 'string' || !knownKey || knownKey.length > KNOWN_KEY_MAX)) {
+    throw invalid(`knownKey must be a non-empty string of at most ${KNOWN_KEY_MAX} characters`);
+  }
+  return { knownKey: knownKey == null ? undefined : knownKey, force: bool(force) };
+}
+
+/**
+ * Side `side` of DiffSpec `spec` as an ImageSide: resolved first (size included), then read only
+ * as far as the caps allow, and not at all when its key is `knownKey`. A Git LFS pointer is looked
+ * up in the local LFS cache (blobRevisions.lfsRevision): an object there is read and judged instead,
+ * with the pointer's `lfs` (a copy whose sha256 doesn't match stays the pointer); a missing one
+ * stays the pointer. Its key is the object's ('lfs:<sha256>'), so a knownKey of it is checked
+ * after the pointer, before the object is read.
+ * `thumbnailer` (or null): a HEIC, TIFF or PSD side under the caps, read whole, is handed to it, and
+ * its PNG is the side (imagePreview.thumbnailSide, keyed 'os:<the original's key>', so a knownKey of
+ * it is checked with the original's key, before anything is read); when it fails the side stays
+ * 'unsupported' (keyed as the original: no new attempt until the file changes).
+ */
+async function previewSide(repo, spec, side, { knownKey, force }, signal, thumbnailer = null) {
+  const unchanged = (key) => ({ side, key, unchanged: true });
+  const isKnown = (key) => !!knownKey && !!key && (key === knownKey || (!!thumbnailer && imagePreview.thumbnailKey(key) === knownKey));
+  const rev = await blobRevisions.resolveSide(repo, spec, side);
+  const key = imagePreview.revisionKey(rev);
+  if (isKnown(key)) return unchanged(knownKey);
+  const policy = imagePreview.policy();
+  const path = side === 'old' && spec.orig ? spec.orig : spec.file;
+  const thumbnails = !!thumbnailer;
+  const judge = async (r) => {
+    const limit = imagePreview.readLimit(r, { policy, force });
+    const bytes = limit ? await blobRevisions.readRevision(repo, r, { maxBytes: limit, signal }) : null;
+    if (bytes === null && limit) return null;
+    const s = imagePreview.imageSide(r, bytes, { policy, force, path, thumbnails });
+    if (!thumbnails || s.kind !== 'unsupported' || !imagePreview.THUMBNAIL_FORMATS.has(s.format)) return s;
+    const thumb = await thumbnailer.render(bytes, { format: s.format, dims: s.dims, signal });
+    return thumb ? imagePreview.thumbnailSide(s, thumb, thumbnailer.by) : s;
+  };
+  const s = await judge(rev);
+  if (s.kind !== 'lfs-pointer') return s;
+  const obj = await blobRevisions.lfsRevision(repo, side, s.lfs);
+  if (!obj) return s;
+  if (isKnown(imagePreview.revisionKey(obj))) return unchanged(knownKey);
+  const fromCache = await judge(obj);
+  return fromCache ? { ...fromCache, lfs: s.lfs } : s;
 }
 
 /** stage/unstage/discardSelection options: {fingerprint?} plus the view-truncation guard. */
@@ -231,7 +331,7 @@ async function guardedDiscard(repo, paths, fn, signal) {
   let fnError = null;
   try {
     const res = await exec.withSignal(snap.signal, () => undo.withDiscardBackup(repo, paths, async () => {
-      if (snap.signal.aborted) throw kindError('aborted', 'Operation was cancelled');
+      if (snap.signal.aborted) throw exec.abortedError();
       phase = 'discard';
       try {
         return await exec.withSignal(signal, fn);
@@ -662,13 +762,15 @@ const BARE_OK = Object.freeze(new Set(names((d) => d.bare)));
 
 /**
  * The runner (src/runner.js) for this registry, with the bare-repository gate and the
- * worktree-busy vet (worktreeVet). `o` overrides for tests: {ops, writeOps, log, now} (an op
- * missing from the registry is gated like a working-tree op).
+ * worktree-busy vet (worktreeVet). `thumbnailer`: the OS thumbnailer the image preview reads use
+ * for HEIC, TIFF and PSD (src/os-thumbnail.js; main.js passes it, null: none). `o` overrides for
+ * tests: {ops, writeOps, log, now} (an op missing from the registry is gated like a working-tree op).
  */
-function createRunner(o = {}) {
+function createRunner({ thumbnailer = null, ...o } = {}) {
   const state = { running: () => r.running(), deleting: new Map() };
+  const withImages = (d) => Object.freeze({ ...OPS, ...Object.fromEntries(Object.entries(d).map(([n, x]) => [n, x.run])) });
   const r = runner.createRunner({
-    ops: OPS,
+    ops: thumbnailer ? withImages(imageOps(thumbnailer)) : OPS,
     writeOps: WRITE_OPS,
     gate: (repo, name, args) => bareGate(repo, name, args, DESCRIPTORS[name]),
     vet: (repo, name, checked, info) => worktreeVet(state, repo, name, checked, info),

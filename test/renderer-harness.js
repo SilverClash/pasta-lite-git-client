@@ -30,15 +30,19 @@ function throwingStorage() {
 }
 
 /**
- * Fresh window.Graph / window.PLErrorKinds / window.Components / window.PLKeys / window.PLIcons / window.PLOp / window.PLPolicy / window.PLHistory /
- * window.PLRebase / window.Store (module caches cleared; index.html order).
+ * Fresh window.Graph / window.PLErrorKinds / window.PLImageFormat / window.Components / window.PLKeys / window.PLIcons /
+ * window.PLOp / window.PLPolicy / window.PLHistory / window.PLRebase / window.PLImageCache / window.PLImage /
+ * window.Store (module caches cleared; index.html order).
  */
 function loadRenderer() {
-  const files = ['components.js', 'keys.js', 'icons.js', 'op-model.js', 'policy.js', 'history-model.js', 'components/rebase-model.js', 'store.js'];
+  const files = ['components.js', 'keys.js', 'icons.js', 'op-model.js', 'policy.js', 'history-model.js', 'components/rebase-model.js',
+    'image-cache.js', 'components/image-model.js', 'store.js'];
   const kinds = path.join(__dirname, '..', 'src', 'error-kinds.js');
-  for (const f of [kinds, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
-  // index.html order: graph.js, ../src/error-kinds.js (window.PLErrorKinds), then components.js ...
-  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds: require(kinds) };
+  const formats = path.join(__dirname, '..', 'src', 'image-format.js');
+  for (const f of [kinds, formats, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
+  // index.html order: graph.js, ../src/error-kinds.js (window.PLErrorKinds), ../src/image-format.js
+  // (window.PLImageFormat), then components.js ...
+  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds: require(kinds), PLImageFormat: require(formats) };
   globalThis.document = globalThis.document || { createElement: (tag) => ({ tagName: String(tag).toUpperCase() }) };
   for (const f of files) require(R(f));
   return globalThis.window;
@@ -244,10 +248,11 @@ function fakeDom() {
 }
 
 /**
- * The DOM of the mounted component tests (sidebar-actions, graph-columns): just enough for sidebar.js
- * and graph-view.js. Elements with children, attributes, classList, dataset, style (setProperty),
+ * The DOM of the mounted component tests (sidebar-actions, graph-columns, image-preview-ui): just enough for
+ * sidebar.js, graph-view.js and diff-view.js. Elements with children, attributes, classList, dataset, style (setProperty),
+ * document fragments (appending one moves its children),
  * closest / querySelector(All) for '.a.b', 'tag', '[attr="v"]', '[data-x]' and descendant ('a b')
- * selectors, focus, click(), and event dispatch (capture on window / document, then target -> ancestors ->
+ * selectors and lists of them ('a, b'), focus, click(), and event dispatch (capture on window / document, then target -> ancestors ->
  * document -> window). Returns {doc, win, El, dispatch, key}.
  */
 function componentDom() {
@@ -266,6 +271,7 @@ function componentDom() {
 
   const matches = (n, sel) => {
     if (!n || n.nodeType !== 1) return false;
+    if (sel.includes(',')) return sel.split(',').some((s) => matches(n, s)); // a selector list: 'a, b'
     const parts = sel.trim().split(/\s+/);
     if (parts.length > 1) { // descendant selector: 'a b'
       if (!matches(n, parts.pop())) return false;
@@ -319,6 +325,7 @@ function componentDom() {
     append(...nodes) {
       for (let n of nodes) {
         if (typeof n === 'string') { const t = new El('#text'); t.nodeType = 3; t.own = n; n = t; }
+        if (n.nodeType === 11) { this.append(...n.children); continue; } // a fragment: its children move
         if (n.parentNode) n.remove();
         n.parentNode = this;
         this.children.push(n);
@@ -377,6 +384,7 @@ function componentDom() {
   doc.createElement = (tag) => new El(tag);
   doc.createElementNS = (_ns, tag) => new El(tag);
   doc.createTextNode = (text) => { const n = new El('#text'); n.nodeType = 3; n.own = String(text); return n; };
+  doc.createDocumentFragment = () => { const f = new El('#fragment'); f.nodeType = 11; return f; };
   doc.body = new El('body');
   doc.documentElement = new El('html');
   doc.activeElement = doc.body;
@@ -542,11 +550,11 @@ async function answerRefresh(api, data, { rejectUndo, rejectStashes } = {}) {
   return !!log;
 }
 
-/** Store over a fresh api; loads `repo` with `data` (answering the first refresh). */
-async function loadedStore(data, { repo = { root: '/r', name: 'r' } } = {}) {
+/** Store over a fresh api; loads `repo` with `data` (answering the first refresh). urlApi: the image cache's URL api. */
+async function loadedStore(data, { repo = { root: '/r', name: 'r' }, urlApi } = {}) {
   const win = loadRenderer();
   const api = makeApi();
-  const store = win.Store.create(api);
+  const store = win.Store.create(api, { urlApi });
   const p = store.actions.loadRepo(repo);
   await flush(1);
   await answerRefresh(api, data);

@@ -4,7 +4,8 @@
 // the flows and the components). It is the façade the components use: Components.actions is this
 // file's own plumbing plus everything of
 //   keys.js    (window.PLKeys)    the keybinding table and its glyphs: KEYS, matchKey, repeatBlocked,
-//                                 keyHint, withKeyHint, keyGlyph, modClick
+//                                 keyHint, withKeyHint, keyGlyph, modClick; the views' single keys:
+//                                 VIEW_KEYS, matchViewKey, viewKeyHint
 //   policy.js  (window.PLPolicy)  what is allowed when: BUSY_TITLE, FREE_FLOWS, START_FLOWS, WORKTREE_FLOWS,
 //                                 isBare, bareTitle, bareBlocked, opBlocked, PULL_MODES, effectivePullMode,
 //                                 hasRemotes, headView, availability, gateItems, shortcutFor, shortcutBlocked

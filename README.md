@@ -27,7 +27,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 **Graph and history**
 - Lane-based commit graph with branch and tag labels, merge and octopus-merge lines, and resizable, hideable columns.
 - History loads in pages, so large repositories open quickly.
-- Commit details with the changed files, as a path list or a tree, and each file's diff.
+- Commit details with the changed files, as a path list or a tree, and each file's diff, with a before / after preview for images (side by side, swipe, onion skin or difference): PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG, Git LFS images too, and HEIC, TIFF and PSD as a preview made by the system on macOS.
 - Sidebar with local branches, remotes, tags and stashes, grouped into folders by prefix, with a filter box.
 
 **Staging and committing**
@@ -132,6 +132,7 @@ It also creates `/tmp/pasta-demo.origin.git` next to it. The screenshots above w
 - No renaming branches, deleting remote branches or managing remotes.
 - No commit search, file history or blame.
 - Dark theme only.
+- HEIC, TIFF and PSD images preview only on macOS, as the system's thumbnail (at most about 2,048 pixels wide), not at full resolution. On Windows and Linux they say "preview not supported".
 - Downloadable builds for macOS only.
 
 ## Development

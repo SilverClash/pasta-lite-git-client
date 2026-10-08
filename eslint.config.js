@@ -20,8 +20,8 @@ const globals = load('globals');
 // The renderer's plain scripts share these through window (each file sets one of them).
 const RENDERER_GLOBALS = Object.fromEntries([
   'Components', 'Graph', 'PL', 'PLColumns', 'PLComposer', 'PLDiff', 'PLDiffStaging', 'PLErrorKinds',
-  'PLFileList', 'PLFlowKit', 'PLFlows', 'PLHistory', 'PLIcons', 'PLKeys', 'PLMenus', 'PLOp',
-  'PLPolicy', 'PLRebase', 'PLRepoPicker', 'PLWip', 'Store',
+  'PLFileList', 'PLFlowKit', 'PLFlows', 'PLHistory', 'PLIcons', 'PLImage', 'PLImageCache', 'PLImageFormat',
+  'PLImagePreview', 'PLKeys', 'PLMenus', 'PLOp', 'PLPolicy', 'PLRebase', 'PLRepoPicker', 'PLWip', 'Store',
 ].map((name) => [name, 'readonly']));
 
 module.exports = [
@@ -48,10 +48,16 @@ module.exports = [
     languageOptions: { globals: { ...globals.browser } },
   },
   {
+    // Smoke page scripts (PL_SMOKE_JS, main/smoke.js): evaluated in the renderer page, not Node.
+    files: ['scripts/smoke/**/*.js'],
+    languageOptions: { sourceType: 'script', globals: { ...globals.browser } },
+  },
+  {
     // Renderer: plain scripts loaded by <script> tags (no modules, no bundler). Most of them
     // also export through module.exports when a test requires them under Node.
-    // src/error-kinds.js is loaded by index.html too.
-    files: ['renderer/**/*.js', 'src/error-kinds.js'],
+    // src/error-kinds.js and src/image-format.js (the image preview's format catalogue) are loaded
+    // by index.html too.
+    files: ['renderer/**/*.js', 'src/error-kinds.js', 'src/image-format.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'script',

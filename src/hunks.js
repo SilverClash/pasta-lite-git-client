@@ -12,11 +12,12 @@ const crypto = require('node:crypto');
 const {
   run, out, kindError, LITERAL_ENV,
 } = require('./exec');
-const { headState, resolveRoot } = require('./repo-dirs');
+const { resolveRoot } = require('./repo-dirs');
 const git = require('./git');
-const { parseStageEntries } = require('./porcelain');
 const { workdirDiff } = require('./diff-args');
 const { worktreeGuard, readNoFollow, writeNoFollow } = require('./worktree-fs');
+// The exact-path index / HEAD lookups (shared with the image preview's side resolution).
+const { indexEntry, headEntry } = require('./blob-revisions');
 
 const utf8Fatal = new TextDecoder('utf-8', { fatal: true });
 
@@ -331,29 +332,6 @@ function applySelection(baseText, patchFile, selection, { reverse = false } = {}
 // Commands run at the worktree root (exec), so `file` is always root-relative, whatever `cwd`.
 
 const LITERAL = { env: LITERAL_ENV };
-
-// Stage-0 index entry for `file`, or null. Throws kind 'conflict' for unmerged paths.
-async function indexEntry(cwd, file) {
-  let entry = null;
-  for (const e of parseStageEntries(await out(cwd, ['ls-files', '-s', '-z', '--', file], LITERAL))) {
-    if (e.path !== file) continue;
-    if (e.stage !== 0) throw kindError('conflict', `${file} is unmerged`);
-    entry = { mode: e.mode, sha: e.sha };
-  }
-  return entry;
-}
-
-// HEAD's blob entry for `file`, or null (no such path, or unborn HEAD).
-async function headEntry(cwd, file) {
-  const { sha } = await headState(cwd);
-  if (!sha) return null;
-  const text = await out(cwd, ['ls-tree', '-z', sha, '--', file], LITERAL);
-  for (const rec of text.split('\0')) {
-    const m = rec.match(/^(\d{6}) blob ([0-9a-f]+)\t(.*)$/s);
-    if (m && m[3] === file) return { mode: m[1], sha: m[2] };
-  }
-  return null;
-}
 
 // Blob content as a latin1 byte string.
 const blobText = (cwd, sha) => out(cwd, ['cat-file', 'blob', sha], { encoding: 'latin1' });

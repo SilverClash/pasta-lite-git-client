@@ -378,6 +378,19 @@ test('el: sets class and text via textContent only', () => {
   assert.equal(el('span', '', 0).textContent, 0);
 });
 
+test('button: a type="button" with its class, text, tooltip and click handler', (t) => {
+  const dom = H.componentDom();
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { value: dom.doc, configurable: true, writable: true });
+  t.after(() => { if (had) Object.defineProperty(globalThis, 'document', had); else delete globalThis.document; });
+  const { button } = util();
+  let clicks = 0;
+  const b = button('seg-btn x', 'Fit', 'Shrink large images to fit', () => { clicks++; });
+  assert.deepEqual([b.tagName, b.type, b.className, b.textContent, b.title], ['BUTTON', 'button', 'seg-btn x', 'Fit', 'Shrink large images to fit']);
+  b.click();
+  assert.equal(clicks, 1);
+});
+
 // ------------------------------------------------------------------ mount / unmount
 
 function fakeNode(component) {

@@ -16,7 +16,7 @@
 // injects it into every operation (main/ipc.js), so a compromised renderer can only run the
 // fixed ops in src/ops.js (which validate their arguments) against the repo the user opened in
 // that tab.
-const { app, ipcMain, session, crashReporter, dialog, clipboard, shell } = require('electron');
+const { app, ipcMain, session, crashReporter, dialog, clipboard, shell, nativeImage } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -37,6 +37,7 @@ const { createRepoTrust } = require('./src/repo-trust');
 const { createRepoOpening, shouldForgetRecent } = require('./src/repo-opening');
 const { createRecentView } = require('./src/recent-view');
 const { openTerminal } = require('./src/terminal');
+const { createOsThumbnailer } = require('./src/os-thumbnail');
 const { EVENTS } = require('./src/ipc-contract');
 const { createWindowHost, APP_NAME, DATA_DIR_NAME, ICON, STRIP_H, SECURE_WEB_PREFS } = require('./main/window');
 const { createTabsController } = require('./main/tabs-controller');
@@ -80,7 +81,15 @@ let trustedRepos = null; // repos opened despite config that runs commands (trus
 let tabsStore = null; // the open tabs (tabs.json), restored at launch
 let pendingOpen = args.repo; // repo to open once the window exists (CLI, early open-file)
 const gitInfo = () => ({ gitVersion, gitPath });
-const runner = ops.createRunner({ log: logger.child('ops') });
+// The image preview's HEIC, TIFF and PSD sides go through the OS thumbnailer (src/os-thumbnail.js;
+// macOS only, none elsewhere): Electron's call, as a PNG (null for an empty answer).
+const thumbnailer = createOsThumbnailer({
+  thumbnail: async (file, size) => {
+    const img = await nativeImage.createThumbnailFromPath(file, size);
+    return img.isEmpty() ? null : img.toPNG();
+  },
+});
+const runner = ops.createRunner({ log: logger.child('ops'), thumbnailer });
 // Records the renderer sends over app:log (validated, size-capped, rate-limited per page).
 const rendererLog = createRendererLogSink({ logger: logger.child('renderer') });
 // The recent list the renderer and the menu were last given (src/recent-view.js); openRecent must pick from it.
@@ -157,6 +166,11 @@ const quitGuard = createQuitGuard({
   confirm: confirmWith(ui.confirm),
   log: (message) => quitLog.info(message),
 });
+// The OS thumbnailer removes its temp copies when its calls end: a quit waits for them (cancelled
+// with the reads, they end when the OS answers), at most this long.
+const THUMBNAILS_QUIT_MS = 2000;
+let thumbnailsWaited = false;
+
 // One decision at a time; once it says quit, before-quit and the window close let it through.
 const quitFlow = createQuitFlow({
   guard: quitGuard,
@@ -464,6 +478,8 @@ async function start() {
   setGitBinary(found.path);
   gitVersion = found.version;
   gitPath = found.path;
+  // Temp folders of thumbnails an earlier run left behind (it quit while the OS worked on them).
+  if (thumbnailer) thumbnailer.sweep().then((count) => { if (count) log.info('removed stale thumbnail folders', { count }); });
   // Every web permission is denied, clipboard writes included: pages copy through main
   // (the clipboard:writeText channel, main/ipc.js).
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
@@ -516,6 +532,13 @@ app.on('before-quit', (e) => {
   }
   quitGuard.quitNow(); // cancel running reads (a no-op after an approved quit)
   controller.closeWatchers();
+  if (thumbnailer && thumbnailer.busy() && !thumbnailsWaited) {
+    thumbnailsWaited = true;
+    e.preventDefault(); // quit again once the thumbnailer's temp folders are gone (or the wait is over)
+    quitLog.info('waiting for the OS thumbnailer');
+    Promise.race([thumbnailer.idle(), new Promise((r) => { setTimeout(r, THUMBNAILS_QUIT_MS); })]).finally(() => app.quit());
+    return;
+  }
   quitLog.info('quitting');
 });
 

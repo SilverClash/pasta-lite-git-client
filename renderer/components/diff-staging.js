@@ -24,6 +24,7 @@
   const D = window.PLDiff;
   const W = window.PLWip;
   const runFlow = (d, store) => window.Components.actions.runFlow(d, store);
+  const diffKey = (e) => window.Components.actions.matchViewKey(e, 'diff'); // keys.js VIEW_KEYS
   /** The working-tree flow of a hunk / line action ('stage' -> 'stageSelection', …: PLDiff.SELECTION_OPS). */
   const selectionFlow = (kind) => D.SELECTION_OPS[kind];
   const TOO_LARGE = 'Too large to stage by hunk — use Stage File';
@@ -437,15 +438,16 @@
      * dialogs). true = handled (default prevented).
      */
     function onKey(e) {
-      if (e.key === 'Escape') {
+      const k = diffKey(e);
+      if (k && k.id === 'closeDiff') {
         if (drag) endDrag();
         if (!picked.size) return false; // Esc then closes the diff
         e.preventDefault();
         clearPicked(true); // first Esc clears the line selection
         return true;
       }
-      if ((e.key === 's' || e.key === 'u') && !e.shiftKey) {
-        const want = e.key === 's' ? 'unstaged' : 'staged';
+      if (k && (k.id === 'stageHunk' || k.id === 'unstageHunk')) {
+        const want = k.id === 'stageHunk' ? 'unstaged' : 'staged';
         if (mode() !== want || !focusInDiff()) return false;
         e.preventDefault();
         if (e.repeat) return true;

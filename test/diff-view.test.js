@@ -146,6 +146,14 @@ test('hunkDataOk: refused without a fingerprint, for symlinks, submodules, type 
   assert.match(stagingNote(stagedSpec, data([{ ...text(), isBinary: true, hunks: [] }], { fingerprint: null }), st), /Binary file — stage it as a whole with Unstage File/);
 });
 
+test('emptyText / stagingNote: a binary file keeps its message and note (the image preview replaces only the body)', () => {
+  const { emptyText, stagingNote } = D();
+  const bin = { ...file([]), isBinary: true, oldMode: '100644', newMode: '100644', oldPath: 'a.png', newPath: 'a.png' };
+  assert.equal(emptyText(bin), 'Binary file — no preview');
+  const st = H.status({ unstaged: [{ path: 'a.png', status: 'M' }] });
+  assert.equal(stagingNote({ ...unstagedSpec, file: 'a.png' }, data([bin], { fingerprint: null }), st), 'Binary file — stage it as a whole with Stage File.');
+});
+
 test('isPickable / nextPickable: add and del lines of complete section-0 hunks only', () => {
   const { flatten, isPickable, nextPickable } = D();
   const flat = flatten([file([

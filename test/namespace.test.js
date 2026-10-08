@@ -1,17 +1,17 @@
 'use strict';
-// src/namespace.js holds the names the app owns in a repository; src/rebase-editor.js (git's
-// editor process, no dependencies) keeps its own copies on purpose: pinned to the same values.
+// src/namespace.js holds the names the app owns in a repository; the shell commands of
+// src/rebase-editor.js (git's editor) spell the state folder and the refusal marker from it.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const ns = require('../src/namespace');
+const editor = require('../src/rebase-editor');
 
-test("rebase-editor.js's own copies match namespace.js", () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'rebase-editor.js'), 'utf8');
-  assert.ok(src.includes(`path.join(gitDir, '${ns.PL_DIR}', '${ns.REBASE_DIR}')`), 'the state folder <git-dir>/pasta-lite/rebase');
-  assert.ok(src.includes(`path.join(gitDir, '${ns.PL_DIR}')`), 'the plain-folder check of <git-dir>/pasta-lite');
-  assert.ok(src.includes(`${ns.HELPER_REFUSED}: `), 'the refusal marker git-errors.helperRefused reads');
+test("the rebase editor's commands use namespace.js's names", () => {
+  for (const cmd of [editor.TODO_EDITOR, editor.MSG_EDITOR]) {
+    assert.ok(cmd.includes(`s=$d/${ns.PL_DIR}/${ns.REBASE_DIR}`), 'the state folder <git-dir>/pasta-lite/rebase');
+    assert.ok(cmd.includes(`[ ! -L "$d/${ns.PL_DIR}" ]`), 'the plain-folder check of <git-dir>/pasta-lite');
+    assert.ok(cmd.includes(`'${ns.HELPER_REFUSED}: '`), 'the refusal marker git-errors.helperRefused reads');
+  }
 });
 
 test('the refs sit in our namespaces', () => {

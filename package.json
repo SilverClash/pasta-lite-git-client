@@ -76,6 +76,15 @@
     "npmRebuild": false,
     "publish": null,
     "afterPack": "scripts/mac-adhoc-sign.js",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "enableCookieEncryption": true,
+      "resetAdHocDarwinSignature": true
+    },
     "afterAllArtifactBuild": "scripts/mac-notarize-dmg.js",
     "mac": {
       "target": [

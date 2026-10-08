@@ -14,8 +14,8 @@
 //                     one the app died during, still reads as ours.
 //   stop.json         {origHead, head, kind: 'hook'|'signing', output}: why our last continue/skip
 //                     stopped without conflicts (valid while HEAD and orig-head are unchanged)
-//   todo              the todo the editor helper copies (R3)
-//   msgs/<sha>        a message the helper gives git for commit <sha> (reword, squash, conflict stop)
+//   todo              the todo the editor (src/rebase-editor.js) copies (R3)
+//   msgs/<sha>        a message the editor gives git for commit <sha> (reword, squash, conflict stop)
 // Every file there is created exclusively (0600) and a symlink anywhere on the way is refused.
 // Messages only ever go into msgs/ files: never into argv, env, meta.json or the logs.
 const path = require('node:path');
@@ -36,6 +36,7 @@ const { logger } = require('./log');
 const { run, out, tryOut, kindError, tagError, GitError, withSignal } = exec;
 const { oid, stateDirOf, writeStateFile, ensureStateDir, hasMessages, HASH_COMMENTS } = rs;
 const { refusePendingAutostash, runWithAutostash, keptFields, settleAutostash, KEPT_WHY } = require('./autostash');
+const { validTodo, TODO_CMDS, TODO_EDITOR, MSG_EDITOR } = require('./rebase-editor');
 
 const log = logger.child('rebase');
 const warn = (what) => (e) => log.warn(what, { kind: logKind(e) });
@@ -63,23 +64,20 @@ const START_FLAGS = Object.freeze([
   '--merge', '--no-autostash', '--no-autosquash', '--no-rebase-merges', '--no-fork-point', '--no-update-refs', '--empty=drop',
 ]);
 
-const HELPER = path.join(__dirname, 'rebase-editor.js');
 /** Max commits whose shas meta.json keeps to report drops at the finish (beyond: none reported). */
 const REPLAYED_MAX = 10000;
 
 /**
- * Env for a rebase command that may open an editor: the helper (§3.3) as GIT_EDITOR, and with
- * `todo` also as GIT_SEQUENCE_EDITOR. The command strings are constants; data goes through env only.
+ * Env for a rebase command that may open an editor: the editor (§3.3, src/rebase-editor.js) as
+ * GIT_EDITOR, and with `todo` also as GIT_SEQUENCE_EDITOR. The command strings are constants;
+ * the only data is the absolute git dir `gd` (with forward slashes, which git's sh reads on
+ * Windows too).
  */
 function helperEnv(gd, { todo = false } = {}) {
   return {
-    PL_NODE: process.execPath,
-    ELECTRON_RUN_AS_NODE: '1',
-    PL_REBASE_HELPER: HELPER,
-    PL_REBASE_DIR: stateDirOf(gd),
-    PL_GIT_DIR: gd,
-    GIT_EDITOR: '"$PL_NODE" "$PL_REBASE_HELPER" msg',
-    ...(todo ? { GIT_SEQUENCE_EDITOR: '"$PL_NODE" "$PL_REBASE_HELPER" todo' } : {}),
+    PL_GIT_DIR: process.platform === 'win32' ? gd.replace(/\\/g, '/') : gd,
+    GIT_EDITOR: MSG_EDITOR,
+    ...(todo ? { GIT_SEQUENCE_EDITOR: TODO_EDITOR } : {}),
   };
 }
 
@@ -596,8 +594,8 @@ async function plan(cwd, { upstream, onto = upstream } = {}) {
 
 // ---------------------------------------------------------------- interactive rebase (R3)
 
-/** Todo commands an interactive rebase we start may have (§4.3; `update-ref` is R5's opt-in). */
-const TODO_ACTIONS = Object.freeze(['pick', 'reword', 'edit', 'squash', 'fixup', 'drop']);
+/** Todo commands an interactive rebase we start may have (§4.3): the editor's allow-list. */
+const TODO_ACTIONS = TODO_CMDS;
 /** Flags of an interactive start: START_FLAGS with -i instead of --merge (both are the merge backend). */
 const INTERACTIVE_FLAGS = Object.freeze(['-i', ...START_FLAGS.filter((f) => f !== '--merge')]);
 
@@ -643,12 +641,15 @@ async function startInteractive(cwd, { upstream, onto = upstream, ontoName = nul
   await refusePendingAutostash(cwd);
 
   const lines = todo.map((l) => ({ cmd: l.cmd, sha: l.sha }));
+  const todoText = lines.map((l) => `${l.cmd} ${l.sha}\n`).join('');
+  // What the editor checks again as it copies it: allow-listed commands only, never an exec.
+  if (!validTodo(todoText)) throw kindError('invalid-todo', 'The rebase plan has an unsupported line');
   rs.writeMeta(gd, {
     op: 'rebase-interactive', origHead: before, onto, ontoName: ontoName || null, branch, todo: lines, renamed: msgs.map(([sha]) => sha),
   });
   try {
     const sd = stateDirOf(gd);
-    writeStateFile(sd, 'todo', lines.map((l) => `${l.cmd} ${l.sha}\n`).join(''));
+    writeStateFile(sd, 'todo', todoText);
     for (const [sha, text] of msgs) writeStateFile(path.join(sd, 'msgs'), sha, text);
   } catch (e) {
     rs.clearState(gd);
@@ -713,7 +714,7 @@ async function pullRebase(cwd, { onto, ontoName, branch, before }) {
 }
 
 module.exports = {
-  REBASE_CONFIG, START_FLAGS, HELPER, PLAN_LIMIT,
+  REBASE_CONFIG, START_FLAGS, PLAN_LIMIT,
   start, plan, startInteractive, interactiveRefusal, todoGroups, TODO_ACTIONS,
   continue_, skip, abort, pullRebase, helperEnv, refuseExec,
 };

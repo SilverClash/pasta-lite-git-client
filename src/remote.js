@@ -74,7 +74,9 @@ async function fetchRemote(cwd, remote, opts, skipTags = []) {
     refspecs = [...positive, ...skipTags.map((t) => `^refs/tags/${t}`)];
   }
   try {
-    await run(cwd, ['fetch', '--porcelain', '--prune', '--tags', remote, ...refspecs], remoteOpts(opts));
+    // Never into submodules (their config and hooks are their own): on the command line, since
+    // .gitmodules can turn fetch.recurseSubmodules back on per submodule.
+    await run(cwd, ['fetch', '--porcelain', '--prune', '--tags', '--no-recurse-submodules', remote, ...refspecs], remoteOpts(opts));
     return skipTags;
   } catch (err) {
     // Credentials (the anchored patterns push uses), or "refusing to fetch into branch
@@ -135,7 +137,8 @@ async function push(cwd, { remote, branch, remoteBranch, force, signal, timeout 
     forceArgs = ['--force'];
   }
   try {
-    await run(cwd, ['push', '--porcelain', ...forceArgs, target, `refs/heads/${local}:refs/heads/${dst}`], remoteOpts({ signal, timeout }));
+    // --recurse-submodules=no: never checks or pushes submodules (fetch, above).
+    await run(cwd, ['push', '--porcelain', '--recurse-submodules=no', ...forceArgs, target, `refs/heads/${local}:refs/heads/${dst}`], remoteOpts({ signal, timeout }));
   } catch (err) {
     const c = gitErrors.unclassified(err) && gitErrors.classifyPush(err);
     throw c ? tagError(err, c.kind, c.extra) : err;

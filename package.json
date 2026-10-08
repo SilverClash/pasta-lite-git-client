@@ -24,7 +24,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
-    "lint": "npx -y -p eslint@10.11.0 -p @eslint/js@10.0.1 -p globals@17.12.0 eslint .",
+    "lint": "eslint .",
     "dist:mac": "electron-builder --mac",
     "dist:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac -c.mac.identity=null -c.mac.forceCodeSigning=false -c.mac.notarize=false",
     "verify:mac": "sh scripts/verify-mac-build.sh"
@@ -34,8 +34,11 @@
   },
   "type": "commonjs",
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "electron": "44.4.5",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "eslint": "10.11.0",
+    "globals": "17.12.0"
   },
   "build": {
     "appId": "io.github.silverclash.pastalite",
@@ -76,6 +79,15 @@
     "npmRebuild": false,
     "publish": null,
     "afterPack": "scripts/mac-adhoc-sign.js",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "enableCookieEncryption": true,
+      "resetAdHocDarwinSignature": true
+    },
     "afterAllArtifactBuild": "scripts/mac-notarize-dmg.js",
     "mac": {
       "target": [

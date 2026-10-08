@@ -29,10 +29,11 @@ the R1 tests.
 Key decisions:
 
 1. **Never ask git to open a real editor.** An interactive rebase is driven by `GIT_SEQUENCE_EDITOR`
-   and `GIT_EDITOR` set to a **constant** command string, `"$PL_NODE" "$PL_REBASE_HELPER" todo|msg`.
-   git runs it through its shell, and every path and value reaches the helper **only through
-   environment variables**, so nothing from the renderer or the repo is ever put into a command
-   string (§3.3). The helper copies a todo file (or a message file) that the **backend** wrote.
+   and `GIT_EDITOR` set to a **constant** shell command (`src/rebase-editor.js`, roles todo|msg).
+   git runs it through its shell, and the one path it needs (the git dir) reaches it **only
+   through an environment variable**, so nothing from the renderer or the repo is ever put into
+   a command string (§3.3). The editor copies a todo file (or a message file) that the **backend**
+   wrote.
 2. **The backend writes the todo, never the renderer.** The renderer sends
    `[{action, sha}]`. `ops.js` checks the list against the range it computes itself: an allow-list
    of commands (`pick reword edit squash fixup drop`, plus `update-ref` only for refs we listed),
@@ -149,12 +150,9 @@ git <overrides> rebase --merge --no-autostash --no-autosquash --no-rebase-merges
 Start:
 
 ```
-env  PL_NODE=<process.execPath> ELECTRON_RUN_AS_NODE=1
-     PL_REBASE_HELPER=<abs path of src/rebase-editor.js>
-     PL_REBASE_DIR=<git-dir>/pasta-lite/rebase
-     PL_GIT_DIR=<absolute git dir>
-     GIT_SEQUENCE_EDITOR='"$PL_NODE" "$PL_REBASE_HELPER" todo'
-     GIT_EDITOR='"$PL_NODE" "$PL_REBASE_HELPER" msg'
+env  PL_GIT_DIR=<absolute git dir>
+     GIT_SEQUENCE_EDITOR='<the editor function> pl_edit todo'   (rebase-editor.TODO_EDITOR)
+     GIT_EDITOR='<the editor function> pl_edit msg'             (rebase-editor.MSG_EDITOR)
 git <overrides> rebase -i --no-autostash --no-autosquash --no-rebase-merges --no-fork-point \
     --no-update-refs --empty=drop [--onto <onto-sha>] <upstream-sha>
 ```
@@ -163,24 +161,28 @@ git <overrides> rebase -i --no-autostash --no-autosquash --no-rebase-merges --no
 Our values are **constant strings**. The only data are the environment variables, which `sh`
 expands inside double quotes as single words, so paths with spaces, quotes or `$` can't break out.
 Nothing from the renderer, a branch name or a commit message is ever part of an argv element
-except full shas, and those only inside the todo file. This was verified with a shell helper that
-had the same contract: reword, squash, drop and reorder all produced the expected history. The
-Node helper is the production form: one file, and it works the same on Windows with Git for
-Windows' `sh`.
+except full shas, and those only inside the todo file. The editor is a POSIX `sh` function (sh,
+cat, grep and awk only), so it runs wherever git runs an editor, Git for Windows' `sh` included,
+and nothing of the app's runs: an earlier Node helper ran under `ELECTRON_RUN_AS_NODE`, which the
+packaged app's runAsNode fuse now turns off.
 
-`src/rebase-editor.js` (new, ~80 LOC, no dependencies, runs under Electron-as-Node):
+`src/rebase-editor.js` (the constant commands, and `validTodo`, which the backend checks before
+it writes the todo):
 
-- `todo <file>`: refuses (exit 1) unless `path.basename(file) === 'git-rebase-todo'` and the file
-  resolves inside `$PL_GIT_DIR`. Copies `$PL_REBASE_DIR/todo` over it. If the editor exits
+- `todo <file>`: refuses (exit 1) unless `<file>` is the very file
+  `$PL_GIT_DIR/rebase-merge/git-rebase-todo` (`-ef`; neither it nor `rebase-merge/` a symlink).
+  Checks every line of `<git-dir>/pasta-lite/rebase/todo` against the allow-list again and copies
+  it over the todo. If the editor exits
   non-zero, git doesn't start the rebase and leaves no `rebase-merge/` behind **(verified with a
   failing editor)**.
-- `msg <file>`: refuses unless the basename is `COMMIT_EDITMSG` (or git's squash message file)
-  inside `$PL_GIT_DIR`. Reads the **last line of `<git-dir>/rebase-merge/done`**, which is the
+- `msg <file>`: refuses unless `<file>` is `$PL_GIT_DIR/COMMIT_EDITMSG` (not a symlink). Reads
+  the **last line of `<git-dir>/rebase-merge/done`**, which is the
   command git is completing, with its full sha **(verified: at a reword the last done line is
   `reword <sha>`, and for a squash group it is the group's last `squash`/`fixup` line)**. If
-  `$PL_REBASE_DIR/msgs/<sha>` exists, the helper writes it to `<file>`. Otherwise it leaves git's
-  text alone (git then strips the comment lines, §3.6).
-- It never runs a shell or spawns anything, and it writes only the one file git named.
+  `<git-dir>/pasta-lite/rebase/msgs/<sha>` exists (a plain file), the editor writes it to
+  `<file>`. Otherwise it leaves git's text alone (git then strips the comment lines, §3.6).
+- The state folder and every prepared file must be plain (no symlink), and it writes only the
+  one file git named.
 
 The todo file is written by `ops.js`/`src/rebase.js` **only** from validated `{cmd, sha}` pairs,
 oldest first, one `cmd <full-sha>\n` per line, with no subject comments (so no untrusted text).
@@ -780,12 +782,12 @@ every Pull (rebase)). Plan:
 - The todo comes from the renderer: allow-listed commands, full shas that must be in the
   server-computed range, each exactly once; **no `exec` (or `break`/`label`/`reset`/`merge`), ever**;
   git's `missingCommitsCheck=error` as a second guard; the backend writes the file.
-- The editor command strings are constants. Data goes through env vars only (`"$PL_NODE"` …);
-  the helper checks that the file git gave it is inside the git dir and has the expected name.
+- The editor command strings are constants. Data goes through one env var only (`PL_GIT_DIR`);
+  the editor checks that the file git gave it is the expected file in the git dir.
 - Messages go only into files under `<git-dir>/pasta-lite/rebase/msgs/`, never into argv or env,
   and are never logged.
-- `GIT_SEQUENCE_EDITOR=true` joins `GIT_EDITOR=true` in `baseEnv`. `ELECTRON_RUN_AS_NODE=1` is set
-  only for the interactive commands (hooks inherit it; that only affects Electron binaries).
+- `GIT_SEQUENCE_EDITOR=true` joins `GIT_EDITOR=true` in `baseEnv`. No app binary runs as the
+  editor, so the packaged app ships with the runAsNode fuse off.
 - Undo reads reflog text as data (strict regexes, `validateBranchName`, full shas).
 - `sequence.editor` and `core.editor` are risky keys (`RISKY_CONFIG`, `src/git.js`): the app
   overrides them with `GIT_SEQUENCE_EDITOR` / `GIT_EDITOR`, but a terminal git in the same repo

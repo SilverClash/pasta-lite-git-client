@@ -1,24 +1,35 @@
 'use strict';
 // Repo-trust policy: may a repository whose own config or hooks run commands be
 // opened? A folder from elsewhere could otherwise run a filter driver on the first `status`, a
-// hook on the first commit or checkout (a bare one on the first fetch). Free of Electron: the git checks, the
-// trust store and the dialog are passed in.
+// hook on the first commit or checkout (a bare one on the first fetch), or the same from a
+// submodule's or another worktree's config. Free of Electron: the git checks, the trust store and
+// the dialog are passed in.
 const path = require('node:path');
 const { kindError } = require('./exec');
 
+/** Entries of git.riskyNested ('submodule <where>: <key>', 'worktree <where>: <key>'); never a config key (no space before its first dot). */
+const isNested = (k) => /^(submodule|worktree) /.test(k);
+
+/** `s` for one line of a dialog: control and bidi characters (a newline in a folder name) shown as '?'. */
+const oneLine = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, '?');
+
 /**
  * Warning dialog text before opening `root`, whose own config can run commands (`keys` from
- * git.riskyLocalConfig) or whose hooks folder has hooks git runs ('hooks/<name>' from
- * git.riskyHooks): {message, detail}.
+ * git.riskyLocalConfig), whose hooks folder has hooks git runs ('hooks/<name>' from
+ * git.riskyHooks), or whose submodules or other worktrees have either (git.riskyNested):
+ * {message, detail}.
  */
 function describeRiskyConfig(root, keys) {
-  const hooks = keys.filter((k) => k.startsWith('hooks/'));
-  const config = keys.filter((k) => !k.startsWith('hooks/'));
+  const nested = keys.filter(isNested);
+  const hooks = keys.filter((k) => !isNested(k) && k.startsWith('hooks/'));
+  const config = keys.filter((k) => !isNested(k) && !k.startsWith('hooks/'));
+  const list = (ks) => ks.map((k) => `  ${oneLine(k)}`);
   return {
-    message: `"${path.basename(root)}" has settings that run commands`,
+    message: `"${oneLine(path.basename(root))}" has settings that run commands`,
     detail: [
-      ...(config.length ? [`The repository's own git config (${root}) sets:`, '', ...config.map((k) => `  ${k}`), ''] : []),
-      ...(hooks.length ? [`The repository (${root}) has hooks that git runs:`, '', ...hooks.map((k) => `  ${k}`), ''] : []),
+      ...(config.length ? [`The repository's own git config (${oneLine(root)}) sets:`, '', ...list(config), ''] : []),
+      ...(hooks.length ? [`The repository (${oneLine(root)}) has hooks that git runs:`, '', ...list(hooks), ''] : []),
+      ...(nested.length ? ['Its submodules or other worktrees have their own settings or hooks that run commands:', '', ...list(nested), ''] : []),
       'Git runs these programs while Pasta Lite shows or changes the repository (for example on',
       'status, fetch or commit). Only open it if you trust where this folder came from.',
     ].join('\n'),
@@ -32,22 +43,24 @@ const trustDialog = (root, keys) => ({
 
 /**
  * @param {{
- *   git: {riskyLocalConfig(root: string): Promise<string[]>, riskyHooks(root: string): Promise<string[]>},
+ *   git: {riskyLocalConfig(root: string): Promise<string[]>, riskyHooks(root: string): Promise<string[]>,
+ *     riskyNested(root: string): Promise<string[]>},
  *   store: () => {isTrusted(root: string, keys: string[]): boolean, trust(root: string, keys: string[]): void},
  *   ui: {interactive: boolean, confirm(options: object): Promise<boolean>},
  *   log: {info(msg: string, fields?: object): void, warn(msg: string, fields?: object): void},
  * }} o  store: the trust store (trusted.json), read when asked (main creates it at start).
  *   ui.confirm: the native dialog, true for its first button.
  * @returns {{confirm(root: string): Promise<boolean>}}
- *   confirm: true when `root` may be opened: its own config runs no commands and its hooks
- *   folder has no hook git would run (bare or not), the user already trusted it for those keys,
+ *   confirm: true when `root` may be opened: its own config runs no commands, its hooks folder
+ *   has no hook git would run (bare or not), and neither do its submodules' or other worktrees'
+ *   (riskyNested), or the user already trusted it for those keys,
  *   or agrees now ("Trust and Open"; remembered, best effort). False when the user declined.
  *   Not interactive (smoke runs): never asks, rejects with kind 'untrusted'.
  */
 function createRepoTrust({ git, store, ui, log }) {
   async function confirm(root) {
-    const [config, hooks] = await Promise.all([git.riskyLocalConfig(root), git.riskyHooks(root)]);
-    const keys = [...config, ...hooks];
+    const found = await Promise.all([git.riskyLocalConfig(root), git.riskyHooks(root), git.riskyNested(root)]);
+    const keys = found.flat();
     if (!keys.length) return true;
     // Config key names only ('risky'), never their values (a credential helper line can hold a token).
     if (store().isTrusted(root, keys)) {

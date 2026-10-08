@@ -288,9 +288,11 @@ const checks = {
   },
   // A message only where git commits the stopped commit anew: a conflict stop, or a hook stop
   // (the hook refused its commit). The apply backend never takes one (it keeps each message).
+  // Both refused (kind 'rebase-exec', rebase.refuseExec) while the rest of the todo runs commands.
   rebaseContinue: async (repo, o) => {
     const message = optionalMessage(opts(o).message);
     const st = await rebasing(repo);
+    rebase.refuseExec(st.rebase);
     refuseConflicts(st);
     refuseDirty(await trackedPaths(repo, { unstagedOnly: true }), 'Stage or discard your unstaged changes before continuing the rebase');
     if (message !== undefined) {
@@ -305,6 +307,7 @@ const checks = {
   rebaseSkip: async (repo) => {
     const st = await rebasing(repo);
     const r = st.rebase;
+    rebase.refuseExec(r);
     if (r.stop === 'edit') {
       throw invalid('Skip is not available at an edit stop: the commit is already applied. Continue keeps it; to leave it out, abort and drop it in a new interactive rebase');
     }

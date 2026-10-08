@@ -9,6 +9,11 @@ const { DIFF_OPTS, LITERAL_ENV } = require('./exec');
 // char: non-UTF-8 content round-trips exactly.
 const DIFF_RUN = Object.freeze({ env: LITERAL_ENV, diff: true, encoding: 'latin1' });
 
+// A submodule's diff is its commit change only, never changes inside it (which would run git in
+// the submodule, with its own config and hooks). On the command line: a repo's .gitmodules can
+// override diff.ignoreSubmodules per submodule.
+const NO_SUBMODULE_WORKTREE = '--ignore-submodules=dirty';
+
 /**
  * {args, opts} of the patch of one working-tree file: index -> worktree, HEAD -> index (`staged`;
  * against the empty tree in an unborn repo), /dev/null -> file (`untracked`; exit code 1 is a
@@ -17,10 +22,11 @@ const DIFF_RUN = Object.freeze({ env: LITERAL_ENV, diff: true, encoding: 'latin1
  */
 function workdirDiff(file, { staged = false, untracked = false, orig } = {}) {
   if (untracked) return { args: ['diff', '--no-index', ...DIFF_OPTS, '--', '/dev/null', file], opts: { ...DIFF_RUN, okCodes: [0, 1] } };
+  const tracked = ['diff', ...(staged ? ['--cached'] : []), NO_SUBMODULE_WORKTREE];
   if (orig !== undefined && orig !== file) {
-    return { args: ['diff', ...(staged ? ['--cached'] : []), '-M', ...DIFF_OPTS, '--', orig, file], opts: DIFF_RUN };
+    return { args: [...tracked, '-M', ...DIFF_OPTS, '--', orig, file], opts: DIFF_RUN };
   }
-  return { args: ['diff', ...(staged ? ['--cached'] : []), ...DIFF_OPTS, '--', file], opts: DIFF_RUN };
+  return { args: [...tracked, ...DIFF_OPTS, '--', file], opts: DIFF_RUN };
 }
 
 /** {args, opts} of the patch of `paths` in commit `sha` against `base` (renames detected with -M). */

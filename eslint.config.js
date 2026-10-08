@@ -1,21 +1,10 @@
 'use strict';
 // ESLint flat config: the recommended rules (less one, below), no style rules (see CONTRIBUTING.md).
 //
-// ESLint is not a devDependency: `npm run lint` runs a pinned version through npx, together with
-// @eslint/js and globals. Those land in npx's cache, not in this repo's node_modules, so they are
-// resolved next to the running eslint binary when a plain require can't find them.
-const { createRequire } = require('node:module');
-
-function load(name) {
-  try {
-    return require(name);
-  } catch {
-    return createRequire(require('node:fs').realpathSync(process.argv[1]))(name);
-  }
-}
-
-const js = load('@eslint/js');
-const globals = load('globals');
+// ESLint, @eslint/js and globals are exact-pinned devDependencies (their own dependencies are
+// pinned by package-lock.json), so `npm run lint` runs what `npm ci` installed.
+const js = require('@eslint/js');
+const globals = require('globals');
 
 // The renderer's plain scripts share these through window (each file sets one of them).
 const RENDERER_GLOBALS = Object.fromEntries([

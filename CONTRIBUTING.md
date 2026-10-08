@@ -74,8 +74,9 @@ in a temporary folder and checks every image of the demo's `images/` folder in t
 npm run lint
 ```
 
-ESLint is not a dependency. The script runs a pinned version through `npx`, so the first run
-downloads it. `eslint.config.js` enables the recommended rules only, with no formatting rules and
+ESLint, `@eslint/js` and `globals` are exact-pinned devDependencies, and `package-lock.json` pins
+everything they depend on, so `npm ci` installs the very versions the script runs. CI runs it too.
+`eslint.config.js` enables the recommended rules only, with no formatting rules and
 no Prettier. The editor settings are in `.editorconfig`: 2 spaces, LF, UTF-8 and a final newline.
 Please don't add new lint findings. Fixes for existing ones are welcome as separate PRs.
 

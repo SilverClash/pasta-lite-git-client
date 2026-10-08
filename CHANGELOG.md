@@ -30,6 +30,31 @@ minor versions may contain breaking changes.
   shows its first page. On Windows and Linux, or when the system can't read the file, they still say
   "preview not supported".
 
+### Security
+
+Hardening against repositories from elsewhere (a downloaded or unzipped folder with its own `.git`).
+
+- The **Trust and Open** prompt covers more of what can run a program. It now also lists, under
+  their own heading, the risky settings and hooks of the repository's submodules (populated ones,
+  nested ones, and submodule git folders that aren't checked out) and the risky settings git reads
+  in the repository's other worktrees (their own `config.worktree`, or an `includeIf` that applies
+  only there, which deleting a worktree reads). Any `include.path` or `includeIf` in the
+  repository's own config is listed too, whatever it points at, since an include can bring in
+  settings after a checkout. A repository trusted before asks again when one of these applies.
+- Pasta Lite keeps git out of submodules wherever a flag can: status, working-tree diffs, checkout
+  and branch switches, fetch and push no longer look inside or recurse into submodules, whatever
+  the repository's config or `.gitmodules` says. A submodule now shows as changed only when its
+  checked-out commit moved, not for changes inside it, and its diff is the one-line commit change.
+- **Continue Rebase** and **Skip Commit** are refused for a rebase whose remaining steps run
+  commands (`exec` lines), whoever started it; the banner says so and offers only **Abort Rebase**.
+  Continue such a rebase in a terminal if you trust it.
+- The macOS app has its Electron fuses set: it can't be run as plain Node, ignores `NODE_OPTIONS`
+  and the `--inspect` flags, loads its code only from its `app.asar` and checks that archive
+  against the hash embedded in the signed app. Interactive rebase no longer runs the app as its
+  editor: git runs a fixed shell command instead.
+- `npm run lint` runs ESLint from exact-pinned devDependencies locked in `package-lock.json`
+  instead of fetching its dependencies with `npx`.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added

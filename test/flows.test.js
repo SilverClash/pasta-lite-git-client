@@ -1205,9 +1205,10 @@ test('rebaseContinue: conflicts remaining are refused before the op; not rebasin
   assert.deepEqual(writeOps(clean.api), []);
 });
 
-test('rebaseContinue: the error kinds — conflicts (count), dirty (paths), not-rebasing, hook-failed, cancelled, others toasted', async () => {
+test('rebaseContinue: the error kinds — conflicts (count), dirty (paths), not-rebasing, hook-failed, rebase-exec, cancelled, others toasted', async () => {
   const cases = [
     [err('conflicts', 'needs merge', { count: 3 }), { notice: 'Resolve and mark all 3 conflicted files resolved first' }],
+    [err('rebase-exec', 'runs commands'), { alert: /runs commands \(exec lines in its todo\), which Pasta Lite never runs/, message2: /continue the rebase in a terminal \(git rebase --continue\); otherwise abort it/ }],
     [err('dirty', 'unstaged', { paths: ['a.txt', 'b.txt'] }), { alert: /Stage or discard your unstaged changes/, detail: /a\.txt/ }],
     [err('not-rebasing'), { notice: 'No rebase is in progress' }],
     [err('hook-failed', 'pre-commit: lint failed'), { alert: /commit hook failed/, detail: /lint failed/ }],

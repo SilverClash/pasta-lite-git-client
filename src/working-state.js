@@ -7,8 +7,13 @@ const { out } = require('./exec');
 const { repoState } = require('./repo-dirs');
 const { parsePorcelainV2 } = require('./porcelain');
 
-/** The status command every read uses (rename detection, untracked files one by one). */
-const STATUS_ARGS = Object.freeze(['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--renames']);
+/**
+ * The status command every read uses (rename detection, untracked files one by one). A
+ * submodule shows only when its checked-out commit differs (`--ignore-submodules=dirty`): changes
+ * inside one would need a status run in the submodule, with its own config and hooks. On the
+ * command line, since a repo's .gitmodules can override diff.ignoreSubmodules per submodule.
+ */
+const STATUS_ARGS = Object.freeze(['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--renames', '--ignore-submodules=dirty']);
 
 /**
  * {branch, oid, upstream, ahead, behind, staged, unstaged, conflicted, state} of the worktree

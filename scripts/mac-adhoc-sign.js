@@ -8,6 +8,11 @@
 // signature on the renamed main binary, with an Info.plist and resources that no longer match
 // it, and Apple silicon Macs report a downloaded copy as "damaged". A consistent ad-hoc signature
 // runs locally and gets Gatekeeper's usual "could not verify" prompt elsewhere.
+//
+// electron-builder flips the Electron fuses ("build.electronFuses") after this hook, which edits
+// the main binary and breaks this signature: `resetAdHocDarwinSignature` makes @electron/fuses
+// sign the app ad hoc again right after flipping them (keeping entitlements, flags and the
+// hardened runtime). The release build is signed with the Developer ID after that anyway.
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 

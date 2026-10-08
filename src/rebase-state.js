@@ -20,6 +20,11 @@ const ABBREV = Object.freeze({
 const COMMIT_CMDS = new Set(['pick', 'reword', 'edit', 'squash', 'fixup', 'merge']);
 /** Todo commands we never write: a rebase whose remaining todo has one can't be edited by us. */
 const FOREIGN_CMDS = new Set(['exec', 'break', 'label', 'reset', 'merge']);
+/**
+ * A todo line git runs as a shell command: `exec` / `x` (after optional blanks, then a blank or
+ * the end of the line, as git parses it). Matched over the whole file, with no line cap.
+ */
+const EXEC_LINE = /^[ \t]*(?:exec|x)(?:[ \t\r]|$)/m;
 
 const oid = (s) => {
   const t = typeof s === 'string' ? s.trim() : '';
@@ -200,13 +205,23 @@ async function subjectOf(cwd, sha) {
 }
 
 /**
- * The merge backend's progress (rebase-merge/): {step, current, foreign, message, rescheduled}.
- * `rescheduled`: the command git was running is back at the top of the todo (it couldn't run it,
- * e.g. an untracked file in the way, and will retry it on continue).
+ * True when continuing the merge backend's rebase in `dir` (rebase-merge/) would run a command
+ * from its todo (EXEC_LINE), or when the todo is there but can't be read whole (too big, a
+ * symlink): then nobody can tell, so it counts.
  */
-function readMergeBackend(f) {
+function todoRunsCommands(dir, raw) {
+  return raw === null ? exists(path.join(dir, 'git-rebase-todo')) : EXEC_LINE.test(raw);
+}
+
+/**
+ * The merge backend's progress (rebase-merge/): {step, current, foreign, runsCommands, message,
+ * rescheduled}. `rescheduled`: the command git was running is back at the top of the todo (it
+ * couldn't run it, e.g. an untracked file in the way, and will retry it on continue).
+ */
+function readMergeBackend(f, dir) {
   const done = todoLines(f('done'));
-  const todo = todoLines(f('git-rebase-todo'));
+  const rawTodo = f('git-rebase-todo');
+  const todo = todoLines(rawTodo);
   const commits = (lines) => lines.filter((l) => COMMIT_CMDS.has(l.cmd)).length;
   const n = int(f('msgnum'));
   const end = int(f('end'));
@@ -216,6 +231,7 @@ function readMergeBackend(f) {
     step: total || n === null || end === null ? { done: commits(done), total } : { done: Math.min(n, end), total: end },
     current: last ? { cmd: last.cmd, sha: last.sha } : null,
     foreign: todo.some((l) => FOREIGN_CMDS.has(l.cmd)),
+    runsCommands: todoRunsCommands(dir, rawTodo),
     message: f('message'),
     malformed: false,
     rescheduled: !!last && !!todo[0] && todo[0].cmd === last.cmd && todo[0].sha === last.sha,
@@ -231,6 +247,7 @@ function readApplyBackend(f, rebaseHead) {
     step: next !== null && last !== null ? { done: Math.min(next, last), total: last } : { done: 0, total: 0 },
     current: sha ? { cmd: 'pick', sha } : null,
     foreign: false,
+    runsCommands: false,
     message: f('final-commit'),
     malformed: next === null || last === null,
   };
@@ -275,7 +292,7 @@ async function readRebase(cwd, st, gd, autostash = null) {
   const marker = f(OURS_MARKER);
   const ours = backend === 'merge' && !!meta && meta.origHead === origHead
     && (meta.id === undefined || marker === meta.id || (meta.starting === true && marker === null));
-  const prog = backend === 'merge' ? readMergeBackend(f) : readApplyBackend(f, rebaseHead);
+  const prog = backend === 'merge' ? readMergeBackend(f, dir) : readApplyBackend(f, rebaseHead);
   const char = ours ? '#' : await commentChar(cwd);
   const current = prog.current && { ...prog.current, subject: await subjectOf(cwd, prog.current.sha) };
 
@@ -300,6 +317,10 @@ async function readRebase(cwd, st, gd, autostash = null) {
     stopMessage: stripComments(prog.message, char),
     conflicted: st.conflicted.length,
     todoEditable: ours && !prog.foreign,
+    // The rest of the todo runs shell commands (exec lines): Continue and Skip are refused
+    // (ops-rebase.js, rebase.js), whoever started it. We never write one, and "ours" is told from
+    // files in the git dir, which a folder from elsewhere can carry as well.
+    runsCommands: prog.runsCommands,
     autostash,
     // Additions to the plan's shape: the commit being replayed (REBASE_HEAD) at a conflict / edit
     // stop, the output of a hook (or signing) failure that stopped it, and git's own --autostash

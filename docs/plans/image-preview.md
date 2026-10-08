@@ -599,7 +599,8 @@ first three in `loadRenderer` (not `loadComponentHelpers`), so every store test 
   longer holds re-reads the side without `knownKey`.
 - `loadImagePreview(spec, {force, side})` is also the Load preview action: `force` with one `side`
   re-reads only that side (shown as loading meanwhile). `releaseImagePreview()` (the diff view
-  unmounting) also empties the URL cache; `loadRepo` empties it too.
+  unmounting) also empties the URL cache; `loadRepo` empties it too. Closing the preview is the
+  store's own (no `closeImagePreview` action; §2.1 listed one).
 
 **Cache.** As §6.4, plus: `put` never evicts the key it just put (with both slots pinned and the
 cache at its limit it would otherwise revoke the URL it returns), and `pin` runs the eviction too.
@@ -611,7 +612,11 @@ cache at its limit it would otherwise revoke the URL it returns), and `pin` runs
   badge in place (`PLImage.badge`: `image` by the file's extension while loading, then by content:
   any side with a format, tier 2 included, or an LFS pointer; else `binary`; Q9).
 - The summary bar, the pane row, each pane and each `<img>` are made once per file and updated in
-  place, so a side landing doesn't move focus or reset a pane's scroll (a test checks it).
+  place, so a side landing doesn't move focus or reset a pane's scroll (a test checks it). A pane's
+  message is made again only when it says something else, so a focused Load preview button keeps
+  focus and "Loading image…" its delay while the other side lands. A render drops the `<img>`s (and
+  decode results) of URLs no slot shows any more: a working-copy image saved while it is open gets a
+  new key, so a new URL, with every save.
 - Fit is computed (`PLImage.scaledSize`) from the stage's size and `naturalWidth` / `naturalHeight`
   after the `load` event (a `ResizeObserver` on the preview re-fits), not with CSS `max-width`: an
   image is hidden (`visibility`) until it has its size, so a large one never flashes at 100%.
@@ -694,15 +699,19 @@ are handled here (Q10); `.svgz` stays unsupported (Q6) and sizes stay in binary 
 shown), for `'text'` only; Preview by default. The choice is one preference for the app in
 `localStorage` (`pl.imageView`, through `Components.util.storage`, like the panel widths and the pull
 mode), so it outlives the session (§6.5 said "per session (localStorage …)"; localStorage is what the
-app's other view preferences use). Switching keeps focus on the switch. A text-backed diff has no
+app's other view preferences use). Switching keeps focus on the switch. The view tells the store the
+choice (`setImageView('preview' | 'text')`, when it mounts and on each switch): while Text is shown
+the store reads no side of a text-backed image, choosing Preview loads both at once (its slots are in
+place before the body renders), and a preview already loaded stays and reloads with its keys. A
+text-backed diff has no
 `image` badge (that badge replaces `binary`). When neither side has a picture the preview says "No
 image to preview — Text shows the change".
 
 **Conflicted images.** `state.imagePreview` gains `conflict` and, for a conflict, a third slot `base`
-(`SIDES`, `sideGen`, `inflight`, pinning and cancelling cover it). `loadImagePreview` takes the diff
-about to land (`data`), because the store starts the preview before the diff lands; a file that
-becomes or stops being a conflict starts over. The panes are **Base | Ours (main) | Theirs
-(feature/x)**, the names from `PLOp.conflictSides` (during a rebase ours is the new base, theirs the
+(`SIDES`, `sideGen`, `inflight`, pinning and cancelling cover it). The store's private
+`startPreview(spec, data)` takes the diff about to land, because the store starts the preview before
+the diff lands (`loadImagePreview` runs it with the diff shown); a file that becomes or stops being a
+conflict starts over. The panes are **Base | Ours (main) | Theirs (feature/x)**, the names from `PLOp.conflictSides` (during a rebase ours is the new base, theirs the
 replayed commit), plain "Ours" / "Theirs" when no merge or rebase is in progress; no Base pane
 without a stage 1; a missing stage says "Deleted on this side". Titles are neutral (no before /
 after colours), no size delta, no comparison modes, no "Index" source in the metadata. The banner
@@ -710,7 +719,8 @@ reads "Conflicted image — the base, ours and theirs versions. Keep one side or
 resolved in the WIP panel."
 
 **Comparison modes.** A segmented control in the summary bar (Side by side | Swipe | Onion skin |
-Difference), shown only when `PLImage.canCompare`: both sides `image`, both URLs, neither failed, not
+Difference; like Preview | Text and the zoom group, a `.seg` group of `.seg-btn` buttons from
+`style.css`, made with `Components.util.button`), shown only when `PLImage.canCompare`: both sides `image`, both URLs, neither failed, not
 a conflict. The mode is one preference for the app (`pl.imageMode`); a stored mode that can't apply
 (an added file, a decode failure) shows side by side.
 - One frame (`.ip-frame`) of the larger width and height at one scale (`PLImage.overlaySize`; Fit
@@ -726,9 +736,16 @@ a conflict. The mode is one preference for the app (`pl.imageMode`); a stored mo
 
 **Zoom.** − / + buttons around Fit | 100% and a level readout (`PLImage.zoomStep`, `ZOOM_STEPS`
 12.5%–3200%): from Fit, a step starts at the scale of the most shrunk image on screen (Fit of a
-small image is 100%). Above 100% `.ip.is-pixelated` sets `image-rendering: pixelated` (Fit never
-enlarges, so only a number zoom gets there). The panes scroll together at every number zoom (I2: at
-100%).
+small image is 100%). With no step that way, a step changes nothing: − at Fit below 12.5% (a huge
+image) stays at Fit, it doesn't zoom in to 12.5%. Above 100% `.ip.is-pixelated` sets
+`image-rendering: pixelated` (Fit never enlarges, so only a number zoom gets there). A resize
+re-fits the images and updates − / + (at Fit the scale moves). The level readout is an `aria-live`
+region only for a zoom the user asked for (`polite`; `off` for a resize or a redraw) and is written
+only when its text changes, so resizing the window announces nothing. The panes scroll together at
+every number zoom (I2: at 100%). Scroll events come a frame after the write, so a mirrored pane fires
+one too: the view records the position its write left that pane at (clamped when its image is
+smaller) and doesn't mirror that event back, which would pull the pane being scrolled into the
+smaller one's range.
 
 **Keys.** §6.6 asked for `KEYS` entries, but `KEYS` is the ⌘ / Ctrl table (`matchKey` needs the
 modifier) and ⌘+ / ⌘- / ⌘0 are the View menu's page zoom. So `keys.js` has a second frozen table,
@@ -759,9 +776,12 @@ found, knownKey without reading the object, missing / corrupt / resized / linked
 linked worktree and a bare repository, no `git lfs`), `test/diff-view-backend.test.js` (`isBinary`),
 `test/image-model.test.js` (`previewKind`, conflict layout, zoom steps, modes, `overlaySize`),
 `test/store.test.js` (three sides of a conflict, cancelling them, an SVG text diff, the LFS pointer
-key), `test/image-preview-ui.test.js` (zoom buttons, keys, the modes, Preview | Text and its
-persistence, a conflict's panes), `test/keys.test.js` (`VIEW_KEYS`), `test/image-format.test.js`
-(the fixtures). The harness's component DOM gained document fragments (diff rows under test).
+key, no side read while Text is shown), `test/image-preview-ui.test.js` (zoom buttons, keys, the
+modes, Preview | Text and its persistence, a conflict's panes, scroll mirroring with stages that clamp
+and fire their scroll events a frame later, a focused Load preview button across a redraw, a resize
+at Fit; each test installs its own fake DOM and layout stubs, so any one runs alone),
+`test/keys.test.js` (`VIEW_KEYS`), `test/image-format.test.js` (the fixtures). The harness's
+component DOM gained document fragments (diff rows under test) and selector lists (`'a, b'`).
 
 **Runtime checks** (`node scripts/smoke-image-preview.js`, Electron 44.4.5 / Chrome 152, git
 2.51.2, macOS 15, passing): the unstaged animated WebP (both sides decoded, the size change); the

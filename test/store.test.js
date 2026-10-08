@@ -1884,6 +1884,36 @@ test('image preview: a text diff of an image (an SVG) asks for both sides; a Git
   assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, {}], 'the pointer is read again: its object may have arrived');
 });
 
+test('image preview: a side a partial clone hadn\'t downloaded (not-local) has no key: every reload reads it again, and a fetched blob shows', async () => {
+  const { api, store } = await openBinary();
+  const notLocal = (which) => {
+    const s = { ...imageSide(which, null), kind: 'not-local', size: null, format: null, mime: null, dims: null, animated: null };
+    delete s.bytes; // never read: no bytes
+    return s;
+  };
+  await landSides(api, imageSide('old', 'k1'), notLocal('new'));
+  assert.deepEqual(store.state.imagePreview.new, { loading: false, side: notLocal('new'), url: null, error: null }, 'no URL for it');
+  const reload = async () => {
+    const p = store.actions.reloadDiff();
+    api.take('commitDiffView').resolve(binaryDiff());
+    await p;
+    await flush();
+  };
+  await reload();
+  assert.deepEqual(api.pending('commitImageSide').map((c) => c.args[4]), [{ knownKey: 'k1' }, {}], 'no knownKey for it');
+  api.take('commitImageSide', sideCall('old')).resolve({ side: 'old', key: 'k1', unchanged: true });
+  api.take('commitImageSide', sideCall('new')).resolve(notLocal('new'));
+  await flush();
+  // the blob was fetched since (git fetch, a checkout): the next reload shows it
+  await reload();
+  assert.deepEqual(api.pending('commitImageSide', sideCall('new')).map((c) => c.args[4]), [{}]);
+  api.take('commitImageSide', sideCall('old')).resolve({ side: 'old', key: 'k1', unchanged: true });
+  api.take('commitImageSide', sideCall('new')).resolve(imageSide('new', 'k2'));
+  await flush();
+  assert.equal(store.state.imagePreview.new.side.kind, 'image');
+  assert.equal(store.state.imagePreview.new.url, 'blob:file:///u2');
+});
+
 test('image preview: a text-backed image shown as Text reads no sides until Preview is chosen; then reloads with its keys', async () => {
   const { api, store } = await loadedStore(repoData({ commits: [commit(SHA_B, ['a']), commit('a')] }), { urlApi: fakeUrls() });
   const spec = pngSpec('icon.svg');

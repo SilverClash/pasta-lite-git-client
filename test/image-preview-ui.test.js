@@ -313,6 +313,26 @@ test('preview: too large, Git LFS, unsupported and op errors are messages in the
   t.dispose();
 });
 
+test('preview: a side a partial clone hasn\'t downloaded is a message in its pane, with no size and no delta', async (tc) => {
+  const t = await mount(tc);
+  const notLocal = (which) => other(which, 'not-local', { key: null, size: null, format: null, dims: null, animated: null });
+  await t.land(notLocal('old'), notLocal('new'));
+  assert.equal(t.q('.dv-message'), null, 'not the binary message');
+  assert.deepEqual(t.texts('.ip-pane-title'), ['Before', 'After']);
+  assert.deepEqual(t.texts('.ip-state-text'), ['Not downloaded in this partial clone — no preview', 'Not downloaded in this partial clone — no preview']);
+  assert.deepEqual(t.texts('.ip-fact'), []);
+  assert.deepEqual(t.badges(), ['bbbbbbb', 'image'], 'by extension: nothing is known about the content');
+  assert.equal(t.q('button.ip-load'), null);
+
+  t.store.actions.loadImagePreview(t.spec);
+  await t.land(notLocal('old'), imageSide('new', 'k2'));
+  assert.deepEqual(t.texts('.ip-state-text'), ['Not downloaded in this partial clone — no preview']);
+  assert.equal(t.qa('img').length, 1);
+  assert.deepEqual(t.texts('.ip-meta'), ['', 'PNG · 512×512 · 100 KB']);
+  assert.deepEqual(t.texts('.ip-fact'), [], 'no size to compare');
+  t.dispose();
+});
+
 test('preview: an added image shows one "Added" pane; a deleted one "Deleted"; the mismatch note', async (tc) => {
   const t = await mount(tc);
   await t.land(other('old', 'absent', { size: null, key: null, format: null, dims: null }), imageSide('new', 'k2', { format: 'jpeg', mime: 'image/jpeg', mismatch: true }));

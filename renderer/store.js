@@ -796,7 +796,8 @@
 
     /**
      * The key a reload may send for a shown side: its bytes are still cached (or it has none to show).
-     * None for a Git LFS pointer: its object may have reached the local LFS cache since.
+     * None for a Git LFS pointer: its object may have reached the local LFS cache since; none for a
+     * side a partial clone hadn't downloaded (key null, 'not-local'): it may have been fetched since.
      */
     function knownKeyOf(slot) {
       const side = slot && !slot.error ? slot.side : null;

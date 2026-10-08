@@ -404,8 +404,10 @@ format, extensionHint, mime, mismatch, dims, animated}`:
 - `lfs-pointer` adds `lfs: {oid, size}`, and `image` adds `bytes`.
 - `not-local` (added after the I4 review): a git blob a partial clone (`--filter=blob:none`) hasn't
   downloaded. Key and size are null, so the renderer never sends it as `knownKey` and a reload asks
-  again (the blob may have been fetched since). The pane needs its own message (`PLImage.paneState`,
-  e.g. "Not downloaded in this partial clone — no preview"); without one it falls to "Not an image".
+  again (the blob may have been fetched since). `PLImage` shows it as a pane (it is in `VISUAL`, so
+  never the binary message) saying "Not downloaded in this partial clone — no preview", with no size
+  and no delta; the badge ignores it (the extension decides, as while loading). The store's
+  `knownKeyOf` sends no key for it, so every reload reads it again (`test/store.test.js`).
 
 **Deviations and decisions**
 - **What `force` lifts**: only the soft byte cap. The SVG cap and the pixel cap are hard, like the
@@ -940,8 +942,9 @@ crafted files too: the AVIF animation check reads the brands of the sniffed head
 is the file's), and the APNG check walks at most 10,000 chunks.
 
 **Renderer** (`PLImage`). A thumbnail's pane shows the original's format, dimensions and size, then
-"Preview by macOS" (`PLImage` also knows "Windows", which no thumbnailer says now), with ", scaled to 2,048×1,366" when the thumbnail is smaller than the
-original (`thumbnailText`); the "Index" / "Working copy" source is the original's (`thumbnail.from`).
+"Preview by macOS" (`thumbnail.by`; no other thumbnailer exists now), with ", scaled to
+2,048×1,366" when the thumbnail is smaller than the original (`thumbnailText`); the "Index" /
+"Working copy" source is the original's (`thumbnail.from`).
 `dimsOf` prefers the header's dimensions for a thumbnail, so the delta and the alt text compare the
 originals. Comparison modes, the badge and zoom need no change: the modes size from the decoded
 thumbnail; 100% is one thumbnail pixel per CSS pixel (the label says when it is scaled).

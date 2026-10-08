@@ -21,7 +21,8 @@ minor versions may contain breaking changes.
   The choice is remembered.
 - Images stored in Git LFS preview when their object is already downloaded (in `.git/lfs`); nothing
   is ever fetched, and an object that isn't there says "not available locally". In a partial clone
-  (`--filter=blob:none`) a version the clone hasn't downloaded isn't fetched for the preview either.
+  (`--filter=blob:none`) a version the clone hasn't downloaded isn't fetched for the preview either:
+  its pane says "Not downloaded in this partial clone", and shows it once it has been fetched.
 - A conflicted image shows the base, ours and theirs versions side by side.
 - HEIC, TIFF and PSD images preview on macOS through the system's thumbnailer (QuickLook). The pane
   says "Preview by macOS" and, for a large image, the size it was scaled to; dimensions and file size

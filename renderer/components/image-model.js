@@ -19,7 +19,7 @@
   const SPECIAL_MODES = new Set(['120000', '160000']); // symlink, submodule (as diff-model.js)
   const KB = 1024;
   /** Kinds whose pane shows something about the picture (else the side has nothing to show). */
-  const VISUAL = new Set(['image', 'too-large', 'lfs-pointer', 'unsupported']);
+  const VISUAL = new Set(['image', 'too-large', 'lfs-pointer', 'unsupported', 'not-local']);
   const SOURCES = { index: 'Index', worktree: 'Working copy', head: 'HEAD' };
 
   /** The file views of a diff result (diff-model.js sectionsOf, which loads after the store). */
@@ -199,6 +199,8 @@
         return { kind: 'message', text: `Stored in Git LFS (${formatBytes(side.lfs && side.lfs.size)}) — not available locally` };
       case 'unsupported':
         return { kind: 'message', text: `${formatLabel(side.format) || 'This format'} — preview not supported` };
+      case 'not-local': // a partial clone's blob that was never downloaded (nothing is ever fetched)
+        return { kind: 'message', text: 'Not downloaded in this partial clone — no preview' };
       case 'special':
         return { kind: 'message', text: 'Not a regular file — no preview' };
       case 'absent':
@@ -355,12 +357,13 @@
   /**
    * The header badge of a binary diff with a preview: 'image' once a side turned out to be an image
    * format (any tier) or a Git LFS pointer, or — while nothing is known yet — when the file name has
-   * an image extension; else 'binary' (Q9: one badge, not both).
+   * an image extension; else 'binary' (Q9: one badge, not both). A side not in a partial clone's
+   * object store says nothing about its content, like one still loading.
    */
   function badge(spec, data, preview) {
     if (previewKind(spec, data) !== 'binary') return 'binary';
     const sides = preview && sameTarget(preview.spec, spec) ? [preview.old, preview.new].map((s) => s && s.side).filter(Boolean) : [];
-    const known = sides.filter((s) => !isAbsent(s) && s.kind !== 'special');
+    const known = sides.filter((s) => !isAbsent(s) && s.kind !== 'special' && s.kind !== 'not-local');
     if (known.some((s) => s.format || s.kind === 'lfs-pointer')) return 'image';
     if (known.length && sides.length === 2) return 'binary';
     return F() && (F().formatOfPath(spec.file) || F().formatOfPath(spec.orig)) ? 'image' : 'binary';

@@ -330,6 +330,34 @@ test('an OS thumbnail (I4): the original\'s format, dimensions, size and source,
   assert.equal(canCompare({ old: slot(old), new: slot(s) }), true);
 });
 
+test('a side a partial clone hasn\'t downloaded (not-local): its own pane message, no size, no delta, the badge by extension', () => {
+  const { paneState, isVisual, layout, meta, delta, deltaParts, altText, badge, canCompare } = I();
+  // As src/image-preview.js returns it: never read, so no key, size, format or dimensions.
+  const nl = (which, extra = {}) => side(which, 'not-local', { key: null, size: null, format: null, dims: null, animated: null, ...extra });
+  assert.deepEqual(paneState(slot(nl('old'))), { kind: 'message', text: 'Not downloaded in this partial clone — no preview' });
+  assert.deepEqual(paneState(slot(nl('base')), { conflict: true }), { kind: 'message', text: 'Not downloaded in this partial clone — no preview' });
+  assert.equal(isVisual(slot(nl('old'))), true, 'a pane, not the binary message');
+  const titles = (l) => l.panes.map((p) => `${p.which}:${p.title}`);
+  assert.deepEqual(titles(layout({ old: slot(nl('old')), new: slot(nl('new')) })), ['old:Before', 'new:After'], 'neither side downloaded');
+  assert.deepEqual(titles(layout({ old: slot(nl('old')), new: slot(side('new', 'not-image', { format: null })) })), ['old:Before', 'new:After']);
+  assert.deepEqual(titles(layout({ old: slot(side('old', 'absent', { key: null, size: null })), new: slot(nl('new')) })), ['new:Added']);
+  assert.deepEqual(layout({ spec: wd, conflict: true, base: slot(nl('base')), old: slot(nl('old')), new: slot(nl('new')) }).panes.map((x) => x.title),
+    ['Base', 'Ours', 'Theirs'], 'a conflict\'s stages');
+  assert.deepEqual(meta(nl('old', { source: 'index' }), { workdir: true, path: 'a.png' }), { parts: ['Index'], note: null }, 'no size: only the source');
+  assert.deepEqual(meta(nl('old'), { path: 'a.png' }), { parts: [], note: null });
+  assert.equal(altText('Before', 'a.png', nl('old')), 'Before: a.png');
+  const img = side('new', 'image', { size: 100 * KB });
+  assert.equal(delta(nl('old'), img), null, 'no size: no delta');
+  assert.equal(delta(img, nl('new')), null);
+  assert.deepEqual(deltaParts(delta(nl('old'), img)), []);
+  assert.equal(canCompare({ spec: wd, old: slot(nl('old')), new: slot(img) }), false);
+  const d = data([binary()]);
+  const pv = (old, neu, spec = cm) => ({ spec, old, new: neu });
+  assert.equal(badge(cm, d, pv(slot(nl('old')), slot(nl('new')))), 'image', 'nothing known: the .png extension');
+  assert.equal(badge({ ...cm, file: 'a.bin' }, d, pv(slot(nl('old')), slot(nl('new')), { ...cm, file: 'a.bin' })), 'binary');
+  assert.equal(badge(cm, d, pv(slot(nl('old')), slot(side('new', 'image')))), 'image');
+});
+
 test('the presenter loads under the harness next to the shared catalogue', () => {
   const win = H.loadRenderer();
   assert.equal(typeof win.PLImage.wantsPreview, 'function');

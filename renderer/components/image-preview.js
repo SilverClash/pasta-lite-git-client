@@ -300,7 +300,10 @@
     function paneEls(which) {
       let p = panes.get(which);
       if (!p) {
-        p = { node: el('section', 'ip-pane'), title: el('div', 'ip-pane-title'), stage: el('div', 'ip-stage'), meta: el('div', 'ip-meta') };
+        p = {
+          node: el('section', 'ip-pane'), title: el('div', 'ip-pane-title'), stage: el('div', 'ip-stage'), meta: el('div', 'ip-meta'),
+          state: null, stateKey: null, // the message shown and what it says (kind, text, Load preview)
+        };
         p.node.dataset.side = which;
         p.stage.addEventListener('scroll', mirrorScroll, { passive: true });
         p.node.append(p.title, p.stage, p.meta);
@@ -340,7 +343,15 @@
       } else {
         els.stage.tabIndex = -1;
         els.stage.removeAttribute('aria-label');
-        els.stage.replaceChildren(stateEl(st.kind === 'image' ? { kind: 'loading' } : st, which));
+        // Made again only when it says something else: a redraw (the other side landing) keeps a focused
+        // Load preview button, and "Loading image…" its 150 ms delay.
+        const msg = st.kind === 'image' ? { kind: 'loading' } : st;
+        const key = JSON.stringify([msg.kind, msg.text || '', !!msg.load]);
+        if (els.stateKey !== key) {
+          els.state = stateEl(msg, which);
+          els.stateKey = key;
+        }
+        if (els.stage.firstChild !== els.state) els.stage.replaceChildren(els.state);
       }
       els.meta.replaceChildren(...metaParts(slot, which, { conflict }));
       return els.node;

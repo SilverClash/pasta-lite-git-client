@@ -224,6 +224,22 @@ test('preview: a side landing redraws in place: the other pane keeps its stage (
   t.dispose();
 });
 
+test('preview: a redraw keeps each pane\'s message: a focused Load preview button stays focused, "Loading image…" keeps its delay', async (tc) => {
+  const t = await mount(tc);
+  const [, loadingNew] = t.qa('.ip-state');
+  t.api.take('commitImageSide', (c) => c.args[3] === 'old').resolve(other('old', 'too-large', { size: 34.2 * MB, soft: true, limit: 'size', max: 20 * MB }));
+  await H.flush();
+  assert.equal(t.qa('.ip-state')[1], loadingNew, 'the other side\'s "Loading image…" is the same element (its 150 ms delay doesn\'t restart)');
+  const load = t.q('button.ip-load');
+  load.focus();
+  await t.land(null, imageSide('new', 'k2'));
+  assert.equal(t.q('button.ip-load'), load, 'the same button');
+  assert.equal(t.dom.doc.activeElement, load, 'focus stays on it while the other side lands');
+  t.store.set({ imagePreview: { ...t.store.state.imagePreview } });
+  assert.equal(t.dom.doc.activeElement, load, 'and through any redraw');
+  t.dispose();
+});
+
 test('preview: both sides with the same bytes get an <img> each; an SVG without a size gets the default object size', async (tc) => {
   const t = await mount(tc, { file: 'icon.svg' });
   const svg = (side) => imageSide(side, 'same', { format: 'svg', mime: 'image/svg+xml', dims: null });

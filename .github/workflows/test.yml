@@ -65,3 +65,37 @@ jobs:
       # Lint once (the pinned ESLint from devDependencies; it doesn't depend on the OS).
       - if: matrix.node == 24
         run: npm run lint
+
+  # Windows: git runs the interactive-rebase editor (src/rebase-editor.js, plain sh commands)
+  # through Git for Windows' own sh, and the git discovery and path handling have win32 branches.
+  test-windows:
+    name: test (windows-latest, Node 22)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      # Check out with LF line endings as on macOS/Linux: Git for Windows' system config sets
+      # core.autocrlf=true. (The tests' own repos ignore the system config: test/helpers.js.)
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # The runner image's Git for Windows is new enough (git >= 2.51, src/gitcheck.js); fail
+      # early, through the app's own check of the git on PATH, if an image update ever changes that.
+      - name: git version
+        run: |
+          (Get-Command git).Source
+          (Get-Command sh).Source
+          git --version
+          node -e "require('./src/gitcheck').checkGit().then((r) => { console.log(r); process.exit(r.ok ? 0 : 1); })"
+
+      - run: npm ci
+
+      - run: npm test

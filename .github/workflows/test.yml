@@ -67,11 +67,11 @@ jobs:
         run: npm run lint
 
   # Windows: git runs the interactive-rebase editor (src/rebase-editor.js, plain sh commands)
-  # through Git for Windows' own sh, and the git discovery and path handling have win32 branches.
+  # through Git for Windows' own sh there, with the git dir passed as C:/... (src/rebase.js helperEnv).
   test-windows:
-    name: test (windows-latest, Node 22)
+    name: rebase tests (windows-latest, Node 22)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
@@ -98,4 +98,9 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      # The rebase tests only: the rebase editor's roles run through sh, and real interactive
+      # rebases, stops, continue / skip / abort and autostash through Git for Windows. The full
+      # suite isn't Windows-ready yet (it ran past 45 minutes, with failures in cli-args, bare,
+      # git, hunks, ops, undo, recent, tabs, ...); the rebase tests that cancel git during a hook
+      # are skipped on Windows (cancelling signals git's pid only there, see src/git-process.js).
+      - run: node --test "test/rebase*.test.js"

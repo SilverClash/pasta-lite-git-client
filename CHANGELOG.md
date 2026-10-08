@@ -20,12 +20,13 @@ minor versions may contain breaking changes.
 - An SVG's change opens as the rendered image, with a **Preview | Text** switch for its text diff.
   The choice is remembered.
 - Images stored in Git LFS preview when their object is already downloaded (in `.git/lfs`); nothing
-  is ever fetched, and an object that isn't there says "not available locally".
+  is ever fetched, and an object that isn't there says "not available locally". In a partial clone
+  (`--filter=blob:none`) a version the clone hasn't downloaded isn't fetched for the preview either.
 - A conflicted image shows the base, ours and theirs versions side by side.
-- HEIC, TIFF and PSD images preview on macOS and Windows through the system's thumbnailer (QuickLook
-  on macOS; on Windows it depends on the installed codecs). The pane says "Preview by macOS" and, for
-  a large image, the size it was scaled to; dimensions and file size are the original's. A multi-page
-  TIFF shows its first page. On Linux, or when the system can't read the file, they still say
+- HEIC, TIFF and PSD images preview on macOS through the system's thumbnailer (QuickLook). The pane
+  says "Preview by macOS" and, for a large image, the size it was scaled to; dimensions and file size
+  are the original's (turned, for a photo stored landscape and shown portrait). A multi-page TIFF
+  shows its first page. On Windows and Linux, or when the system can't read the file, they still say
   "preview not supported".
 
 ## [0.2.1] - 2026-10-04

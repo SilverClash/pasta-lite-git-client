@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const F = require('../src/image-format');
 const {
-  bytes, u16le, u32le, u32be, png, jpeg, gif, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, svg,
+  bytes, u16le, u32le, u32be, png, jpeg, gif, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, tiff, svg,
 } = require('./image-fixtures');
 
 const { sniff, dimensions, parseLfsPointer, FORMATS, POLICY } = F;
@@ -230,7 +230,12 @@ test('dimensions: from each format\'s header', () => {
   const grid = bytes(ftyp('avif'), fullBox('meta', box('iprp', box('ipco', ispe(512, 512), ispe(1024, 768), ispe(512, 256)))));
   assert.deepEqual(dimensions(grid, 'avif'), { width: 1024, height: 768 }, 'the largest extent (a grid\'s canvas)');
   assert.deepEqual(dimensions(psd(800, 600), 'psd'), { width: 800, height: 600 });
-  assert.equal(dimensions(FIXTURES.tiff, 'tiff'), null);
+  assert.equal(dimensions(FIXTURES.tiff, 'tiff'), null, 'an IFD without entries');
+  assert.deepEqual(dimensions(tiff(640, 480), 'tiff'), { width: 640, height: 480 }, 'II, SHORT values');
+  assert.deepEqual(dimensions(tiff(70000, 3, { be: true }), 'tiff'), { width: 70000, height: 3 }, 'MM, a LONG width');
+  assert.deepEqual(dimensions(tiff(9, 8, { big: true }), 'tiff'), { width: 9, height: 8 }, 'BigTIFF, LONG8 values');
+  assert.deepEqual(dimensions(tiff(9, 8, { big: true, be: true }), 'tiff'), { width: 9, height: 8 }, 'BigTIFF MM');
+  assert.equal(dimensions(tiff(9, 8, { at: 5000 }), 'tiff'), null, 'the IFD past the bytes (a head read)');
   assert.equal(dimensions(FIXTURES.jxl, 'jxl'), null);
   assert.equal(dimensions(FIXTURES.png, null), null);
   assert.equal(dimensions(FIXTURES.png, 'nope'), null);
@@ -256,7 +261,9 @@ test('dimensions SVG: width / height, viewBox, units, none', () => {
 // ---------------------------------------------------------------- hostile bytes
 
 test('hostile input: every truncation of every fixture - never a throw, never a wrong answer', () => {
-  const all = { ...FIXTURES, apng: png(3, 3, { apng: true }), vp8: webpVp8(9, 9), vp8l: webpVp8l(9, 9), gifs: gif(3, 3, 3), bmp12: bmp(3, 3, 12) };
+  const all = { ...FIXTURES, apng: png(3, 3, { apng: true }), vp8: webpVp8(9, 9), vp8l: webpVp8l(9, 9), gifs: gif(3, 3, 3), bmp12: bmp(3, 3, 12),
+    tiffs: tiff(640, 480), tiffmm: tiff(70000, 3, { be: true }), bigtiff: tiff(9, 8, { big: true, be: true }),
+  };
   for (const [name, b] of Object.entries(all)) {
     const id = sniff(b).format;
     const full = dimensions(b, id);
@@ -377,6 +384,7 @@ test('the demo repository\'s image files (test/fixtures/images, made by real enc
     'hero-v1.webp': ['webp', true, '96×64'], 'hero-v2.webp': ['webp', true, '96×64'],
     'sprite.gif': ['gif', true, '96×64'], 'photo.jpg': ['jpeg', false, '80×40'], // stored 80×40, EXIF orientation 6
     'badge.avif': ['avif', false, '64×64'], 'scan.heic': ['heic', false, '64×64'],
+    'scan.tiff': ['tiff', false, '96×64'], 'layers.psd': ['psd', false, '64×64'], // two pages; layers
     'icon-v1.svg': ['svg', null, '48×48'], 'icon-v2.svg': ['svg', null, '48×48'],
     'mislabeled.png': ['jpeg', false, '48×48'],
   };

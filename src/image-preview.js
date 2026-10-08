@@ -18,6 +18,10 @@
 // The caller returns {side, key, unchanged: true} instead when the renderer already holds `key`.
 // A side read from the local Git LFS cache (source 'lfs-cache', ops.js) is judged like any other,
 // keyed 'lfs:<sha256>', and the caller adds the pointer's `lfs: {oid, size}` to it.
+// With an OS thumbnailer (I4, src/os-thumbnail.js: macOS, Windows) a HEIC, TIFF or PSD side
+// (THUMBNAIL_FORMATS) is capped like a tier 1 image, and the caller turns its bytes into a PNG:
+// thumbnailSide makes that an 'image' (source 'os-thumbnail', keyed 'os:<the original's key>', plus
+// `thumbnail: {by, from, width, height}`). When the thumbnailer fails it stays 'unsupported'.
 //
 // A side is read in full only up to the soft cap (the hard cap with force). Over it a worktree
 // side reads its first POLICY.sniffBytes (format and dimensions for the 'too-large' message); a
@@ -25,6 +29,9 @@
 // image's, else 'not-image'. The pixel cap doesn't apply to SVG: its size attributes don't
 // decide what Chromium rasterizes (the SVG byte cap does).
 const F = require('./image-format');
+
+// The tier 2 formats an OS thumbnailer is asked to show (I4): .svgz and JPEG XL stay unsupported.
+const THUMBNAIL_FORMATS = new Set(['heic', 'tiff', 'psd']);
 
 /** Test-only hooks. policy: replaces POLICY (small caps). */
 const testHooks = { policy: null };
@@ -40,6 +47,23 @@ function revisionKey(rev) {
   if (rev.absent) return null;
   if (rev.source === 'worktree') return `wt:${rev.statKey}`;
   return rev.source === 'lfs-cache' ? `lfs:${rev.oid}` : rev.oid;
+}
+
+/** The RevisionKey of the OS thumbnail of the side whose key is `key`: 'os:<key>' (null for none). */
+const thumbnailKey = (key) => (key ? `os:${key}` : null);
+
+/**
+ * The ImageSide of a side `s` ('unsupported', its whole bytes read) shown through the OS thumbnailer
+ * (src/os-thumbnail.js): `thumb` {png, width, height} (the PNG's own size). Kind 'image', source
+ * 'os-thumbnail', the PNG's bytes and mime; `format`, `size`, `dims` and `mismatch` stay the
+ * original's, and `thumbnail` says what it is: {by ('macOS' | 'Windows'), from (the original's
+ * source), width, height}.
+ */
+function thumbnailSide(s, thumb, by) {
+  return {
+    ...s, kind: 'image', source: 'os-thumbnail', key: thumbnailKey(s.key), mime: 'image/png', animated: false,
+    thumbnail: { by, from: s.source, width: thumb.width, height: thumb.height }, bytes: thumb.png,
+  };
 }
 
 /** How many bytes of `rev` to read (0: none). See the header for the caps. */
@@ -59,8 +83,11 @@ function overSize(size, p, force) {
 /**
  * The ImageSide of `rev` given the bytes read for it (readLimit's count: all of it, its head, or
  * none = null). `path`: the file's path, for the extension hint only. `force`: the soft cap is lifted.
+ * `thumbnails`: an OS thumbnailer can show THUMBNAIL_FORMATS, so the byte caps apply to them as to
+ * tier 1 ('too-large', Load preview), and under them they are 'unsupported' with all their bytes
+ * read, for the caller to hand over (thumbnailSide).
  */
-function imageSide(rev, bytes, { policy: p = F.POLICY, path, force = false } = {}) {
+function imageSide(rev, bytes, { policy: p = F.POLICY, path, force = false, thumbnails = false } = {}) {
   const base = {
     side: rev.side, kind: null, source: rev.source, key: revisionKey(rev), size: rev.absent ? null : rev.size,
     format: null, extensionHint: F.formatOfPath(path), mime: null, mismatch: false, dims: null, animated: null,
@@ -84,10 +111,12 @@ function imageSide(rev, bytes, { policy: p = F.POLICY, path, force = false } = {
   };
   if (!m.format) return { ...side, kind: 'not-image' };
   const f = F.FORMATS[m.format];
-  if (f.tier !== 1) return { ...side, kind: 'unsupported' };
+  const viaOs = thumbnails && THUMBNAIL_FORMATS.has(f.id);
+  if (f.tier !== 1 && !viaOs) return { ...side, kind: 'unsupported' };
   const over = overSize(rev.size, p, force);
   if (over) return { ...side, kind: 'too-large', limit: 'size', ...over };
   if (!whole) throw new TypeError('imageSide: part of a side under the caps');
+  if (viaOs) return { ...side, kind: 'unsupported' }; // no pixel cap: the OS scales it down
   if (f.id === 'svg' && rev.size > p.svgMaxBytes) return { ...side, kind: 'too-large', limit: 'svg', soft: false, max: p.svgMaxBytes };
   if (f.id !== 'svg' && side.dims && side.dims.width * side.dims.height > p.maxPixels) {
     return { ...side, kind: 'too-large', limit: 'pixels', soft: false, max: p.maxPixels };
@@ -95,4 +124,4 @@ function imageSide(rev, bytes, { policy: p = F.POLICY, path, force = false } = {
   return { ...side, kind: 'image', mime: f.mime, bytes };
 }
 
-module.exports = { imageSide, readLimit, revisionKey, policy, testHooks };
+module.exports = { imageSide, thumbnailSide, thumbnailKey, readLimit, revisionKey, policy, THUMBNAIL_FORMATS, testHooks };

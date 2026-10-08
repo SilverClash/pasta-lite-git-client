@@ -80,8 +80,32 @@ function ico(entries, type = 1) {
 }
 
 const psd = (w, h, version = 1) => bytes('8BPS', u16be(version), Buffer.alloc(6), u16be(3), u32be(h), u32be(w), u16be(8), u16be(3));
+/**
+ * A TIFF header and its first IFD: ImageWidth, ImageLength (SHORT, or LONG over 65535; BigTIFF:
+ * LONG8) and Compression. `be`: big-endian (MM); `big`: BigTIFF; `at`: the IFD offset written
+ * instead (no IFD follows: a head read).
+ */
+function tiff(w, h, { be = false, big = false, at = null } = {}) {
+  const n = (v, size) => {
+    const b = Buffer.alloc(size);
+    if (size === 8) b.writeBigUInt64LE(BigInt(v));
+    else if (size === 4) b.writeUInt32LE(v);
+    else b.writeUInt16LE(v);
+    return be ? b.reverse() : b;
+  };
+  const value = (v, size) => Buffer.concat([n(v, size), Buffer.alloc((big ? 8 : 4) - size)]); // left-justified
+  const entry = (tag, v) => {
+    const [type, size] = big ? [16, 8] : v > 0xffff ? [4, 4] : [3, 2];
+    return bytes(n(tag, 2), n(type, 2), n(1, big ? 8 : 4), value(v, size));
+  };
+  const entries = [entry(256, w), entry(257, h), entry(259, 1)];
+  const head = big ? bytes(be ? 'MM' : 'II', n(43, 2), n(8, 2), n(0, 2), n(at ?? 16, 8)) : bytes(be ? 'MM' : 'II', n(42, 2), n(at ?? 8, 4));
+  if (at !== null) return head;
+  return bytes(head, n(entries.length, big ? 8 : 2), ...entries, n(0, big ? 8 : 4));
+}
+
 const svg = (head, root = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20">') => Buffer.from(`${head}${root}<rect/></svg>\n`, 'utf8');
 
 module.exports = {
-  bytes, u16le, u16be, u24le, u32le, u32be, i32le, pngChunk, png, jpeg, gif, riff, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, svg,
+  bytes, u16le, u16be, u24le, u32le, u32be, i32le, pngChunk, png, jpeg, gif, riff, webpVp8, webpVp8l, webpVp8x, box, fullBox, ftyp, ispe, isobmff, bmp, ico, psd, tiff, svg,
 };

@@ -22,7 +22,7 @@
  *   extension suggests (or null); `mismatch` both are set and differ; `animated` true / false,
  *   or null when unknown (the bytes end before it is decided, or an SVG).
  * dimensions(bytes, format) -> {width, height} | null from the header only (ICO / CUR add
- *   `count`, the number of entries; null for TIFF and JPEG XL).
+ *   `count`, the number of entries; TIFF: the first page; null for JPEG XL).
  * parseLfsPointer(bytes) -> {oid, size} | null: a Git LFS pointer file (spec v1).
  * extensionOf(path), formatOfPath(path): the lower-cased extension of the base name / its format id.
  */
@@ -363,6 +363,39 @@
     return found.reduce((best, d) => (!best || d.width * d.height > best.width * best.height ? d : best), null);
   }
 
+  /**
+   * TIFF / BigTIFF: ImageWidth (256) and ImageLength (257) of the first IFD (the first page), a
+   * SHORT, LONG or (BigTIFF) LONG8 value. null when the IFD is past the bytes (a head read).
+   */
+  function tiffDims(b) {
+    if (!has(b, 0, 8)) return null;
+    const le = b[0] === 0x49;
+    const big = b[2] === 0x2b || b[3] === 0x2b;
+    const u16 = (i) => (le ? u16le(b, i) : u16be(b, i));
+    const u32 = (i) => (le ? u32le(b, i) : u32be(b, i));
+    const u64 = (i) => (le ? u32(i) + u32(i + 4) * 0x100000000 : u32(i) * 0x100000000 + u32(i + 4));
+    if (big && (!has(b, 4, 12) || u16(4) !== 8)) return null; // BigTIFF: offset size 8
+    const ifd = big ? u64(8) : u32(4);
+    const [countSize, entrySize, valueAt] = big ? [8, 20, 12] : [2, 12, 8];
+    if (!has(b, ifd, countSize)) return null;
+    const count = big ? u64(ifd) : u16(ifd);
+    let width = 0;
+    let height = 0;
+    for (let k = 0; k < Math.min(count, 1000) && !(width && height); k++) {
+      const e = ifd + countSize + k * entrySize;
+      if (!has(b, e, entrySize)) return null;
+      const tag = u16(e);
+      const type = u16(e + 2);
+      let v = 0;
+      if (type === 3) v = u16(e + valueAt);
+      else if (type === 4) v = u32(e + valueAt);
+      else if (type === 16 && big) v = u64(e + valueAt);
+      if (tag === 256) width = v;
+      else if (tag === 257) height = v;
+    }
+    return dims(width, height);
+  }
+
   /** A length in user units: a plain number or px; anything else (%, em, mm) -> null. */
   function svgLength(v) {
     const m = /^\s*(\d*\.?\d+(?:e[+-]?\d+)?)\s*(px)?\s*$/i.exec(v || '');
@@ -404,6 +437,7 @@
       case 'ico': return icoDims(b);
       case 'avif': case 'heic': return isobmffDims(b);
       case 'psd': return has(b, 22, 0) ? dims(u32be(b, 18), u32be(b, 14)) : null;
+      case 'tiff': return tiffDims(b);
       case 'svg': return svgDims(b);
       default: return null;
     }

@@ -198,7 +198,9 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
   resolve one side of a diff to a git blob, worktree file, conflict stage or object in the local
   Git LFS cache (never fetched) and read its bytes under size caps (`src/blob-revisions.js`), and
   `src/image-preview.js` turns them into an `ImageSide` (an image with its bytes, or why there is
-  none). `src/image-format.js` sniffs the format from the content and is shared with the
+  none). HEIC, TIFF and PSD sides go to the OS thumbnailer (`src/os-thumbnail.js`, an adapter around
+  Electron's `nativeImage.createThumbnailFromPath` that `main.js` passes to `ops.createRunner`; none
+  on Linux). `src/image-format.js` sniffs the format from the content and is shared with the
   renderer, like `src/error-kinds.js`. In the renderer the store loads the sides into
   `state.imagePreview` after a binary diff, an image's text diff or a conflicted image lands, the
   bytes go into a blob: URL cache (`renderer/image-cache.js`) and never into state, and

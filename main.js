@@ -16,7 +16,7 @@
 // injects it into every operation (main/ipc.js), so a compromised renderer can only run the
 // fixed ops in src/ops.js (which validate their arguments) against the repo the user opened in
 // that tab.
-const { app, ipcMain, session, crashReporter, dialog, clipboard, shell } = require('electron');
+const { app, ipcMain, session, crashReporter, dialog, clipboard, shell, nativeImage } = require('electron');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -37,6 +37,7 @@ const { createRepoTrust } = require('./src/repo-trust');
 const { createRepoOpening, shouldForgetRecent } = require('./src/repo-opening');
 const { createRecentView } = require('./src/recent-view');
 const { openTerminal } = require('./src/terminal');
+const { createOsThumbnailer } = require('./src/os-thumbnail');
 const { EVENTS } = require('./src/ipc-contract');
 const { createWindowHost, APP_NAME, DATA_DIR_NAME, ICON, STRIP_H, SECURE_WEB_PREFS } = require('./main/window');
 const { createTabsController } = require('./main/tabs-controller');
@@ -80,7 +81,15 @@ let trustedRepos = null; // repos opened despite config that runs commands (trus
 let tabsStore = null; // the open tabs (tabs.json), restored at launch
 let pendingOpen = args.repo; // repo to open once the window exists (CLI, early open-file)
 const gitInfo = () => ({ gitVersion, gitPath });
-const runner = ops.createRunner({ log: logger.child('ops') });
+// The image preview's HEIC, TIFF and PSD sides go through the OS thumbnailer (src/os-thumbnail.js;
+// macOS and Windows, none elsewhere): Electron's call, as a PNG (null for an empty answer).
+const thumbnailer = createOsThumbnailer({
+  thumbnail: async (file, size) => {
+    const img = await nativeImage.createThumbnailFromPath(file, size);
+    return img.isEmpty() ? null : img.toPNG();
+  },
+});
+const runner = ops.createRunner({ log: logger.child('ops'), thumbnailer });
 // Records the renderer sends over app:log (validated, size-capped, rate-limited per page).
 const rendererLog = createRendererLogSink({ logger: logger.child('renderer') });
 // The recent list the renderer and the menu were last given (src/recent-view.js); openRecent must pick from it.

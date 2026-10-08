@@ -12,9 +12,10 @@ const ops = require('../src/ops');
 const exec = require('../src/exec');
 const { findOnPath } = require('../src/which');
 const { CHANNELS } = require('../src/ipc-contract');
-const { imageSide, readLimit, revisionKey, testHooks } = require('../src/image-preview');
+const { imageSide, readLimit, revisionKey, thumbnailKey, thumbnailSide, testHooks } = require('../src/image-preview');
+const { createOsThumbnailer } = require('../src/os-thumbnail');
 const { POLICY } = require('../src/image-format');
-const { png, jpeg, webpVp8x, svg, isobmff } = require('./image-fixtures');
+const { png, jpeg, webpVp8x, svg, isobmff, tiff, psd } = require('./image-fixtures');
 
 const runner = ops.createRunner();
 const rev = (dir, r) => h.git(dir, 'rev-parse', r).trim();
@@ -126,6 +127,31 @@ test('readLimit and revisionKey', () => {
   assert.equal(revisionKey({ side: 'new', source: 'lfs-cache', oid: 'f'.repeat(64), size: 1 }), `lfs:${'f'.repeat(64)}`);
   assert.equal(readLimit({ side: 'new', source: 'lfs-cache', oid: 'f', size: 301 }, { policy: p }), 0, 'an LFS object over the cap is not read');
   assert.equal(revisionKey({ absent: true }), null);
+});
+
+test('imageSide with thumbnails: HEIC / TIFF / PSD capped like tier 1; thumbnailSide and thumbnailKey', () => {
+  const p = { ...POLICY, sniffBytes: 64, softMaxBytes: 300, maxBytes: 600, maxPixels: 400 };
+  const git = (bytes, extra = {}) => ({ side: 'old', source: 'index', oid: 'abc', mode: '100644', size: bytes.length, ...extra });
+  const heic = isobmff(['heic', 'mif1'], 4032, 3024); // over the pixel cap: not checked, the OS scales it
+  let s = imageSide(git(heic), heic, { policy: p, path: 'a.heic', thumbnails: true });
+  assert.deepEqual([s.kind, s.format, s.bytes], ['unsupported', 'heic', undefined]);
+  const big = Buffer.concat([tiff(9, 8), Buffer.alloc(400)]);
+  s = imageSide({ ...git(big), source: 'worktree', statKey: '1:2:3:4' }, big.subarray(0, 64), { policy: p, path: 'a.tif', thumbnails: true });
+  assert.deepEqual([s.kind, s.soft, s.format, s.dims], ['too-large', true, 'tiff', { width: 9, height: 8 }], 'a worktree head over the soft cap');
+  s = imageSide({ ...git(big), source: 'worktree', statKey: '1:2:3:4' }, big.subarray(0, 64), { policy: p, path: 'a.tif' });
+  assert.equal(s.kind, 'unsupported', 'without thumbnails: as before');
+  const svgz = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0]);
+  assert.equal(imageSide(git(svgz), svgz, { policy: p, path: 'a.svgz', thumbnails: true }).kind, 'unsupported', 'svgz is not for the OS');
+
+  assert.equal(thumbnailKey('abc'), 'os:abc');
+  assert.equal(thumbnailKey(null), null);
+  const orig = imageSide(git(heic), heic, { policy: p, path: 'a.heic', thumbnails: true });
+  const pngBytes = png(1024, 768);
+  s = thumbnailSide(orig, { png: pngBytes, width: 1024, height: 768 }, 'Windows');
+  assert.deepEqual(
+    [s.kind, s.source, s.key, s.mime, s.format, s.dims, s.size, s.bytes, s.thumbnail],
+    ['image', 'os-thumbnail', 'os:abc', 'image/png', 'heic', { width: 4032, height: 3024 }, heic.length, pngBytes, { by: 'Windows', from: 'index', width: 1024, height: 768 }],
+  );
 });
 
 // ---------------------------------------------------------------- commit diffs
@@ -539,6 +565,143 @@ test('Git LFS: a linked worktree and a bare repository read the common dir\'s ca
   cacheLfs(bare, img);
   const head = rev(wt, 'HEAD');
   assert.deepEqual([(await commitSide(bare, head, 'hero.png', null, 'new')).source, (await commitSide(wt, head, 'hero.png', null, 'new')).source], ['lfs-cache', 'lfs-cache']);
+});
+
+// ---------------------------------------------------------------- the OS thumbnailer (I4)
+
+/**
+ * A runner whose image reads use the OS thumbnailer over a fake OS call (src/os-thumbnail.js on
+ * darwin): `answer(file, size)` (default: a PNG of the size asked for). seen: the bytes of each file
+ * the OS was given; left(): what is still in its temp folder.
+ */
+function thumbRunner({ answer } = {}) {
+  const tmpDir = h.tmpDir();
+  const seen = [];
+  const thumbnailer = createOsThumbnailer({
+    platform: 'darwin',
+    tmpDir,
+    thumbnail: async (file, size) => {
+      seen.push(fs.readFileSync(file));
+      return answer ? answer(file, size) : png(size.width, size.height);
+    },
+  });
+  const r = ops.createRunner({ thumbnailer });
+  return {
+    r, seen, thumbnailer, left: () => fs.readdirSync(tmpDir),
+    commit: (dir, sha, file, side, o) => r.run(dir, 'commitImageSide', [sha, file, null, side, o]),
+    workdir: (dir, file, wo, side, o) => r.run(dir, 'workdirImageSide', [file, wo, side, o]),
+  };
+}
+
+test('OS thumbnailer: HEIC, TIFF and PSD sides are its PNG (source os-thumbnail, key os:<key>), labelled with the original', async () => {
+  const heic = isobmff(['heic', 'mif1'], 40, 30);
+  const tif = tiff(96, 64);
+  const ps = psd(64, 64);
+  const dir = repoWith({ 'p.heic': heic, 's.tiff': tif, 'l.psd': ps, 'a.png': png(2, 2) });
+  const head = rev(dir, 'HEAD');
+  const tr = thumbRunner();
+  const s = await tr.commit(dir, head, 'p.heic', 'new');
+  assert.deepEqual(
+    [s.kind, s.source, s.key, s.mime, s.format, s.dims, s.size, s.animated, s.thumbnail],
+    ['image', 'os-thumbnail', `os:${rev(dir, `${head}:p.heic`)}`, 'image/png', 'heic', { width: 40, height: 30 }, heic.length, false,
+      { by: 'macOS', from: 'commit', width: 40, height: 30 }],
+  );
+  assert.ok(Buffer.from(s.bytes).equals(png(40, 30)));
+  assert.ok(tr.seen[0].equals(heic), 'the OS was given the blob\'s bytes');
+  assert.deepEqual((await tr.commit(dir, head, 's.tiff', 'new')).thumbnail, { by: 'macOS', from: 'commit', width: 96, height: 64 });
+  assert.equal((await tr.commit(dir, head, 'l.psd', 'new')).kind, 'image');
+  const p = await tr.commit(dir, head, 'a.png', 'new');
+  assert.deepEqual([p.source, p.thumbnail], ['commit', undefined], 'tier 1 is never handed over');
+  assert.equal(tr.seen.length, 3);
+
+  // The worktree and the index: a copy of the bytes read, never the file itself.
+  h.write(dir, 'p.heic', isobmff(['heic', 'mif1'], 20, 10));
+  const w = await tr.workdir(dir, 'p.heic', {}, 'new');
+  assert.deepEqual([w.kind, w.thumbnail.from, w.dims], ['image', 'worktree', { width: 20, height: 10 }]);
+  assert.match(w.key, /^os:wt:\d+:\d+:\d+:\d+$/);
+  assert.equal((await tr.workdir(dir, 'p.heic', {}, 'old')).thumbnail.from, 'index');
+  await tr.thumbnailer.idle();
+  assert.deepEqual(tr.left(), [], 'no temp file left');
+});
+
+test('OS thumbnailer: a failure leaves the side unsupported, keyed as the original; knownKey of either is not read again', { skip: !POSIX }, async (t) => {
+  const heic = isobmff(['heic', 'mif1'], 40, 30);
+  const dir = repoWith({ 'p.heic': heic, 'q.heic': Buffer.concat([heic, Buffer.from([1])]) });
+  const head = rev(dir, 'HEAD');
+  const oid = rev(dir, `${head}:p.heic`);
+  const failing = thumbRunner({ answer: () => png(1024, 1024) }); // QuickLook's file icon
+  const s = await failing.commit(dir, head, 'p.heic', 'new');
+  assert.deepEqual([s.kind, s.key, s.source, s.bytes, s.thumbnail], ['unsupported', oid, 'commit', undefined, undefined]);
+  const ok = thumbRunner();
+  const shown = await ok.commit(dir, head, 'q.heic', 'new');
+  assert.equal(shown.kind, 'image');
+  const spy = spyGit(t);
+  assert.deepEqual(await failing.commit(dir, head, 'p.heic', 'new', { knownKey: oid }), { side: 'new', key: oid, unchanged: true });
+  assert.deepEqual(await ok.commit(dir, head, 'q.heic', 'new', { knownKey: shown.key }), { side: 'new', key: shown.key, unchanged: true });
+  assert.equal(spy.ran(), false, 'no cat-file blob');
+  assert.equal(ok.seen.length, 1, 'the OS is not asked again');
+  // Without a thumbnailer an os: key is just another key.
+  assert.equal((await commitSide(dir, head, 'q.heic', null, 'new', { knownKey: shown.key })).kind, 'unsupported');
+});
+
+test('OS thumbnailer: the caps apply as to tier 1 (Load preview); without one a HEIC stays unsupported', { skip: !POSIX }, async (t) => {
+  smallCaps(t);
+  const big = Buffer.concat([isobmff(['heic', 'mif1'], 40, 30), Buffer.alloc(350)]); // over the soft cap of 300
+  const huge = Buffer.concat([tiff(9, 8), Buffer.alloc(700)]); // over the hard cap of 600
+  const dir = repoWith({ 'big.heic': big, 'huge.tif': huge });
+  const head = rev(dir, 'HEAD');
+  const tr = thumbRunner();
+  const spy = spyGit(t);
+  let s = await tr.commit(dir, head, 'big.heic', 'new');
+  assert.deepEqual([s.kind, s.soft, s.extensionHint], ['too-large', true, 'heic']);
+  assert.equal(spy.ran(), false, 'a git side over the soft cap is never read');
+  s = await tr.commit(dir, head, 'big.heic', 'new', { force: true });
+  assert.deepEqual([s.kind, s.source, s.size], ['image', 'os-thumbnail', big.length]);
+  s = await tr.commit(dir, head, 'huge.tif', 'new', { force: true });
+  assert.deepEqual([s.kind, s.soft], ['too-large', false]);
+
+  h.write(dir, 'big.heic', Buffer.concat([isobmff(['heic', 'mif1'], 20, 10), Buffer.alloc(350)]));
+  s = await tr.workdir(dir, 'big.heic', {}, 'new');
+  assert.deepEqual([s.kind, s.soft, s.format], ['too-large', true, 'heic'], 'its head read: the format');
+  assert.equal((await tr.workdir(dir, 'big.heic', {}, 'new', { force: true })).kind, 'image');
+  s = await workdirSide(dir, 'big.heic', {}, 'new');
+  assert.deepEqual([s.kind, s.format], ['unsupported', 'heic'], 'no thumbnailer: as before');
+  assert.equal(tr.seen.length, 2);
+});
+
+test('OS thumbnailer: a Git LFS object from the local cache too (key os:lfs:<sha256>)', async () => {
+  const heic = isobmff(['heic', 'mif1'], 40, 30);
+  const dir = repoWith({ 'p.heic': lfsPointer(heic) });
+  cacheLfs(path.join(dir, '.git'), heic);
+  const head = rev(dir, 'HEAD');
+  const tr = thumbRunner();
+  const s = await tr.commit(dir, head, 'p.heic', 'new');
+  assert.deepEqual([s.kind, s.key, s.lfs, s.thumbnail.from], ['image', `os:lfs:${sha256(heic)}`, { oid: sha256(heic), size: heic.length }, 'lfs-cache']);
+  assert.deepEqual(await tr.commit(dir, head, 'p.heic', 'new', { knownKey: s.key }), { side: 'new', key: s.key, unchanged: true });
+  assert.equal(tr.seen.length, 1);
+});
+
+test('OS thumbnailer: cancelled while the OS works: kind aborted; its temp copy goes when the OS call ends', async () => {
+  const dir = repoWith({ 'p.heic': isobmff(['heic', 'mif1'], 40, 30) });
+  const head = rev(dir, 'HEAD');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const tr = thumbRunner({ answer: () => gate.then(() => png(40, 30)) });
+  const p = tr.r.run(dir, 'commitImageSide', [head, 'p.heic', null, 'new', {}], { opId: 'thumb-1' });
+  while (!tr.seen.length) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(tr.r.cancel('thumb-1'), true);
+  await assert.rejects(p, { kind: 'aborted' });
+  release();
+  await tr.thumbnailer.idle();
+  assert.deepEqual(tr.left(), []);
+});
+
+test('OS thumbnailer: none on Linux (createOsThumbnailer is null): the runner reads as without one', async () => {
+  const thumbnailer = createOsThumbnailer({ platform: 'linux', thumbnail: async () => assert.fail('never called') });
+  assert.equal(thumbnailer, null);
+  const dir = repoWith({ 'p.heic': isobmff(['heic', 'mif1'], 40, 30) });
+  const s = await ops.createRunner({ thumbnailer }).run(dir, 'commitImageSide', [rev(dir, 'HEAD'), 'p.heic', null, 'new', {}]);
+  assert.deepEqual([s.kind, s.format], ['unsupported', 'heic']);
 });
 
 // ---------------------------------------------------------------- cancellation, bare repos, IPC

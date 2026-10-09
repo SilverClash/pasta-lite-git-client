@@ -130,7 +130,8 @@ describe('riskyLocalConfig', () => {
     assert.deepEqual(await g.riskyLocalConfig(dir), ['include.path', 'includeif.onbranch:feature.path']);
     // What it guards against: the included file arrives with a checkout, and applies on that branch.
     git(dir, 'checkout', '-q', '-b', 'feature');
-    write(dir, 'feature.cfg', `[filter "x"]\n\tclean = touch '${marker}'; cat\n`);
+    // '/' separators: in a config file a '\' starts an escape (Windows' C:\Users\...).
+    write(dir, 'feature.cfg', `[filter "x"]\n\tclean = touch '${marker.split(path.sep).join('/')}'; cat\n`);
     write(dir, '.gitattributes', '* filter=x\n');
     write(dir, 'README.md', 'changed\n');
     await g.stage(dir, ['README.md']);
@@ -451,15 +452,17 @@ describe('commit files and diffs', () => {
 describe('stage / unstage / discard', () => {
   test('stage and unstage specific paths (with glob chars and spaces)', async () => {
     const dir = initRepo();
+    // A name that is also a pathspec glob matching other.txt (Windows forbids '*' in names).
+    const glob = process.platform === 'win32' ? '[o]ther.txt' : '*.txt';
     write(dir, 'README.md', 'changed');
     write(dir, 'sp ace.txt', 's');
-    write(dir, '*.txt', 'literal star');
+    write(dir, glob, 'literal glob');
     write(dir, 'other.txt', 'o');
-    await g.stage(dir, ['README.md', 'sp ace.txt', '*.txt']);
+    await g.stage(dir, ['README.md', 'sp ace.txt', glob]);
     let st = await g.status(dir);
-    assert.deepEqual(st.staged.map((f) => f.path).sort(), ['*.txt', 'README.md', 'sp ace.txt']);
+    assert.deepEqual(st.staged.map((f) => f.path).sort(), [glob, 'README.md', 'sp ace.txt'].sort());
     assert.deepEqual(st.unstaged, [{ path: 'other.txt', status: '?' }]);
-    await g.unstage(dir, ['README.md', '*.txt']);
+    await g.unstage(dir, ['README.md', glob]);
     st = await g.status(dir);
     assert.deepEqual(st.staged, [{ path: 'sp ace.txt', status: 'A' }]);
     assert.ok(st.unstaged.some((f) => f.path === 'README.md' && f.status === 'M'));
@@ -606,10 +609,12 @@ describe('commit', () => {
     const hookPath = path.join(dir, '.git', 'hooks', 'pre-commit');
     fs.writeFileSync(hookPath, '#!/bin/sh\necho "  refused by hook  "\nexit 1\n', { mode: 0o755 });
     await assert.rejects(g.commit(dir, 'm'), { kind: 'hook-failed', message: 'refused by hook' });
-    // not executable: git ignores it, and so does the classification
-    fs.chmodSync(hookPath, 0o644);
-    assert.equal(await g.commit(dir, 'm'), head(dir));
-    assert.equal((await g.status(dir)).staged.length, 0);
+    // not executable: git ignores it, and so does the classification (Windows has no exec bit)
+    if (process.platform !== 'win32') {
+      fs.chmodSync(hookPath, 0o644);
+      assert.equal(await g.commit(dir, 'm'), head(dir));
+      assert.equal((await g.status(dir)).staged.length, 0);
+    }
   });
 
   test('first commit in empty repo', async () => {
@@ -1412,7 +1417,7 @@ describe('checkout / upstream edge cases', () => {
 describe('paths', () => {
   const ODD = ['new\nline.txt', 'tab\there.txt', 'quote"s.txt', "it's.txt", '-leading-dash.txt', '--', 'back\\slash.txt'];
 
-  test('status and commitFiles with newline, tab, quotes and leading-dash paths', async () => {
+  test('status and commitFiles with newline, tab, quotes and leading-dash paths', { skip: process.platform === 'win32' && 'Windows forbids newlines, tabs, \'"\' and \'\\\' in file names' }, async () => {
     const dir = initRepo();
     hostileConfig(dir);
     for (const f of ODD) write(dir, f, f);
@@ -1800,13 +1805,15 @@ describe('linked worktrees: list, remove, prune, lock / unlock, the dirty check'
 
   test('worktreesDirty: at most `concurrency` statuses at once; one past its timeout is null', { skip: process.platform === 'win32' }, async (t) => {
     const { dir } = withWorktrees('a', 'b', 'c', 'd', 'e', 'f');
-    // A git that logs each status's start and end and holds it for a while.
+    // A git that logs each status's start and end and holds it for as long as the hold file says.
     const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     const bin = path.join(tmpDir(), 'git');
     const log = path.join(tmpDir(), 'status.log');
+    const hold = path.join(tmpDir(), 'hold');
+    fs.writeFileSync(hold, '0.3');
     fs.writeFileSync(bin, `#!/bin/sh
 case " $* " in
-  *" status "*) echo start >> "${log}"; sleep 0.3; "${realGit}" "$@"; rc=$?; echo end >> "${log}"; exit $rc ;;
+  *" status "*) echo start >> "${log}"; sleep "$(cat "${hold}")"; "${realGit}" "$@"; rc=$?; echo end >> "${log}"; exit $rc ;;
 esac
 exec "${realGit}" "$@"
 `, { mode: 0o755 });
@@ -1829,7 +1836,13 @@ exec "${realGit}" "$@"
     await g.worktreesDirty(dir, { concurrency: 2 });
     assert.equal(peak(), 2);
     fs.rmSync(log);
-    const timed = await g.worktreesDirty(dir, { timeout: 100, max: 2 });
-    assert.deepEqual(timed.map((w) => w.dirty), [null, null, null, null, null, null], 'killed after 100 ms (held 300): unknown');
+    // The timeout covers the config and trust checks too, which run the real git: a budget of a
+    // few hundred ms failed now and then on a busy machine (one git start took up to 270 ms) and
+    // the list came back empty. A roomy budget against a status held far longer, and the log
+    // shows each null is a status that started and was killed, not a check that failed earlier.
+    fs.writeFileSync(hold, '30');
+    const timed = await g.worktreesDirty(dir, { timeout: 2000, max: 2 });
+    assert.deepEqual(timed.map((w) => w.dirty), [null, null, null, null, null, null], 'killed past the timeout: unknown');
+    assert.deepEqual(fs.readFileSync(log, 'utf8').split('\n').filter(Boolean), ['start', 'start'], 'the first two started, neither ended');
   });
 });

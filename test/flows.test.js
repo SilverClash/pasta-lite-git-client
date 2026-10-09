@@ -129,7 +129,7 @@ test('a rebase / merge in progress: double-clicks, ref pills and shortcuts are r
 // createBranch {checkout: true} with 'in-progress' in every status.state but 'clean' that
 // repo-dirs.repoState reports, so the renderer gates the same states, each with its op's name.
 test('every in-progress state the backend reports gates the B1 flows, each titled with its op', async () => {
-  const { STATE_FILES } = require('../src/repo-dirs.js');
+  const { STATE_FILES } = require('../src/repo-dirs.js')._internal;
   const states = [...new Set(STATE_FILES.map(([, st]) => st))];
   assert.deepEqual(states.sort(), ['am', 'bisecting', 'cherry-picking', 'merging', 'rebasing', 'reverting', 'sequencer']); // NOSONAR(S2871): ASCII names
   for (const state of states) {
@@ -218,6 +218,42 @@ test('fetch: aborted is a notice, auth explains credential helpers, others are t
   assert.match(s.dialogs[0].opts.message, /credential helper/);
   assert.match(s.dialogs[0].opts.message, /ssh-agent/);
   assert.equal(s.errors().length, 0);
+});
+
+test('auth message: a credential helper for the platform (osxkeychain on macOS, GCM on Windows, libsecret / GCM on Linux)', async () => {
+  const { win, dialogs, F, store } = await setup({}, { fetch: () => { throw err('auth', 'fatal: Authentication failed'); } });
+  const { authMessage } = win.PLFlowKit._internal;
+  assert.match(authMessage('darwin'), /credential\.helper osxkeychain/);
+  assert.doesNotMatch(authMessage('darwin'), /Credential Manager|libsecret/);
+  assert.match(authMessage('win32'), /Git Credential Manager, which Git for Windows installs/);
+  assert.doesNotMatch(authMessage('win32'), /osxkeychain|libsecret/);
+  for (const p of ['linux', 'freebsd']) {
+    assert.match(authMessage(p), /Git Credential Manager, or git config --global credential\.helper libsecret/, p);
+    assert.doesNotMatch(authMessage(p), /osxkeychain|Git for Windows/, p);
+  }
+  // The dialog uses the running platform's.
+  await F.fetch(store);
+  assert.equal(dialogs[0].opts.message, authMessage(win.Components.util.PLATFORM));
+});
+
+test("util.PLATFORM / IS_MAC: the preload's window.api.platform, never the user agent; without a preload, linux", () => {
+  const file = require.resolve('../renderer/components.js');
+  const load = (win) => {
+    globalThis.window = win;
+    delete require.cache[file];
+    require(file);
+    return win.Components.util;
+  };
+  try {
+    for (const p of ['darwin', 'win32', 'linux']) {
+      const u = load({ api: { platform: p } });
+      assert.deepEqual([u.PLATFORM, u.IS_MAC], [p, p === 'darwin'], p);
+    }
+    for (const win of [{}, { api: {} }, { api: { platform: 7 } }]) assert.equal(load(win).PLATFORM, 'linux', JSON.stringify(win));
+    assert.equal(load({}).detectPlatform, undefined, 'no user agent sniffing left');
+  } finally {
+    H.loadRenderer();
+  }
 });
 
 test('fetch: {remote} fetches only that remote; no argument (or junk) fetches all', async () => {

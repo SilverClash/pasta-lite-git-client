@@ -3,6 +3,7 @@
 // `ls-files -s / -u -z`, `worktree list --porcelain -z`, `--name-status -z`). Pure: they take the
 // text a command printed and never run git, so every module parses a format the same way.
 const { OID, isZero, branchOf } = require('./gitref');
+const { nativePath } = require('./fs-paths');
 
 /** Split `s` on `sep` into at most `n` parts (last part keeps the rest). */
 function splitN(s, sep, n) {
@@ -135,12 +136,14 @@ function parseStageEntries(raw) {
 
 /**
  * `git worktree list --porcelain -z`, main one first: [{path, head, branch, bare, detached,
- * locked, lockReason, prunable, prunableReason}]. `path` as git prints it; `head` the checked-out
+ * locked, lockReason, prunable, prunableReason}]. `path` as git prints it, in native spelling
+ * (fs-paths.nativePath: '\\' on Windows, where git prints 'C:/x'); `head` the checked-out
  * commit (null for the bare entry or an unborn branch); `branch` the short name (null when
  * detached or bare); locked / prunable: booleans, with git's reason as the text after the key
  * (lockReason / prunableReason; null when git gives none). Unknown keys are ignored.
+ * `platform` for tests.
  */
-function parseWorktrees(raw) {
+function parseWorktrees(raw, { platform = process.platform } = {}) {
   const list = [];
   let cur = null;
   for (const f of raw.split('\0')) {
@@ -153,7 +156,7 @@ function parseWorktrees(raw) {
     if (key === 'worktree') {
       if (cur) list.push(cur);
       cur = {
-        path: value, head: null, branch: null, bare: false, detached: false,
+        path: nativePath(value, { platform }), head: null, branch: null, bare: false, detached: false,
         locked: false, lockReason: null, prunable: false, prunableReason: null,
       };
     } else if (!cur) {

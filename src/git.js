@@ -9,11 +9,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  GitError, kindError, tagError, run, out, tryOut, nulList, argvChunks, LITERAL_ENV, forgetRoot,
+  GitError, kindError, tagError, run, out, tryOut, nulList, lsUntracked, cleanFiles, LITERAL_ENV, forgetRoot,
 } = require('./exec');
 const { resolveRoot, bareGitDir, isBare, headState, repoDirs } = require('./repo-dirs');
 const { gitAt } = require('./git-process');
-const { realPathOf } = require('./fs-paths');
+const { realPathOf, nativePath } = require('./fs-paths');
 const {
   OID, PREFIX, after, branchOf, shortName, fullBranch, parseTrack, REFSPEC_SAFE,
 } = require('./gitref');
@@ -40,19 +40,23 @@ const LITERAL = { env: LITERAL_ENV };
 
 // ---------------------------------------------------------------- read ops
 
-/** Worktree root containing `dir`. Throws (GitError) when `dir` is not inside a worktree. */
+/**
+ * Worktree root containing `dir`, in native spelling (fs-paths.nativePath: Git for Windows prints
+ * 'C:/x'). Throws (GitError) when `dir` is not inside a worktree.
+ */
 async function root(dir) {
-  return (await out(dir, ['rev-parse', '--show-toplevel'])).replace(/\n$/, '');
+  return nativePath((await out(dir, ['rev-parse', '--show-toplevel'])).replace(/\n$/, ''));
 }
 
 /**
  * The repository's worktrees (`git worktree list --porcelain -z`), main one first:
  * [{path, head, branch, bare, detached, locked, lockReason, prunable, prunableReason, main,
- * current, missing}]. `path` absolute as git prints it; `head` the checked-out commit (null for
- * the bare entry or an unborn branch); `branch` the short name (null when detached or bare);
- * locked / prunable: booleans, with git's reasons (null when none). `main`: the first entry (the
- * main worktree, or a bare repo's own entry). `current`: the worktree `cwd` is in (its root; for a
- * bare repo, cwd is its git dir, the bare entry's path), so the renderer never compares paths.
+ * current, missing}]. `path` absolute as git prints it, in native spelling (parseWorktrees);
+ * `head` the checked-out commit (null for the bare entry or an unborn branch); `branch` the short
+ * name (null when detached or bare); locked / prunable: booleans, with git's reasons (null when
+ * none). `main`: the first entry (the main worktree, or a bare repo's own entry). `current`: the
+ * worktree `cwd` is in (its root; for a bare repo, cwd is its git dir, the bare entry's path), so
+ * the renderer never compares paths.
  * `missing`: the entry's folder doesn't exist (never for the bare entry). git marks a missing
  * folder prunable, but not a locked one, so a locked worktree whose folder is gone is only
  * `missing`. Paths are compared through fs-paths.realPathOf, all at once and each bounded by its
@@ -415,8 +419,7 @@ async function diffWorkdir(cwd, file, { staged = false, untracked = false, orig 
 /** True when `file` is exactly a path `git ls-files --others --exclude-standard` lists. */
 async function isUntracked(cwd, file) {
   if (typeof file !== 'string' || !file) return false;
-  const raw = await out(cwd, ['ls-files', '-z', '--others', '--exclude-standard', '--', file], LITERAL);
-  return raw.split('\0').includes(file);
+  return (await lsUntracked(cwd, [file])).has(file);
 }
 
 /** {sha, message, summary} of commit `sha` (message as stored minus trailing newlines; summary = subject). */
@@ -458,11 +461,7 @@ async function unstageAll(cwd) {
 
 /** The subset of `paths` that `git ls-files --others --exclude-standard` lists exactly (files only). */
 async function untrackedFiles(cwd, paths) {
-  const listed = new Set();
-  for (const chunk of argvChunks(paths)) {
-    const raw = await out(cwd, ['ls-files', '-z', '--others', '--exclude-standard', '--', ...chunk], LITERAL);
-    for (const p of raw.split('\0')) if (p) listed.add(p);
-  }
+  const listed = await lsUntracked(cwd, paths);
   // 'sub/' = a nested repository: never handed to clean (it is not a file).
   return paths.filter((p) => listed.has(p) && !p.endsWith('/'));
 }
@@ -489,7 +488,7 @@ async function discard(cwd, files) {
   if (tracked.length) {
     await run(cwd, ['restore', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], { input: nulList(tracked), ...LITERAL });
   }
-  for (const chunk of argvChunks(untracked)) await run(cwd, ['clean', '-f', '-q', '--', ...chunk], LITERAL);
+  await cleanFiles(cwd, untracked);
 }
 
 /**
@@ -652,7 +651,7 @@ module.exports = {
   root, bareGitDir, isBare, riskyLocalConfig, riskyHooks, riskyNested: risk.riskyNested, refs, log,
   worktrees, worktreeList, worktreeAdminDir, removeWorktree, pruneWorktrees, lockWorktree, unlockWorktree, worktreesDirty, unreachableCount,
   commitFiles, diffCommitFile, diffWorkdir,
-  stage, stageAll, unstage, unstageAll, discard, argvChunks,
+  stage, stageAll, unstage, unstageAll, discard,
   commit, lastCommit, commitInfo, commitError,
   checkout, createBranch, deleteBranch, branchTips, removeBranch, isPlainName,
   // The modules git.js builds on, re-exported: this is the facade main.js, ops and tests use.

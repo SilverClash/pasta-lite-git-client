@@ -31,6 +31,9 @@ test('evaluate requires git >= 2.51 with a clear message', () => {
   assert.equal(old.ok, false);
   assert.equal(old.version, '2.39.3');
   assert.match(old.error, /needs git 2\.51\.0 or newer.*2\.39\.3/);
+  // With the platform's install hint, as findGit's texts.
+  assert.match(evaluate('git version 2.39.3', { platform: 'win32' }).error, /Please update git \(e\.g\. `winget install --id Git\.Git -e`/);
+  assert.match(evaluate('git version 2.39.3', { platform: 'darwin' }).error, /Please update git \(e\.g\. `brew install git`\)/);
   const junk = evaluate('nonsense');
   assert.equal(junk.ok, false);
   assert.match(junk.error, /Could not read the git version/);
@@ -54,13 +57,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { findGit, loginShellGit } = require('../src/gitcheck');
 
+// The fake gits (and the login shell) are #!/bin/sh scripts: Windows can't spawn those.
+const SH_SCRIPTS = process.platform === 'win32' && 'the fake git is a #!/bin/sh script, which Windows cannot spawn';
+
 function fakeGit(dir, name, version) {
   const p = path.join(dir, name);
   fs.writeFileSync(p, `#!/bin/sh\necho "git version ${version}"\n`, { mode: 0o755 });
   return p;
 }
 
-test('findGit picks the first candidate that is new enough, skipping old and missing ones', async () => {
+test('findGit picks the first candidate that is new enough, skipping old and missing ones', { skip: SH_SCRIPTS }, async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-gc-'));
   const old = fakeGit(d, 'old', '2.50.1 (Apple Git-155)');
   const good = fakeGit(d, 'good', '2.51.2');
@@ -72,7 +78,7 @@ test('findGit picks the first candidate that is new enough, skipping old and mis
   fs.rmSync(d, { recursive: true, force: true });
 });
 
-test('findGit reports the newest too-old git when none qualifies, and "not found" when none exists', async () => {
+test('findGit reports the newest too-old git when none qualifies, and "not found" when none exists', { skip: SH_SCRIPTS }, async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-gc-'));
   const a = fakeGit(d, 'a', '2.39.3');
   const b = fakeGit(d, 'b', '2.50.1');
@@ -93,9 +99,19 @@ test('findGit de-duplicates candidates that resolve to the same binary', async (
   const r = await findGit({ candidates: [old, path.join(d, 'link')] });
   assert.equal(r.tried.length, 1);
   fs.rmSync(d, { recursive: true, force: true });
+  // Windows: another case or separator of the same path is the same binary (run once).
+  const spelled = await findGit({ candidates: ['C:\\Git\\cmd\\git.exe', 'c:/git/CMD/Git.EXE'], platform: 'win32' });
+  assert.equal(spelled.tried.length, 1);
+  assert.equal((await findGit({ candidates: ['/a/git', '/A/git'], platform: 'linux' })).tried.length, 2);
+  if (process.platform === 'win32') {
+    const git = require('../src/gitcheck').pathGit();
+    const real = await findGit({ candidates: [git, git.toUpperCase(), git.toLowerCase()] });
+    assert.equal(real.ok, true, real.error);
+    assert.equal(real.tried.length, 1, JSON.stringify(real.tried));
+  }
 });
 
-test('loginShellGit takes the last absolute path line (rc banners ignored)', async () => {
+test('loginShellGit takes the last absolute path line (rc banners ignored)', { skip: SH_SCRIPTS }, async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-gc-'));
   const shell = path.join(d, 'sh');
   fs.writeFileSync(shell, '#!/bin/sh\necho "Welcome!"\necho /opt/x/bin/git\n', { mode: 0o755 });
@@ -112,7 +128,7 @@ test('checkGit never runs a relative or bare git (a planted git.exe in cwd must 
   assert.equal((await checkGit({ gitPath: null })).ok, false);
 });
 
-test('pathGit: the git on PATH as an absolute path, skipping empty / "." / relative entries', async (t) => {
+test('pathGit: the git on PATH as an absolute path, skipping empty / "." / relative entries', { skip: SH_SCRIPTS }, async (t) => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-gc-'));
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   fs.mkdirSync(path.join(d, 'bin'));
@@ -150,4 +166,68 @@ test('describeGitFailure lists every binary tried', () => {
   assert.match(text, /\/usr\/bin\/git: git 2\.50\.1$/m);
   assert.equal(describeGitFailure({ ok: false, error: 'none', tried: [] }), 'none');
   assert.equal(describeGitFailure(null), 'No usable git was found.');
+});
+
+// ---------------------------------------------------------------- per platform
+
+test('wellKnownGits: Homebrew off Windows; on Windows Git for Windows\' folders from env, unset or relative ones skipped', () => {
+  const { wellKnownGits } = require('../src/gitcheck');
+  assert.deepEqual(wellKnownGits({ platform: 'darwin', env: {} }), ['/opt/homebrew/bin/git', '/usr/local/bin/git']);
+  assert.deepEqual(wellKnownGits({
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' },
+  }), [
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
+    'C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe',
+  ]);
+  assert.deepEqual(wellKnownGits({ platform: 'win32', env: { ProgramFiles: 'D:/Apps', LOCALAPPDATA: '' } }), ['D:\\Apps\\Git\\cmd\\git.exe']);
+  for (const v of ['Program Files', '.\\x', '\\\\server\\share', '\\Program Files']) {
+    assert.deepEqual(wellKnownGits({ platform: 'win32', env: { ProgramFiles: v } }), [], v);
+  }
+});
+
+test('defaultGitCandidates: Windows tries the git on PATH first (the user\'s choice), macOS / Linux the login shell\'s and Homebrew\'s first', async () => {
+  const { defaultGitCandidates } = require('../src/gitcheck');
+  const onPath = ({ platform }) => (platform === 'win32' ? 'D:\\scoop\\shims\\git.exe' : '/usr/bin/git');
+  const loginShell = async () => '/Users/me/.nix-profile/bin/git';
+  const env = { ProgramFiles: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' };
+  assert.deepEqual(await defaultGitCandidates({ platform: 'win32', env, loginShell, onPath }), [
+    'D:\\scoop\\shims\\git.exe',
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe',
+  ]);
+  // No git on PATH: Git for Windows' folders alone (no login shell on Windows).
+  assert.deepEqual(await defaultGitCandidates({ platform: 'win32', env, loginShell, onPath: () => null }), [
+    'C:\\Program Files\\Git\\cmd\\git.exe',
+    'C:\\Users\\me\\AppData\\Local\\Programs\\Git\\cmd\\git.exe',
+  ]);
+  for (const platform of ['darwin', 'linux']) {
+    assert.deepEqual(await defaultGitCandidates({ platform, env: {}, loginShell, onPath }), [
+      '/Users/me/.nix-profile/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git',
+    ], platform);
+  }
+  assert.deepEqual(await defaultGitCandidates({ platform: 'linux', env: {}, loginShell: async () => null, onPath }), [
+    '/opt/homebrew/bin/git', '/usr/local/bin/git', '/usr/bin/git',
+  ]);
+});
+
+test('findGit: the install hint fits the platform (winget on Windows, brew on macOS, the package manager on Linux)', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-gc-'));
+  try {
+    const missing = [path.join(d, 'nope')];
+    const win = await findGit({ candidates: missing, platform: 'win32' });
+    assert.match(win.error, /not found\. Install git 2\.51 or newer \(e\.g\. `winget install --id Git\.Git -e`, or from https:\/\/git-scm\.com\/download\/win\)/);
+    assert.doesNotMatch(win.error, /brew/);
+    assert.match((await findGit({ candidates: missing, platform: 'darwin' })).error, /`brew install git`/);
+    const linux = (await findGit({ candidates: missing, platform: 'linux' })).error;
+    assert.match(linux, /package manager/);
+    assert.doesNotMatch(linux, /brew|winget/);
+    if (!SH_SCRIPTS) {
+      const old = await findGit({ candidates: [fakeGit(d, 'old', '2.40.0')], platform: 'win32' });
+      assert.match(old.error, /newest git found is 2\.40\.0 .*Please update git \(e\.g\. `winget install/);
+    }
+  } finally {
+    fs.rmSync(d, { recursive: true, force: true });
+  }
 });

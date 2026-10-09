@@ -4,7 +4,7 @@
 const path = require('node:path');
 const { spawn: nodeSpawn } = require('node:child_process');
 const { kindError } = require('./exec');
-const { findOnPath } = require('./shell');
+const { findOnPath, system32 } = require('./which');
 
 /** Terminal programs tried on Linux and other Unixes, in order. */
 const UNIX_TERMINALS = ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xfce4-terminal', 'xterm'];
@@ -26,11 +26,7 @@ const UNIX_TERMINALS = ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xfc
 function terminalCommands(platform, root, { env = process.env, isFile } = {}) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('terminalCommands: root must be an absolute path');
   if (platform === 'darwin') return [{ cmd: '/usr/bin/open', args: ['-a', 'Terminal', root], cwd: root, wait: true }];
-  if (platform === 'win32') {
-    // Only a drive-absolute SystemRoot (C:\Windows); anything else falls back to the default.
-    const sys = env && /^[a-z]:[\\/]/i.test(String(env.SystemRoot || '')) ? env.SystemRoot : 'C:\\Windows';
-    return [{ cmd: path.win32.join(sys, 'System32', 'cmd.exe'), args: [], cwd: root, wait: false }];
-  }
+  if (platform === 'win32') return [{ cmd: path.win32.join(system32(env), 'cmd.exe'), args: [], cwd: root, wait: false }];
   return UNIX_TERMINALS
     .map((name) => findOnPath(name, { env, platform, isFile }))
     .filter(Boolean)

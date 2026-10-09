@@ -5,7 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const h = require('./helpers');
-const { createWatcher, classify, noisyGit, MAX_CHECK, MAX_PATHS } = require('../src/watcher');
+const {
+  createWatcher, classify, noisyGit, withoutDevicePrefix, MAX_CHECK, MAX_PATHS, ROOT_CHECK_MS,
+} = require('../src/watcher');
 
 // ---------------------------------------------------------------- classify
 
@@ -88,8 +90,18 @@ function fakeFs({ burst = null } = {}) {
 
 const settle = () => new Promise((r) => setImmediate(r));
 
+// The root checks' stat: the real file system, answered in a microtask. fs.promises.stat answers
+// from the thread pool, which a fake-clock test's settle() may not wait for.
+const syncStat = async (p) => fs.statSync(p);
+/** A stat that fails with `code` (a mapped or network drive hiccuping), counting its calls. */
+function failingStat(code) {
+  const s = async () => { s.calls++; throw Object.assign(new Error(`${code}: stat`), { code }); };
+  s.calls = 0;
+  return s;
+}
+
 /**
- * Watcher over a real (empty) temp dir with fake fs.watch, clock and ignore check.
+ * Watcher over a real (empty) temp dir with fake fs.watch, clock, ignore check and stat.
  * `internal` is createWatcher's test-only second argument (gitDir '.git' by default).
  * The platform defaults to 'darwin' whatever the host: there the root is watched synchronously, so
  * tests can fire events before `ready`. On 'linux' the watch starts only after the gitdirs and the
@@ -107,7 +119,7 @@ function setup({ ignored = () => false, internal = {}, fs: fsOpts, ...o } = {}) 
     isIgnored: async (paths) => { checks.push(paths); return paths.filter(ignored); },
     log: (...a) => logged.push(a),
     ...o,
-  }, { gitDir: '.git', platform: 'darwin', ...internal });
+  }, { gitDir: '.git', platform: 'darwin', stat: syncStat, ...internal });
   const advance = async (ms) => { clock.tick(ms); await settle(); await settle(); };
   return { root, clock, events, checks, logged, w, advance, ...f };
 }
@@ -249,18 +261,61 @@ describe('batching', () => {
     s.w.close();
   });
 
-  test('a null filename, Windows separators and paths outside the root', async () => {
+  test('a null filename on a root watch that covers .git (a Windows buffer overflow) is a full refresh, on the working-folder timing', async () => {
     const s = setup();
     s.fire(null);
+    await s.advance(1999);
+    assert.deepEqual(s.events, [], 'not on the refs lane (250 ms)');
+    await s.advance(1);
+    assert.deepEqual(s.events, [{ kinds: ['full'] }], 'a ref, HEAD or stash change may be behind it');
+    s.fire('');
+    await s.advance(2000);
+    assert.deepEqual(s.events[1], { kinds: ['full'] });
+    assert.deepEqual(s.checks, []);
+    s.w.close();
+  });
+
+  test('overflows all through a build: one full refresh per maxWaitWork, not one a second', async () => {
+    const s = setup();
+    for (let t = 0; t < 20000; t += 500) {
+      s.fire(null);
+      await s.advance(500);
+    }
+    assert.deepEqual(s.events, [{ kinds: ['full'] }, { kinds: ['full'] }], 'at 10 s and 20 s');
+    // A named git change still flushes on the refs lane, taking the pending overflow with it.
+    s.fire(null);
+    await s.advance(100);
+    s.fire('.git/refs/heads/main');
+    await s.advance(250);
+    assert.deepEqual(s.events[2], { kinds: ['full'] });
+    await s.advance(10000);
+    assert.equal(s.events.length, 3);
+    s.w.close();
+  });
+
+  test('a null filename on a root whose gitdir lives elsewhere (own watch) is a blind status; on the gitdir, full', async () => {
+    const gitDir = h.tmpDir(); // a linked worktree's or a submodule's gitdir: outside the root
+    const s = setup({ internal: { gitDir } });
+    await s.w.ready;
+    assert.equal(s.watches.length, 2);
+    s.fire(null, 0);
     await s.advance(2000);
     assert.deepEqual(s.events, [{ kinds: ['status'] }], 'unknown path: no paths, no ignore check');
     assert.deepEqual(s.checks, []);
+    s.fire(null, 1);
+    await s.advance(2000);
+    assert.deepEqual(s.events[1], { kinds: ['full'] });
+    s.w.close();
+  });
+
+  test('Windows separators and paths outside the root', async () => {
+    const s = setup();
     s.fire(path.join('.git', 'refs', 'heads', 'x'));
     await s.advance(250);
-    assert.deepEqual(s.events[1], { kinds: ['full'] });
+    assert.deepEqual(s.events, [{ kinds: ['full'] }]);
     s.fire(path.join('..', 'elsewhere.txt'));
     await s.advance(5000);
-    assert.equal(s.events.length, 2);
+    assert.equal(s.events.length, 1);
     s.w.close();
   });
 
@@ -595,7 +650,7 @@ describe('robustness', () => {
     const w = createWatcher(h.tmpDir(), {
       onEvent: (e) => events.push(e),
       fsWatch: () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }); },
-    }, { gitDir: '.git' });
+    }, { gitDir: '.git', stat: syncStat });
     assert.deepEqual(events, []);
     await w.ready;
     await settle();
@@ -607,7 +662,7 @@ describe('robustness', () => {
   test('git rev-parse failing (not a repository) is reported as error and closes the watch', async () => {
     const f = fakeFs();
     const events = [];
-    const w = createWatcher(h.tmpDir(), { onEvent: (e) => events.push(e), fsWatch: f.fsWatch });
+    const w = createWatcher(h.tmpDir(), { onEvent: (e) => events.push(e), fsWatch: f.fsWatch }, { stat: syncStat });
     await w.ready;
     await settle();
     assert.equal(events.length, 1);
@@ -623,6 +678,149 @@ describe('robustness', () => {
     await s.advance(2000);
     assert.deepEqual(s.events, [{ kinds: ['gone'] }]);
     assert.ok(s.watches[0].closed);
+  });
+
+  test('an event naming the deleted root itself (Windows: its \\\\?\\ path, in a loop) is gone without a debounce', async () => {
+    for (const [platform, name] of [['win32', (r) => `\\\\?\\${r}`], ['darwin', (r) => r]]) {
+      const s = setup({ internal: { platform }, rootPollMs: 0 });
+      const real = fs.realpathSync(s.root);
+      s.fire('a.txt'); // the once-a-second check runs here, while the root still exists
+      await settle();
+      fs.rmSync(s.root, { recursive: true, force: true });
+      for (let i = 0; i < 1000; i++) s.fire(name(real));
+      await settle(); // the stat's answer; the clock has not moved
+      assert.deepEqual(s.events, [{ kinds: ['gone'] }], `${platform}: no debounce, no second event`);
+      assert.ok(s.watches[0].closed, 'the watch is closed: the loop stops');
+      assert.equal(s.clock.pending(), 0);
+    }
+  });
+
+  test('a deleted root stops an event storm within ROOT_CHECK_MS, whatever the names', async () => {
+    const s = setup();
+    s.fire('a.txt');
+    await settle(); // its check answers: the root is there
+    fs.rmSync(s.root, { recursive: true, force: true });
+    await s.advance(ROOT_CHECK_MS - 1);
+    s.fire(null);
+    assert.deepEqual(s.events, [], 'checked at most once per ROOT_CHECK_MS');
+    await s.advance(1);
+    for (let i = 0; i < 1000; i++) s.fire(null);
+    await settle(); // the stat's answer; the clock has not moved
+    assert.deepEqual(s.events, [{ kinds: ['gone'] }]);
+    assert.ok(s.watches[0].closed);
+    assert.equal(s.clock.pending(), 0);
+  });
+
+  test('a root stat failing otherwise than ENOENT / ENOTDIR (a network drive hiccup) is not gone', async () => {
+    for (const code of ['EPERM', 'EBUSY', 'EIO', 'EACCES', 'ETIMEDOUT']) {
+      const stat = failingStat(code);
+      const s = setup({ internal: { stat, platform: 'win32' }, rootPollMs: 1000 });
+      s.fire('a.txt');
+      await settle();
+      s.fire(fs.realpathSync(s.root)); // an event naming the root: checked whatever the time
+      await s.advance(2000);
+      assert.equal(stat.calls, 4, `${code}: both events', the poll's and the batch's checks ran`);
+      assert.deepEqual(s.events, [{ kinds: ['status'] }], `${code}: the batch is emitted, the tab keeps its repo`);
+      assert.ok(!s.watches[0].closed, code);
+      assert.equal(s.clock.pending(), 1, `${code}: still polled`);
+      s.w.close();
+    }
+  });
+
+  test('ENOENT and ENOTDIR from the root stat are gone: on an event, a batch, the poll and a watch error', async () => {
+    for (const code of ['ENOENT', 'ENOTDIR']) {
+      const onEvent = setup({ internal: { stat: failingStat(code) } });
+      onEvent.fire('a.txt');
+      await settle();
+      assert.deepEqual(onEvent.events, [{ kinds: ['gone'] }], `${code}: event`);
+      assert.equal(onEvent.clock.pending(), 0);
+
+      // The event's check said the root was there; it went before the batch.
+      let gone = false;
+      const stat = async (p) => { if (gone) throw Object.assign(new Error(code), { code }); return fs.statSync(p); };
+      const batch = setup({ internal: { stat } });
+      batch.fire('a.txt');
+      await settle();
+      gone = true;
+      await batch.advance(2000);
+      assert.deepEqual(batch.events, [{ kinds: ['gone'] }], `${code}: batch`);
+
+      const poll = setup({ internal: { stat: failingStat(code) }, rootPollMs: 1000 });
+      await poll.advance(1000);
+      assert.deepEqual(poll.events, [{ kinds: ['gone'] }], `${code}: poll`);
+
+      const watchErr = setup({ internal: { stat: failingStat(code) } });
+      watchErr.watches[0].emit('error', Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+      await settle();
+      assert.deepEqual(watchErr.events, [{ kinds: ['gone'] }], `${code}: a watch error with the root gone`);
+    }
+  });
+
+  test('a watch error while the root stat fails otherwise is reported as error, not gone', async () => {
+    const s = setup({ internal: { stat: failingStat('EBUSY') } });
+    const err = Object.assign(new Error('EPERM: watch'), { code: 'EPERM' });
+    s.watches[0].emit('error', err);
+    await settle();
+    assert.deepEqual(s.events, [{ kinds: ['error'], error: err }]);
+  });
+
+  test('a slow root stat never piles up: one event-driven check in flight, whatever the burst', async () => {
+    let calls = 0;
+    const answers = [];
+    const stat = () => { calls++; return new Promise((resolve) => answers.push(resolve)); };
+    const s = setup({ internal: { stat }, rootPollMs: 0 });
+    const real = fs.realpathSync(s.root);
+    for (let t = 0; t < 5000; t += 100) {
+      s.fire(`f${t}.txt`);
+      s.fire(real); // even one naming the root
+      await s.advance(100);
+    }
+    assert.equal(calls, 1, 'one check for 5 s of events');
+    await s.advance(2000);
+    assert.equal(calls, 2, 'the batch, due 2 s after the last event, checks on its own');
+    assert.deepEqual(s.events, [], 'the batch waits for its stat');
+    for (const answer of answers.splice(0)) answer({});
+    await settle();
+    assert.equal(s.events.length, 1, 'the batch is emitted once its stat answers');
+    s.fire('g.txt');
+    await settle();
+    assert.equal(calls, 3, 'answered: the next event checks again');
+    s.w.close();
+  });
+
+  test('rootPollMs: the root is checked with no event (a Windows rename sends none); Windows only by default', async () => {
+    const other = setup();
+    assert.equal(other.clock.pending(), 0, 'not polled elsewhere');
+    other.w.close();
+    const win = setup({ internal: { platform: 'win32' } });
+    assert.equal(win.clock.pending(), 1, 'polled on Windows');
+    win.w.close();
+    assert.equal(win.clock.pending(), 0, 'close() stops the poll');
+
+    const s = setup({ rootPollMs: 1000 });
+    // The poll's stat is real (async): wait for it to answer.
+    const stats = async () => {
+      for (let i = 0; i < 200 && !s.clock.pending() && !s.events.length; i++) await new Promise((r) => setTimeout(r, 5));
+    };
+    await s.advance(1000);
+    await stats();
+    assert.deepEqual(s.events, []);
+    assert.equal(s.clock.pending(), 1, 'the root is still there: polled again');
+    fs.renameSync(s.root, `${s.root}-moved`);
+    await s.advance(1000);
+    await stats();
+    assert.deepEqual(s.events, [{ kinds: ['gone'] }]);
+    assert.ok(s.watches[0].closed);
+    assert.equal(s.clock.pending(), 0);
+    fs.rmSync(`${s.root}-moved`, { recursive: true, force: true });
+  });
+
+  test('withoutDevicePrefix: Windows device paths in the spelling the app holds', () => {
+    assert.equal(withoutDevicePrefix('\\\\?\\C:\\x\\repo', 'win32'), 'C:\\x\\repo');
+    assert.equal(withoutDevicePrefix('\\\\?\\UNC\\srv\\share\\repo', 'win32'), '\\\\srv\\share\\repo');
+    assert.equal(withoutDevicePrefix('\\\\?\\unc\\srv\\share', 'win32'), '\\\\srv\\share');
+    assert.equal(withoutDevicePrefix('src\\a.js', 'win32'), 'src\\a.js');
+    assert.equal(withoutDevicePrefix('\\\\?\\C:\\x', 'darwin'), '\\\\?\\C:\\x', 'a plain file name on POSIX');
   });
 
   test('close() clears timers and watchers and is idempotent', async () => {
@@ -671,6 +869,9 @@ async function live(dir, o = {}) {
 }
 
 describe('real repository', () => {
+  // Windows: fs.watch (libuv) reads changes into a 4 KB buffer, and a burst that overflows it (a
+  // stash, a commit writing many objects) comes as one change with no file name. The root watch
+  // covers .git, so that counts as a full refresh: a ref, HEAD or stash change may be behind it.
   test('edit → status after the debounce; commit → full; tag → refs; stash → stashes', async () => {
     const dir = h.initRepo();
     const l = await live(dir);
@@ -696,7 +897,9 @@ describe('real repository', () => {
       l.reset();
       h.write(dir, 'README.md', 'dirty\n');
       h.git(dir, 'stash', '-q');
-      assert.ok(await l.until(() => l.kinds().has('stashes')), JSON.stringify(l.events));
+      // Windows: a stash's burst usually overflows (see above), and 'full' re-reads the stashes too.
+      const stashSeen = () => l.kinds().has('stashes') || (process.platform === 'win32' && l.kinds().has('full'));
+      assert.ok(await l.until(stashSeen), JSON.stringify(l.events));
     } finally {
       l.w.close();
     }
@@ -714,7 +917,11 @@ describe('real repository', () => {
       h.write(dir, '[x].log', 'x');
       for (let i = 0; i < 50; i++) h.write(dir, `node_modules/pkg/f${i}.js`, 'x');
       await wait(WORK * 4);
-      assert.deepEqual(l.events, []);
+      // Windows: the burst can overflow fs.watch's buffer (see above): a change with no name is a
+      // full refresh then (no paths), as the watch also covers .git. It must never name an ignored
+      // file.
+      const overflowed = (e) => process.platform === 'win32' && e.paths === undefined;
+      assert.deepEqual(l.events.filter((e) => !overflowed(e)), []);
       h.write(dir, 'visible.txt', 'x');
       assert.ok(await l.until(() => l.kinds().has('status')), 'a non-ignored file still counts');
     } finally {
@@ -797,12 +1004,34 @@ describe('real repository', () => {
     }
   });
 
+  // Windows deletes a watched folder too: the watch holds it open with FILE_SHARE_DELETE. Node then
+  // reports the deletion as 'rename' events named by the root's own '\\?\C:\...' path, over and
+  // over until the watch is closed: the watcher reads that name as the root's and closes.
   test('deleting the repository emits gone', async () => {
     const dir = h.initRepo();
     const l = await live(dir);
-    fs.rmSync(dir, { recursive: true, force: true });
-    assert.ok(await l.until(() => l.kinds().has('gone')), JSON.stringify(l.events));
-    l.w.close();
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+      assert.equal(fs.existsSync(dir), false);
+      assert.ok(await l.until(() => l.kinds().has('gone')), JSON.stringify(l.events));
+    } finally {
+      l.w.close(); // an open watch would keep the test process alive
+    }
+  });
+
+  // Windows sends no event when the watched root is renamed (the watch follows the folder), so
+  // only the poll sees it there; elsewhere an event usually comes first.
+  test('renaming the repository emits gone', async () => {
+    const dir = h.initRepo();
+    const l = await live(dir, { rootPollMs: 200 });
+    try {
+      fs.renameSync(dir, `${dir}-moved`);
+      assert.ok(await l.until(() => l.kinds().has('gone')), JSON.stringify(l.events));
+      assert.deepEqual(l.events, [{ kinds: ['gone'] }]);
+    } finally {
+      l.w.close();
+      fs.rmSync(`${dir}-moved`, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
   test('object writes (hash-object -w, a fetch) emit nothing', async () => {
     const dir = h.initRepo();

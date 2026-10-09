@@ -8,8 +8,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { kindError, tagError, tryOut, GitError } = require('./exec');
-const { forgetRoot, gitDirKey, bareGitDir, isBare, headState, repoDirs } = require('./repo-dirs');
+const { forgetRoot, bareGitDir, isBare, headState, repoDirs } = require('./repo-dirs');
 const { parseWorktrees } = require('./porcelain');
+const { nativePath, samePath } = require('./fs-paths');
 const gitErrors = require('./git-errors');
 const git = require('./git');
 
@@ -83,8 +84,12 @@ async function bareRoot(abs, dir) {
   }
   const outer = await tryOut(path.dirname(found.gitDir), ['rev-parse', '--show-toplevel', '--absolute-git-dir']);
   if (outer) {
-    const [top, outerGitDir] = outer.split('\n');
-    if (outerGitDir && gitDirKey(outerGitDir) !== found.gitDir) {
+    const [printed, outerGitDir] = outer.split('\n');
+    // The bare repo's own git dir (git found no worktree above it) is no outer repo. Two git runs
+    // from folders spelled differently may print it differently (on Windows: '/' and any case),
+    // so nativePath + samePath, never ===.
+    if (outerGitDir && !samePath(nativePath(outerGitDir), found.gitDir)) {
+      const top = nativePath(printed);
       forgetRoot(found.gitDir);
       throw kindError('embedded-bare', `Not opened: ${dir} is a bare repository inside the working tree of ${top}. A project can ship one to run its hooks; open ${top} instead.`);
     }
@@ -142,8 +147,9 @@ async function linkedWorktreeOf(root) {
     if (err instanceof GitError) return null;
     throw err;
   }
-  if (!dirs.gitDir || gitDirKey(dirs.gitDir) === gitDirKey(dirs.commonDir)) return null;
-  const { path: mainPath, bare: mainBare } = await mainWorktreeOf(root, gitDirKey(dirs.commonDir));
+  // repoDirs gives both in native spelling (nativePath); a main worktree's are the same folder.
+  if (!dirs.gitDir || samePath(dirs.gitDir, dirs.commonDir)) return null;
+  const { path: mainPath, bare: mainBare } = await mainWorktreeOf(root, dirs.commonDir);
   const mainName = projectName(mainPath, mainBare);
   return { mainPath, mainName, title: `${mainName} · ${path.basename(root)}` };
 }
@@ -180,4 +186,4 @@ async function summary(root) {
   return { root, name: repoName(root, bare), head, bare, linkedWorktree: bare ? null : linked };
 }
 
-module.exports = { openRepo, bareRoot, summary, repoName, projectName, linkedWorktreeOf };
+module.exports = { openRepo, summary, repoName, linkedWorktreeOf };

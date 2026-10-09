@@ -451,7 +451,7 @@ test('linkedWorktree: a worktree added from a linked worktree, and one opened th
   assert.deepEqual(info.linkedWorktree, want(wt));
 });
 
-test('linkedWorktree: a failed `worktree list` (an error, a timeout or a cancellation) never fails the open: git\'s guess, the common dir', async (t) => {
+test('linkedWorktree: a failed `worktree list` (an error, a timeout or a cancellation) never fails the open: git\'s guess, the common dir', { skip: process.platform === 'win32' && 'the fake git is a #!/bin/sh script, which Windows cannot spawn' }, async (t) => {
   const x = require('../src/exec');
   const { linkedWorktreeOf } = require('../src/repo-open');
   // The bare + worktrees layout is the one case that needs the list (no .git folder, no core.worktree).
@@ -1564,8 +1564,16 @@ test('removeWorktree: worktree-busy while another tab\'s write runs or waits in 
   hold.resolve();
   assert.deepEqual(await Promise.all([running, queued, peeking]), ['held', 'held', undefined]);
   const hold2 = deferred();
-  const r2 = ops.createRunner({ ops: { ...ops.OPS, hold: () => hold2.promise }, writeOps: new Set([...ops.WRITE_OPS, 'hold']) });
+  const started2 = deferred();
+  const r2 = ops.createRunner({
+    ops: { ...ops.OPS, hold: () => { started2.resolve(); return hold2.promise; } },
+    writeOps: new Set([...ops.WRITE_OPS, 'hold']),
+  });
   const inside = r2.run(path.join(link, 'sub'), 'hold', []);
+  // Started (past its vet) before the delete is asked: a write whose vet overlaps the delete's
+  // is refused as well ('This worktree is being deleted'; both refused, by design), which on a
+  // loaded machine (its gate and realpath slower than the delete's check) made this flaky.
+  await started2.promise;
   await assert.rejects(r2.run(dir, 'removeWorktree', [wts.a]), busy);
   hold2.resolve();
   await inside;

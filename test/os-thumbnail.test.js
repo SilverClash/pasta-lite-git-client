@@ -168,20 +168,47 @@ test('render: an answer turned a quarter is taken (portrait thumbnail of a lands
   await t.idle();
 });
 
-test('render: the timeout covers waiting for a slot and the OS call together', async () => {
+test('render: the timeout covers waiting for a slot and the OS call together', async (tc) => {
+  // The deadlines run on mocked timers, so b reaches the OS between a's deadline and its own however
+  // long the temp copy takes (real I/O) and however late the event loop runs.
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
   const gate = deferred();
+  const entered = [deferred(), deferred()]; // the OS call has been made, by call
   const timeoutMs = 200;
-  const { t, calls, left } = fake({ answer: () => gate.promise, concurrent: 1, timeoutMs });
+  const { t, calls, left } = fake({
+    answer: (file, size, all) => {
+      entered[all.length - 1].resolve();
+      return gate.promise;
+    },
+    concurrent: 1, timeoutMs,
+  });
   const dims = { width: 40, height: 30 };
+  const flush = () => new Promise((r) => setImmediate(r));
+  const settled = (p) => {
+    const s = { done: false };
+    p.then(() => { s.done = true; }, () => { s.done = true; });
+    return s;
+  };
   const a = t.render(HEIC, { format: 'heic', dims });
-  while (!calls.length) await new Promise((r) => setTimeout(r, 5));
-  const t0 = Date.now();
-  // b waits for a's slot; a hangs, so at a's deadline its slot is b's, whose own deadline comes soon after.
-  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null);
-  const took = Date.now() - t0;
-  assert.ok(took < timeoutMs * 1.6, `one deadline over the wait and the call (${took} ms)`);
+  const aState = settled(a);
+  await entered[0].promise;
+  tc.mock.timers.tick(50);
+  // b starts 50 ms after a and waits for a's slot; a hangs.
+  const b = t.render(HEIC, { format: 'heic', dims });
+  const bState = settled(b);
+  tc.mock.timers.tick(timeoutMs - 50 - 1);
+  await flush();
+  assert.deepEqual([calls.length, aState.done, bState.done], [1, false, false], 'b still waits for the slot');
+  tc.mock.timers.tick(1); // a's deadline: a is null, and its slot is b's
   assert.equal(await a, null);
-  assert.equal(calls.length, 2);
+  await entered[1].promise;
+  assert.equal(calls.length, 2, 'b reached the OS once a was abandoned');
+  // b's deadline counts from its start (at 250 ms), not from getting the slot (at 200 ms; else 400 ms).
+  tc.mock.timers.tick(50 - 1);
+  await flush();
+  assert.equal(bState.done, false, 'b runs until its own deadline');
+  tc.mock.timers.tick(1);
+  assert.equal(await b, null, 'one deadline over the wait and the call');
   gate.resolve(png(40, 30));
   await t.idle();
   assert.deepEqual(left(), []);

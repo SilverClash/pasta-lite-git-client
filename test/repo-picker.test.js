@@ -11,15 +11,16 @@ const H = require('./renderer-harness.js');
 const R = (f) => require.resolve(`../renderer/${f}`);
 const PICKER = R('components/repo-picker.js');
 
+// display: the shown path main sends with each entry (src/recent-view.js: the home folder as ~).
 const RECENT = [
-  { root: '/Users/ada/src/git-clients', name: 'git-clients' },
-  { root: '/Users/ada/src/noodle', name: 'noodle' },
-  { root: '/Users/ada/work/api-server', name: 'api-server' },
-  { root: '/home/bob/clients/web', name: 'web' },
-  { root: '/opt/repos/gitlab-mirror', name: 'gitlab-mirror' },
-  { root: '/Users/ada/src/notes', name: 'notes' },
-  { root: '/Users/ada/src/dotfiles', name: 'dotfiles' },
-  { root: '/Users/ada/src/game', name: 'game' },
+  { root: '/Users/ada/src/git-clients', name: 'git-clients', display: '~/src/git-clients' },
+  { root: '/Users/ada/src/noodle', name: 'noodle', display: '~/src/noodle' },
+  { root: '/Users/ada/work/api-server', name: 'api-server', display: '~/work/api-server' },
+  { root: '/home/bob/clients/web', name: 'web', display: '~/clients/web' },
+  { root: '/opt/repos/gitlab-mirror', name: 'gitlab-mirror', display: '/opt/repos/gitlab-mirror' },
+  { root: '/Users/ada/src/notes', name: 'notes', display: '~/src/notes' },
+  { root: '/Users/ada/src/dotfiles', name: 'dotfiles', display: '~/src/dotfiles' },
+  { root: '/Users/ada/src/game', name: 'game', display: '~/src/game' },
 ];
 
 /** A fresh PLRepoPicker alone (pure helpers only need Components.util). */
@@ -81,48 +82,46 @@ function start(t, opts = {}) {
 
 // ------------------------------------------------------------------ pure
 
-test('homeShort: the home folder as ~ (given, else /Users/<u>, /home/<u>, C:\\Users\\<u>)', () => {
+test("the shown path is main's display (home as ~); without one, the root; the picker has no path rule of its own", () => {
   const P = freshPicker();
-  assert.equal(P.homeShort('/Users/ada/src/x'), '~/src/x');
-  assert.equal(P.homeShort('/Users/ada'), '~');
-  assert.equal(P.homeShort('/home/bob/web'), '~/web');
-  assert.equal(P.homeShort('C:\\Users\\ada\\src'), '~\\src');
-  assert.equal(P.homeShort('/opt/repos/x'), '/opt/repos/x');
-  assert.equal(P.homeShort('/Users2/ada/x'), '/Users2/ada/x');
-  assert.equal(P.homeShort('/srv/me/x', '/srv/me/'), '~/x', 'the home main gives');
-  assert.equal(P.homeShort('/srv/meme/x', '/srv/me'), '/srv/meme/x', 'only at a folder boundary');
-  assert.equal(P.homeShort('/Users/ada/x', '/srv/me'), '/Users/ada/x', 'a given home replaces the guess');
+  assert.equal(P.homeShort, undefined, 'no renderer copy of fs-paths homeShort');
+  const [a, b] = P._internal.rank([{ root: '/Users/ada/x', name: 'x', display: '~/x' }, { root: 'C:\\Users\\ada\\y', name: 'y' }], '');
+  assert.deepEqual([a.path, a.title], ['~/x', '~/x']);
+  assert.deepEqual([b.path, b.title], ['C:\\Users\\ada\\y', 'C:\\Users\\ada\\y'], 'no display: the root as it is, never guessed');
+  P.source.set({ recent: RECENT });
+  assert.equal(P.shownPath('/Users/ada/src/noodle'), '~/src/noodle', "shownPath: the recent entry's display");
+  assert.equal(P.shownPath('/Users/ada/elsewhere'), '/Users/ada/elsewhere', 'not in the recent list: the root');
 });
 
 test('segments / subsequence: highlighted pieces of a label', () => {
   const P = freshPicker();
-  assert.deepEqual(P.segments('noodle', [[0, 2]]), [{ text: 'no', hit: true }, { text: 'odle', hit: false }]);
-  assert.deepEqual(P.segments('noodle', [[1, 2], [4, 6]]).map((s) => `${s.hit ? '[' : ''}${s.text}${s.hit ? ']' : ''}`).join(''), 'n[o]od[le]');
-  assert.deepEqual(P.segments('abc', []), [{ text: 'abc', hit: false }]);
-  assert.deepEqual(P.segments('', []), [{ text: '', hit: false }]);
-  assert.deepEqual(P.subsequence('git-clients', 'gcl'), [[0, 1], [4, 6]]);
-  assert.equal(P.subsequence('git', 'gx'), null);
+  assert.deepEqual(P._internal.segments('noodle', [[0, 2]]), [{ text: 'no', hit: true }, { text: 'odle', hit: false }]);
+  assert.deepEqual(P._internal.segments('noodle', [[1, 2], [4, 6]]).map((s) => `${s.hit ? '[' : ''}${s.text}${s.hit ? ']' : ''}`).join(''), 'n[o]od[le]');
+  assert.deepEqual(P._internal.segments('abc', []), [{ text: 'abc', hit: false }]);
+  assert.deepEqual(P._internal.segments('', []), [{ text: '', hit: false }]);
+  assert.deepEqual(P._internal.subsequence('git-clients', 'gcl'), [[0, 1], [4, 6]]);
+  assert.equal(P._internal.subsequence('git', 'gx'), null);
 });
 
 test('rank: recent order for no query; name prefix, name substring, shown path, full root, then fuzzy; case-insensitive', () => {
   const P = freshPicker();
-  const all = P.rank(RECENT, '   ');
+  const all = P._internal.rank(RECENT, '   ');
   assert.deepEqual(all.map((x) => x.name), RECENT.map((r) => r.name));
   assert.equal(all[0].path, '~/src/git-clients');
   assert.equal(all[0].title, '~/src/git-clients', 'the tooltip is the full path, home as ~');
-  const git = P.rank(RECENT, 'GIT');
+  const git = P._internal.rank(RECENT, 'GIT');
   assert.deepEqual(git.map((x) => x.name), ['git-clients', 'gitlab-mirror'], 'name prefixes, recent order');
   assert.deepEqual(git[0].hits, { name: [[0, 3]], path: [] });
   // "cli": a name substring (git-clients) before a path-only match (web, under ~/clients)
-  const cli = P.rank(RECENT, 'cli');
+  const cli = P._internal.rank(RECENT, 'cli');
   assert.deepEqual(cli.map((x) => x.name), ['git-clients', 'web']);
   assert.deepEqual(cli[1].hits, { name: [], path: [[2, 5]] }, 'highlighted in the shown path ~/clients/web');
-  assert.deepEqual(P.rank(RECENT, '/users/ada/work').map((x) => [x.name, x.hits.path.length]), [['api-server', 0]], 'the full root matches too (nothing to highlight)');
-  const fz = P.rank(RECENT, 'gtc');
+  assert.deepEqual(P._internal.rank(RECENT, '/users/ada/work').map((x) => [x.name, x.hits.path.length]), [['api-server', 0]], 'the full root matches too (nothing to highlight)');
+  const fz = P._internal.rank(RECENT, 'gtc');
   assert.deepEqual(fz.map((x) => x.name), ['git-clients'], 'letters in order');
   assert.deepEqual(fz[0].hits.name, [[0, 1], [2, 3], [4, 5]]);
-  assert.deepEqual(P.rank(RECENT, 'zzz'), []);
-  assert.deepEqual(P.rank(null, 'x'), []);
+  assert.deepEqual(P._internal.rank(RECENT, 'zzz'), []);
+  assert.deepEqual(P._internal.rank(null, 'x'), []);
 });
 
 test('rank: current and open-in-another-tab flags; otherTabs by this tab id, else the active tab', () => {
@@ -132,17 +131,17 @@ test('rank: current and open-in-another-tab flags; otherTabs by this tab id, els
     { id: 2, title: 'noodle', root: RECENT[1].root, active: false },
     { id: 3, title: 'New Tab', root: null, active: false },
   ];
-  const other = P.otherTabs({ tabs, tabId: null });
+  const other = P._internal.otherTabs({ tabs, tabId: null });
   assert.deepEqual([...other.keys()], [RECENT[1].root], 'no id: every tab but the active one');
-  assert.deepEqual([...P.otherTabs({ tabs, tabId: 2 }).keys()], [RECENT[0].root], 'this tab (2) is in the background');
-  assert.equal(P.otherTabs({}).size, 0);
-  const items = P.rank(RECENT, '', { current: RECENT[0].root, tabs: other });
+  assert.deepEqual([...P._internal.otherTabs({ tabs, tabId: 2 }).keys()], [RECENT[0].root], 'this tab (2) is in the background');
+  assert.equal(P._internal.otherTabs({}).size, 0);
+  const items = P._internal.rank(RECENT, '', { current: RECENT[0].root, tabs: other });
   assert.deepEqual(items.slice(0, 3).map((x) => [x.current, x.tab && x.tab.id]), [[true, null], [false, 2], [false, null]]);
 });
 
 test('rank: names and paths are display-safe (bidi controls escaped)', () => {
   const P = freshPicker();
-  const [it] = P.rank([{ root: '/x/evil\u202Egnp.js', name: 'evil\u202Egnp.js' }], '');
+  const [it] = P._internal.rank([{ root: '/x/evil\u202Egnp.js', name: 'evil\u202Egnp.js' }], '');
   assert.equal(it.name, 'evil\\u{202E}gnp.js');
   assert.equal(it.path, '/x/evil\\u{202E}gnp.js');
 });
@@ -330,7 +329,7 @@ test('popover: a modal dialog with the search focused, the current repo marked, 
   assert.equal(t.win.Components.util.modalOpen(), true, 'page shortcuts stand down while it is open');
   assert.equal(t.P.isOpen(), true);
   assert.equal(t.dom.doc.activeElement, p.list.input);
-  assert.equal(names(p.list).length, t.P.CAP);
+  assert.equal(names(p.list).length, t.P._internal.CAP);
   const cur = p.pop.querySelector('.rp-item.is-current');
   assert.equal(cur.querySelector('.rp-name').textContent, 'git-clients');
   assert.equal(cur.querySelector('.rp-badge-current').textContent, 'current');

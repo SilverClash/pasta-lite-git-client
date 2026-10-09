@@ -51,7 +51,7 @@ function removeWhenGone(dir) {
     }, 200);`;
   try {
     spawn(process.execPath, ['-e', script, String(process.pid), dir], {
-      detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     }).unref();
   } catch (err) {
     log.warn('could not start the userData cleaner', { err });

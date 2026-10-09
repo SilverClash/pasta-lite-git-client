@@ -27,7 +27,8 @@
     "lint": "eslint .",
     "dist:mac": "electron-builder --mac",
     "dist:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac -c.mac.identity=null -c.mac.forceCodeSigning=false -c.mac.notarize=false",
-    "verify:mac": "sh scripts/verify-mac-build.sh"
+    "verify:mac": "sh scripts/verify-mac-build.sh",
+    "dist:win": "electron-builder --win"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -115,6 +116,36 @@
       "title": "${productName} ${version}",
       "sign": true,
       "writeUpdateInfo": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "Pasta-Lite-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "buildUniversalInstaller": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pasta Lite",
+      "differentialPackage": false,
+      "artifactName": "Pasta-Lite-${version}-${arch}-setup.${ext}"
     }
   }
 }

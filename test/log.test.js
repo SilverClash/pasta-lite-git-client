@@ -224,7 +224,7 @@ test('a folder that cannot be created or written: stderr only, configure() says 
   logger.info('later');
   await logger.flush();
   const out = stderr.lines.join('');
-  assert.match(out, /cannot write logs to \/logs\/main\.log: EACCES/);
+  assert.ok(out.includes(`cannot write logs to ${path.join(DIR, 'main.log')}: EACCES`), out);
   assert.match(out, /"msg":"early"/);
   assert.match(out, /"msg":"later"/);
   assert.equal(mfs.files.size, 0);

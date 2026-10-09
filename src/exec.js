@@ -5,10 +5,11 @@
 // whatever subdirectory a caller passes. The process itself (env allowlist, timeouts,
 // cancellation, byte-safe output, killing on quit) is src/git-process.js. This module re-exports
 // that one and the repository-location helpers of repo-dirs.js, so a caller needs one require.
+// Also here: the two commands that take paths on argv in chunks (lsUntracked, cleanFiles).
 const proc = require('./git-process');
 const dirs = require('./repo-dirs');
 
-const { gitAt, GitError } = proc;
+const { gitAt, GitError, argvChunks, LITERAL_ENV } = proc;
 
 /**
  * Run git at the worktree root containing `cwd`.
@@ -42,12 +43,43 @@ async function tryOut(cwd, args, opts) {
   }
 }
 
+const UNTRACKED = ['ls-files', '-z', '--others', '--exclude-standard', '--'];
+const CLEAN = ['clean', '-f', '-q', '--'];
+
+/**
+ * The untracked, not ignored files under `paths` (root-relative files or directories, taken
+ * literally), as a Set of root-relative paths. ls-files has no --pathspec-from-file, so the paths
+ * go on argv in argvChunks (a Windows command line holds 32,767 characters); a file two chunks
+ * list (a directory and a path inside it) counts once. `env` is added to LITERAL_ENV (e.g. a temp
+ * GIT_INDEX_FILE); `platform` for tests.
+ * @param {{env?: object, platform?: string}} [o]
+ */
+async function lsUntracked(cwd, paths, { env, platform } = {}) {
+  const files = new Set();
+  for (const chunk of argvChunks(paths, { prefix: UNTRACKED, platform })) {
+    const raw = await out(cwd, [...UNTRACKED, ...chunk], { env: { ...LITERAL_ENV, ...env } });
+    for (const f of raw.split('\0')) if (f) files.add(f);
+  }
+  return files;
+}
+
+/**
+ * `git clean -f -q` of the files `paths` (root-relative, taken literally), in argvChunks: clean
+ * has no --pathspec-from-file either. Options as lsUntracked.
+ * @param {{env?: object, platform?: string}} [o]
+ */
+async function cleanFiles(cwd, paths, { env, platform } = {}) {
+  for (const chunk of argvChunks(paths, { prefix: CLEAN, platform })) {
+    await run(cwd, [...CLEAN, ...chunk], { env: { ...LITERAL_ENV, ...env } });
+  }
+}
+
 module.exports = {
-  run, out, tryOut,
+  run, out, tryOut, lsUntracked, cleanFiles,
   // src/git-process.js
   setGitBinary: proc.setGitBinary, withSignal: proc.withSignal, killChildren: proc.killChildren, MAX_OUTPUT_BYTES: proc.MAX_OUTPUT_BYTES,
-  GitError, kindError: proc.kindError, tagError: proc.tagError, abortedError: proc.abortedError, nulList: proc.nulList, argvChunks: proc.argvChunks, DIFF_OPTS: proc.DIFF_OPTS, LITERAL_ENV: proc.LITERAL_ENV,
+  GitError, kindError: proc.kindError, tagError: proc.tagError, abortedError: proc.abortedError, nulList: proc.nulList, DIFF_OPTS: proc.DIFF_OPTS, LITERAL_ENV,
   // src/repo-dirs.js
-  resolveRoot: dirs.resolveRoot, forgetRoot: dirs.forgetRoot, gitDirKey: dirs.gitDirKey, bareGitDir: dirs.bareGitDir, isBare: dirs.isBare,
+  resolveRoot: dirs.resolveRoot, forgetRoot: dirs.forgetRoot, bareGitDir: dirs.bareGitDir, isBare: dirs.isBare,
   headState: dirs.headState, repoState: dirs.repoState, stateAt: dirs.stateAt, gitDir: dirs.gitDir, repoDirs: dirs.repoDirs,
 };

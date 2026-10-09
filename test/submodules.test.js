@@ -7,6 +7,7 @@ const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { tmpDir, git, initRepo, write, commitFile, cleanup } = require('./helpers');
 const g = require('../src/git');
 
@@ -85,6 +86,11 @@ describe('the app\'s git never works inside a submodule', () => {
     commitFile(s.sub, 'new.txt', 'n\n', 'moved');
     git(s.dir, 'add', 'sub');
     git(s.dir, 'commit', '-q', '-m', 'move sub');
+    // Git for Windows hides the `.git` file it wrote for the submodule, and a hidden file can't be
+    // opened with CREATE_ALWAYS, so a recursive checkout can't rewrite it ("could not open
+    // 'sub/.git' for writing"). Only this setup recurses (the app's checkout never does: what the
+    // test checks), so it unhides the file first.
+    if (process.platform === 'win32') execFileSync('attrib', ['-h', path.join(s.sub, '.git')]);
     git(s.dir, 'checkout', '-q', 'main'); // recurses: the submodule is back at main's commit
     const hook = path.join(s.dir, '.git', 'modules', 'sub', 'hooks', 'reference-transaction');
     write(path.dirname(hook), 'reference-transaction', `#!/bin/sh\ntouch '${s.marker}'\n`);

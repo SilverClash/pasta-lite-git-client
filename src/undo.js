@@ -50,7 +50,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  run, out, tryOut, kindError, withSignal, LITERAL_ENV,
+  run, out, tryOut, kindError, withSignal, lsUntracked, LITERAL_ENV,
 } = require('./exec');
 const { headState, repoState, resolveRoot, isBare } = require('./repo-dirs');
 const { worktreeGuard, writeNoFollow } = require('./worktree-fs');
@@ -288,7 +288,8 @@ const stdinPath = (p) => (/(?:^")|[\n\r]/.test(p)
  * Every index entry under the paths, and every file git lists as untracked there, is replaced by
  * the bytes on disk (`hash-object --no-filters`: no clean filter, no CRLF conversion; a link is
  * stored as a link, the executable bit as 100755) or removed when it is gone. A submodule entry
- * is kept as it is.
+ * is kept as it is. On Windows, where the file system has no executable bit, a file keeps its
+ * index entry's mode, as `git add` does there.
  * @returns {Promise<{tree: string, found: number}>} found: how many index entries / files the
  *   paths matched (0: none of them exists in the index or on disk).
  */
@@ -315,16 +316,18 @@ async function snapshotTree(root, paths) {
       if (!hit.st.isDirectory()) cand.add(rel);
       else if (modes.get(rel) !== '160000') dirs.push(rel);
     }
-    if (dirs.length) { // recorded directories: their untracked files too
-      const raw = await out(root, ['ls-files', '-z', '--others', '--exclude-standard', '--', ...dirs], { env });
-      for (const f of raw.split('\0')) if (f) cand.add(f);
-    }
+    for (const f of await lsUntracked(root, dirs, { env })) cand.add(f); // recorded directories: their untracked files too
     if (!cand.size) return { tree: (await out(root, ['write-tree'], { env })).trim(), found: 0 };
 
     // Remove every candidate first (all stages; lets a file become a directory and back), then
     // add what is on disk.
     const zero = await zeroOid(root);
     const records = [...cand].map((f) => `0 ${zero}\t${f}`);
+    // The executable bit on disk is recorded, whatever core.fileMode says (the backup is of the
+    // files as they are, and undo puts back the +x a discard took away), but not on Windows:
+    // Node reports none there, so every file would read as 100644 (and Git for Windows sets
+    // core.fileMode=false in the repos it creates).
+    const trustExec = process.platform !== 'win32';
     const files = [];
     for (const f of cand) {
       const hit = lstatIn(guard, f);
@@ -334,7 +337,8 @@ async function snapshotTree(root, paths) {
         const sha = (await out(root, ['hash-object', '-w', '--no-filters', '--stdin'], { input: target })).trim();
         records.push(`120000 ${sha}\t${f}`);
       } else if (hit.st.isFile()) {
-        files.push([f, hit.st.mode & 0o111 ? '100755' : '100644']);
+        const exec = trustExec ? hit.st.mode & 0o111 : modes.get(f) === '100755';
+        files.push([f, exec ? '100755' : '100644']);
       } else if (modes.get(f) === '160000') {
         records.splice(records.indexOf(`0 ${zero}\t${f}`), 1); // submodule: keep its entry
       }
@@ -443,7 +447,9 @@ function removeFile(guard, rel) {
   const abs = guard.check(rel, { allowFinalLink: true });
   let st = null;
   try { st = fs.lstatSync(abs); } catch { /* already gone */ }
-  if (st && !st.isDirectory()) fs.rmSync(abs); // a final symlink is removed itself, not its target
+  // unlink, not rmSync: Node's rmSync on Windows returns without removing a symlink whose target
+  // doesn't exist. A final symlink is removed itself, not its target.
+  if (st && !st.isDirectory()) fs.unlinkSync(abs);
   for (let dir = path.dirname(abs); dir !== guard.root && isAtOrUnder(dir, guard.root); dir = path.dirname(dir)) {
     try { fs.rmdirSync(dir); } catch { break; } // not empty, or gone
   }
@@ -461,9 +467,9 @@ function putFile(guard, rel, mode, buf) {
   const st = fs.lstatSync(abs, { throwIfNoEntry: false });
   if (st && !st.isFile()) {
     if (st.isDirectory()) fs.rmdirSync(abs);
-    else fs.rmSync(abs); // a link itself, never its target
+    else fs.unlinkSync(abs); // a link itself, never its target (unlink: see removeFile)
   } else if (st && link) {
-    fs.rmSync(abs);
+    fs.unlinkSync(abs);
   }
   if (st && st.isFile() && !link) {
     writeNoFollow(abs, buf, { exec: mode === '100755' });

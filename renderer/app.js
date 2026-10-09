@@ -215,11 +215,8 @@
     state.recent = s.recent;
     state.gitVersion = s.gitVersion;
     state.gitPath = s.gitPath;
-    // Optional from main: this tab's id ({tabs: {count, id}}) and the home folder (for ~ in paths).
-    picker.source.set({
-      ...(s.tabs && s.tabs.id != null ? { tabId: s.tabs.id } : {}),
-      ...(typeof s.home === 'string' && s.home ? { home: s.home } : {}),
-    });
+    // Optional from main: this tab's id ({tabs: {count, id}}).
+    if (s.tabs && s.tabs.id != null) picker.source.set({ tabId: s.tabs.id });
     if (s.repo) showRepo(s.repo);
     else showWelcome();
   }, (e) => {

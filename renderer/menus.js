@@ -424,7 +424,7 @@
 
   /** The reveal item's label for `platform` ('darwin' | 'win32' | other); default: the running one. */
   function revealLabel(platform) {
-    const p = platform || (C.util.IS_MAC ? 'darwin' : (typeof navigator !== 'undefined' && /Win/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.userAgent || '') ? 'win32' : 'linux'));
+    const p = platform || C.util.PLATFORM;
     if (p === 'darwin') return 'Reveal in Finder';
     return p === 'win32' ? 'Show in Explorer' : 'Show in File Manager';
   }

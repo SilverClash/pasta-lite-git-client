@@ -127,10 +127,17 @@ describe('titles and the tabs-changed payload', () => {
     assert.equal(t.tabTitle(repo('/x/proj')), 'proj');
     assert.equal(t.tabTitle({ root: '/x/proj' }), 'proj');
     assert.equal(t.tabTitle(null), 'New Tab');
-    assert.equal(t.tabTooltip(repo('/Users/me/src/proj'), '/Users/me'), '~/src/proj');
-    assert.equal(t.tabTooltip(repo('/Users/me/src/proj'), '/Users/me/'), '~/src/proj');
-    assert.equal(t.tabTooltip(repo('/Users/meow/proj'), '/Users/me'), '/Users/meow/proj');
-    assert.equal(t.tabTooltip(null, '/Users/me'), 'New Tab');
+    assert.equal(t._internal.tabTooltip(repo('/Users/me/src/proj'), { home: '/Users/me', platform: 'darwin' }), '~/src/proj');
+    assert.equal(t._internal.tabTooltip(repo('/Users/me/src/proj'), { home: '/Users/me/', platform: 'darwin' }), '~/src/proj');
+    assert.equal(t._internal.tabTooltip(repo('/Users/meow/proj'), { home: '/Users/me', platform: 'darwin' }), '/Users/meow/proj');
+    assert.equal(t._internal.tabTooltip(null, { home: '/Users/me' }), 'New Tab');
+  });
+
+  test('tooltip on Windows: the home folder matches in any case, at a path boundary only', () => {
+    assert.equal(t._internal.tabTooltip(repo('c:\\users\\me\\src\\proj'), { home: 'C:\\Users\\Me', platform: 'win32' }), '~\\src\\proj');
+    assert.equal(t._internal.tabTooltip(repo('C:\\Users\\Me'), { home: 'c:\\users\\me', platform: 'win32' }), '~');
+    assert.equal(t._internal.tabTooltip(repo('C:\\Users\\Meow\\proj'), { home: 'C:\\Users\\Me', platform: 'win32' }), 'C:\\Users\\Meow\\proj');
+    assert.equal(t._internal.tabTooltip(repo('/Users/Me/proj'), { home: '/Users/me', platform: 'darwin' }), '/Users/Me/proj', 'case matters off Windows');
   });
 
   test('pageTabs: {id, title, root, active, linked}; stripTabs: plus tooltip and busy', () => {
@@ -150,12 +157,12 @@ describe('titles and the tabs-changed payload', () => {
     const lw = { mainPath: '/h/src/monorepo', mainName: 'monorepo', title: 'monorepo · monorepo-feat' };
     const linked = { ...repo('/h/src/monorepo-feat'), linkedWorktree: lw };
     assert.equal(t.tabTitle(linked), 'monorepo · monorepo-feat');
-    assert.equal(t.isLinked(linked), true);
-    assert.equal(t.tabTooltip(linked, '/h'), '~/src/monorepo-feat\nLinked worktree of ~/src/monorepo');
+    assert.equal(t._internal.isLinked(linked), true);
+    assert.equal(t._internal.tabTooltip(linked, { home: '/h', platform: 'darwin' }), '~/src/monorepo-feat\nLinked worktree of ~/src/monorepo');
     // The main worktree, a plain repo or bare repo (linkedWorktree null or absent) keep their title.
     const mainWt = { ...repo('/h/src/monorepo'), linkedWorktree: null };
-    assert.deepEqual([t.tabTitle(mainWt), t.isLinked(mainWt), t.tabTooltip(mainWt, '/h')], ['monorepo', false, '~/src/monorepo']);
-    assert.equal(t.isLinked(null), false);
+    assert.deepEqual([t.tabTitle(mainWt), t._internal.isLinked(mainWt), t._internal.tabTooltip(mainWt, { home: '/h', platform: 'darwin' })], ['monorepo', false, '~/src/monorepo']);
+    assert.equal(t._internal.isLinked(null), false);
     const r = t.createTabRegistry();
     r.add({ id: 1, repo: mainWt });
     r.add({ id: 2, repo: linked });

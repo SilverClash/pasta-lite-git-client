@@ -56,6 +56,11 @@ const smokeTabs = isSmoke ? {
 } : {};
 
 contextBridge.exposeInMainWorld('api', {
+  /**
+   * The platform, as Node names it ('darwin', 'win32', 'linux'): the page's ⌘ / Ctrl shortcuts and
+   * hints, its file manager's name, the credential helper it suggests (Components.util.PLATFORM).
+   */
+  platform: process.platform,
   /** True in smoke/test runs: the page may expose debug globals (window.PL). */
   smoke: isSmoke,
   /** Run a git operation on the current repo. The repo path is never passed: main injects it. */
@@ -66,8 +71,9 @@ contextBridge.exposeInMainWorld('api', {
   invokeCancellable: (opId, op, ...args) => call('op', { op: String(op), args, opId: String(opId) }),
   app: {
     /**
-     * {repo, recent, gitVersion, gitPath, home, tabs: {count, id}}: tabs.id is this page's own tab;
-     * home is the home folder (to show paths as ~/…, as the tab tooltips do).
+     * {repo, recent, gitVersion, gitPath, tabs: {count, id}}: tabs.id is this page's own tab;
+     * recent [{root, name, display}], display the root as shown (the home folder as ~/…, as the
+     * tab tooltips have it; main decides, src/recent-view.js).
      */
     getState: () => call('app:getState'),
     /** Pick a folder and open it here, or in a new tab with {newTab: true}. */

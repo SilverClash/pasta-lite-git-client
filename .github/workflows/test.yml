@@ -34,7 +34,8 @@ jobs:
       # so skip the Electron binary download in npm ci.
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      - uses: actions/checkout@v7
+      # Actions are pinned to a commit (a tag can be moved); the comment names its release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The app and its tests need git >= 2.51 (src/gitcheck.js); the runner images ship older ones.
       - name: Install git (Ubuntu)
@@ -52,7 +53,7 @@ jobs:
           command -v git
           git --version
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -66,23 +67,25 @@ jobs:
       - if: matrix.node == 24
         run: npm run lint
 
-  # Windows: git runs the interactive-rebase editor (src/rebase-editor.js, plain sh commands)
-  # through Git for Windows' own sh there, with the git dir passed as C:/... (src/rebase.js helperEnv).
+  # Windows: the whole suite against Git for Windows. git runs the interactive-rebase editor
+  # (src/rebase-editor.js, plain sh commands) and the tests' hooks and filters through its own sh,
+  # with the git dir passed as C:/... (src/rebase.js helperEnv).
   test-windows:
-    name: rebase tests (windows-latest, Node 22)
+    name: test (windows-latest, Node 22)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # The full suite took about 12 minutes of tests on a Windows runner, against a few on
+    # macOS/Linux: 45 leaves room for slower runners. A hung test fails on its own (--test-timeout
+    # below) instead of using up the job's budget.
+    timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      # Check out with LF line endings as on macOS/Linux: Git for Windows' system config sets
-      # core.autocrlf=true. (The tests' own repos ignore the system config: test/helpers.js.)
-      - name: Keep LF line endings
-        run: git config --global core.autocrlf false
+      # The checkout has LF line endings as on macOS/Linux although Git for Windows' system config
+      # sets core.autocrlf=true: .gitattributes (eol=lf) overrides it. The tests' own repos ignore
+      # the system and global config (test/helpers.js).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -98,9 +101,17 @@ jobs:
 
       - run: npm ci
 
-      # The rebase tests only: the rebase editor's roles run through sh, and real interactive
-      # rebases, stops, continue / skip / abort and autostash through Git for Windows. The full
-      # suite isn't Windows-ready yet (it ran past 45 minutes, with failures in cli-args, bare,
-      # git, hunks, ops, undo, recent, tabs, ...); the rebase tests that cancel git during a hook
-      # are skipped on Windows (cancelling signals git's pid only there, see src/git-process.js).
-      - run: node --test "test/rebase*.test.js"
+      # The full suite (npm test's glob, quoted: node expands it, not PowerShell). What can't run
+      # on Windows is skipped there with a reason: #!/bin/sh fakes of git, POSIX signals, the
+      # executable bit, names Windows forbids. The tests that cancel git during a hook run here
+      # too: cancelling is taskkill /T /F plus a kill of the hook's MSYS processes there
+      # (src/git-process.js signalGroup). --test-timeout fails a hung test instead of the job;
+      # --test-force-exit ends a file whose test left a handle open, so a leaked handle can't hang
+      # the job (the step below looks for the watcher's).
+      - run: node --test --test-timeout=120000 --test-force-exit "test/*.test.js"
+
+      # The watcher's tests again, without --test-force-exit: a watch one of them leaves open keeps
+      # the process alive, and the step's timeout fails it instead of the full run hiding it.
+      - name: Watcher tests leave no watch open
+        timeout-minutes: 5
+        run: node --test --test-timeout=120000 test/watcher.test.js

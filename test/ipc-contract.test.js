@@ -56,6 +56,15 @@ describe('the preloads agree with the table', () => {
     }
   });
 
+  test("the pages' platform is the preloads' process.platform, never sniffed from the user agent", () => {
+    assert.match(src('preload.js'), /^ {2}platform: process\.platform,$/m, "window.api.platform (Components.util.PLATFORM)");
+    assert.match(src('preload-tabs.js'), /^ {2}isMac: process\.platform === 'darwin',$/m, 'window.tabsApi.isMac (the strip)');
+    assert.match(src('renderer/components.js'), /window\.api\.platform/);
+    const dir = path.join(ROOT, 'renderer');
+    const scripts = fs.readdirSync(dir, { recursive: true }).filter((f) => f.endsWith('.js'));
+    for (const f of scripts) assert.doesNotMatch(fs.readFileSync(path.join(dir, f), 'utf8'), /userAgent|navigator\.platform/, f);
+  });
+
   test('the helpers both preloads duplicate (sandboxed: no shared module) stay identical, and match main', () => {
     const block = (text, start, end) => {
       const a = text.indexOf(start);
@@ -277,16 +286,21 @@ describe('registerChannels (main/ipc.js)', () => {
 
 // ---------------------------------------------------------------- routing
 
+// The page URLs below spell POSIX paths; on Windows they are on the current drive (a file URL
+// without one is no absolute path there), as path.resolve puts '/app/...'.
+const DRIVE = process.platform === 'win32' ? `${path.resolve('/').slice(0, 2)}/` : '';
+const FILE = `file:///${DRIVE}`;
+
 describe('IPC routing (routeSender)', () => {
-  const INDEX = '/app/renderer/index.html';
-  const TABS = '/app/renderer/tabs.html';
+  const INDEX = path.resolve('/app/renderer/index.html');
+  const TABS = path.resolve('/app/renderer/tabs.html');
   const o = (extra = {}) => ({
     stripId: 1,
     isView: (id) => id === 5 || id === 6,
     isPage: (url, which) => c.isIndexUrl(url, which === 'tabs' ? TABS : INDEX),
     ...extra,
   });
-  const view = (id, url = 'file:///app/renderer/index.html', mainFrame = true) => ({ senderId: id, mainFrame, url });
+  const view = (id, url = `${FILE}app/renderer/index.html`, mainFrame = true) => ({ senderId: id, mainFrame, url });
 
   test('a tab view reaches its own session for the page channels', () => {
     for (const ch of c.VIEW_CHANNELS) assert.deepEqual(c.routeSender(view(5), ch, o()), { kind: 'view', id: 5 });
@@ -296,11 +310,11 @@ describe('IPC routing (routeSender)', () => {
   test('app:openWorktree is a page channel, never the strip\'s', () => {
     assert.ok(c.VIEW_CHANNELS.has('app:openWorktree'));
     assert.deepEqual(c.routeSender(view(5), 'app:openWorktree', o()), { kind: 'view', id: 5 });
-    assert.equal(c.routeSender(view(1, 'file:///app/renderer/tabs.html'), 'app:openWorktree', o()), null);
+    assert.equal(c.routeSender(view(1, `${FILE}app/renderer/tabs.html`), 'app:openWorktree', o()), null);
   });
 
   test('the strip reaches only the tab channels, and a view not the strip-only ones', () => {
-    const strip = view(1, 'file:///app/renderer/tabs.html');
+    const strip = view(1, `${FILE}app/renderer/tabs.html`);
     for (const ch of c.STRIP_CHANNELS) assert.deepEqual(c.routeSender(strip, ch, o()), { kind: 'strip' });
     for (const ch of ['op', 'app:getState', 'app:openRecent', 'app:cancel']) assert.equal(c.routeSender(strip, ch, o()), null);
     assert.equal(c.routeSender(view(5), 'tabs:menu', o()), null);
@@ -317,11 +331,11 @@ describe('IPC routing (routeSender)', () => {
   test('refused: unknown senders, subframes, the wrong page, unknown channels', () => {
     assert.equal(c.routeSender(view(9), 'op', o()), null); // not ours
     assert.equal(c.routeSender(view(5, undefined, false), 'op', o()), null); // an iframe
-    assert.equal(c.routeSender(view(5, 'file:///app/renderer/tabs.html'), 'op', o()), null); // a view showing the strip page
-    assert.equal(c.routeSender(view(1, 'file:///app/renderer/index.html'), 'tabs:list', o()), null); // strip showing index
+    assert.equal(c.routeSender(view(5, `${FILE}app/renderer/tabs.html`), 'op', o()), null); // a view showing the strip page
+    assert.equal(c.routeSender(view(1, `${FILE}app/renderer/index.html`), 'tabs:list', o()), null); // strip showing index
     assert.equal(c.routeSender(view(5, 'https://evil.example/index.html'), 'op', o()), null);
     assert.equal(c.routeSender(view(5), 'app:secret', o()), null);
-    assert.equal(c.routeSender(view(1, 'file:///app/renderer/tabs.html'), 'tabs:list', o({ stripId: null })), null);
+    assert.equal(c.routeSender(view(1, `${FILE}app/renderer/tabs.html`), 'tabs:list', o({ stripId: null })), null);
     assert.equal(c.routeSender(undefined, 'op', o()), null);
   });
 
@@ -337,7 +351,7 @@ const ODD_DIRS = ['/Users/me/My Apps', '/Users/me/café', '/Users/me/hash#dir', 
 
 test('isIndexUrl: accepts our index.html under odd directory names, however the URL is escaped', () => {
   for (const dir of ODD_DIRS) {
-    const index = path.join(dir, 'pl', 'renderer', 'index.html');
+    const index = path.resolve(dir, 'pl', 'renderer', 'index.html');
     const nodeUrl = pathToFileURL(index).href;
     assert.ok(c.isIndexUrl(nodeUrl, index), `node-escaped ${nodeUrl}`);
     // Chromium leaves '[', ']', "'", '(', ')' and friends unescaped.
@@ -349,22 +363,22 @@ test('isIndexUrl: accepts our index.html under odd directory names, however the 
 });
 
 test('isIndexUrl: %41 in a directory name is not confused with "A"', () => {
-  const index = '/Users/me/pct%41/renderer/index.html';
-  assert.ok(c.isIndexUrl('file:///Users/me/pct%2541/renderer/index.html', index));
+  const index = path.resolve('/Users/me/pct%41/renderer/index.html');
+  assert.ok(c.isIndexUrl(`${FILE}Users/me/pct%2541/renderer/index.html`, index));
   // The URL loadFile used to produce (unescaped '%') names a different folder.
-  assert.equal(c.isIndexUrl('file:///Users/me/pct%41/renderer/index.html', index), false);
-  assert.ok(c.isIndexUrl('file:///Users/me/pctA/renderer/index.html', '/Users/me/pctA/renderer/index.html'));
+  assert.equal(c.isIndexUrl(`${FILE}Users/me/pct%41/renderer/index.html`, index), false);
+  assert.ok(c.isIndexUrl(`${FILE}Users/me/pctA/renderer/index.html`, path.resolve('/Users/me/pctA/renderer/index.html')));
 });
 
 test('isIndexUrl: rejects other files, other schemes, hosts and garbage', () => {
-  const index = '/app/renderer/index.html';
+  const index = path.resolve('/app/renderer/index.html');
   const reject = [
-    'file:///app/renderer/other.html',
-    'file:///app/renderer/index.html/',
-    'file:///app/renderer/INDEX.html',
-    'file:///app/renderer/../renderer2/index.html',
-    'file:///app/renderer%2Findex.html',
-    'file:///evil/app/renderer/index.html',
+    `${FILE}app/renderer/other.html`,
+    `${FILE}app/renderer/index.html/`,
+    `${FILE}app/renderer/INDEX.html`,
+    `${FILE}app/renderer/../renderer2/index.html`,
+    `${FILE}app/renderer%2Findex.html`,
+    `${FILE}evil/app/renderer/index.html`,
     'file://server/app/renderer/index.html',
     'http://localhost/app/renderer/index.html',
     'https://example.com/app/renderer/index.html',
@@ -382,7 +396,16 @@ test('isIndexUrl: rejects other files, other schemes, hosts and garbage', () => 
   ];
   for (const u of reject) assert.equal(c.isIndexUrl(u, index), false, String(u));
   // Dot segments normalise to the same file: accepted (it IS our file).
-  assert.ok(c.isIndexUrl('file:///app/x/../renderer/./index.html', index));
-  assert.ok(c.isIndexUrl('file://localhost/app/renderer/index.html', index));
+  assert.ok(c.isIndexUrl(`${FILE}app/x/../renderer/./index.html`, index));
+  assert.ok(c.isIndexUrl(`file://localhost/${DRIVE}app/renderer/index.html`, index));
 });
 
+describe('main/app-id.js', () => {
+  // Windows matches the running app to its Start menu shortcut by this id; the packed package.json
+  // has no `build` to read it from at run time, so main keeps a copy (main/window.js re-exports it
+  // for main.js; that module needs Electron, this one doesn't).
+  test("APP_ID is electron-builder's appId (package.json build.appId)", () => {
+    const { APP_ID } = require('../main/app-id');
+    assert.equal(APP_ID, require('../package.json').build.appId);
+  });
+});

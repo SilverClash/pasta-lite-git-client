@@ -5,21 +5,32 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-// Isolate every test from the user's ~/.gitconfig and system config.
-process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+const tmpDirs = [];
+
+/**
+ * A new folder under the OS temp dir, by its native real path: the canonical spelling git and the
+ * app use (on Windows the runner's temp dir is an 8.3 short name, C:\Users\RUNNER~1\..., which
+ * only the native realpath expands; on macOS /var is /private/var either way).
+ */
+function tmpDir(prefix = 'pl-') {
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  tmpDirs.push(d);
+  return d;
+}
+
+// Isolate every test from the user's ~/.gitconfig and system config. On Windows the global config
+// is a file of our own instead of /dev/null: Git for Windows hides the .git it creates
+// (core.hideDotFiles), and Node can't open a hidden file with 'w' (CREATE_ALWAYS: EPERM), which
+// the tests do to rewrite a worktree's .git file; core.symlinks=true lets git check out symlinks
+// as links (git init still sets it false in a repo where symlinks can't be made).
+const globalConfig = process.platform === 'win32' ? path.join(tmpDir('pl-home-'), 'gitconfig') : '/dev/null';
+if (process.platform === 'win32') fs.writeFileSync(globalConfig, '[core]\n\thideDotFiles = false\n\tsymlinks = true\n');
+process.env.GIT_CONFIG_GLOBAL = globalConfig;
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 process.env.GIT_AUTHOR_NAME = 'Test';
 process.env.GIT_AUTHOR_EMAIL = 'test@example.com';
 process.env.GIT_COMMITTER_NAME = 'Test';
 process.env.GIT_COMMITTER_EMAIL = 'test@example.com';
-
-const tmpDirs = [];
-
-function tmpDir(prefix = 'pl-') {
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-  tmpDirs.push(d);
-  return d;
-}
 
 /** Synchronous raw git (no global -c args) for test setup and assertions. */
 function git(cwd, ...args) {
@@ -113,4 +124,4 @@ function cleanup() {
 }
 process.on('exit', cleanup);
 
-module.exports = { tmpDir, git, initRepo, write, read, commitFile, repoWithRemote, bareWithWorktree, hostileConfig, cleanup };
+module.exports = { tmpDir, globalConfig, git, initRepo, write, read, commitFile, repoWithRemote, bareWithWorktree, hostileConfig, cleanup };

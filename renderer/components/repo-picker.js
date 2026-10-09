@@ -6,16 +6,17 @@
 // Each tab is its own page with one repo (multi-repo tabs are main's WebContentsViews), so opening
 // "here" replaces this page's repo and "in a new tab" asks main for another tab.
 //
-//   source                     the page's data: {recent, tabs, tabId, current, home}; app.js feeds it
-//                              from app.getState(), 'recent-changed', 'repo-opened' and 'tabs-changed'
+//   source                     the page's data: {recent, tabs, tabId, current}; app.js feeds it
+//                              from app.getState(), 'recent-changed', 'repo-opened' and 'tabs-changed'.
+//                              recent: [{root, name, display}], display the root as main shows it
+//                              (the home folder as ~; src/recent-view.js), so no path rule lives here
 //   rank(recent, query, ctx) -> items [{root, name, path, title, current, tab, hits: {name, path}}]
 //                              pure: an empty query keeps the recent order; otherwise a name prefix,
-//                              then a name substring, then a path substring (the shown path, home as ~,
-//                              or the full root), then the name's letters in order (fuzzy); ties keep
+//                              then a name substring, then a path substring (the shown path: main's
+//                              display, or the full root), then the name's letters in order (fuzzy); ties keep
 //                              the recent order. hits: [[start, end)] ranges of the shown text.
 //   segments(text, ranges)  -> [{text, hit}] pure: the pieces of a highlighted label
-//   homeShort(path, home?)  -> the path with the home folder as ~ (without `home`: /Users/<u>,
-//                              /home/<u> or C:\Users\<u>)
+//   shownPath(root)         -> root as the recent list shows it (its display), else root itself
 //   otherTabs(state)        -> Map root -> tab, the repos open in the window's other tabs
 //   createList(opts)        -> {root, input, render(), focus(), move(), activate(), dispose()}
 //   open(anchor, opts) / close() / isOpen()                  the popover (one at a time)
@@ -24,6 +25,7 @@
 //                              ⌘P calls toggle() (false: no toolbar mounted)
 //   mountStart(container, opts) -> {focus(), dispose()}      the start screen
 //   openRepo(root, {newTab}) / openFolder({newTab}) / tabsAvailable()
+//   _internal: {CAP, rank, segments, subsequence, otherTabs}, the pure parts, for unit tests only
 //
 // Keyboard (the search field keeps focus; the list is a listbox driven by aria-activedescendant):
 // ↑ / ↓ (wrapping), Home / End move; Enter opens here, ⌘↵ / Ctrl+↵ in a new tab. Mouse: click opens
@@ -45,20 +47,6 @@
 
   // ---------------------------------------------------------------- pure
 
-  const HOME_RE = [/^\/(?:Users|home)\/[^/]+(?=\/|$)/, /^[a-z]:\\Users\\[^\\]+(?=\\|$)/i];
-
-  /** `p` with the home folder written as ~ ('/Users/ada/src/x' -> '~/src/x'). */
-  function homeShort(p, home) {
-    const s = String(p == null ? '' : p);
-    if (home) {
-      const h = String(home).replace(/[\\/]+$/, '');
-      if (h && (s === h || s.startsWith(`${h}/`) || s.startsWith(`${h}\\`))) return `~${s.slice(h.length)}`;
-      return s;
-    }
-    for (const re of HOME_RE) if (re.test(s)) return s.replace(re, '~');
-    return s;
-  }
-
   /** Ranges of `q`'s letters found in order in `text` (lower case both), merged; null if not all are. */
   function subsequence(text, q) {
     const out = [];
@@ -74,11 +62,14 @@
     return out;
   }
 
-  /** Recent entries filtered and ordered for `query`; ctx: {current, tabs (otherTabs), home}. */
-  function rank(recent, query, { current = null, tabs = new Map(), home = null } = {}) {
+  /** A recent entry's path as shown: main's display (home as ~), else the root itself. */
+  const displayOf = (r) => (typeof r.display === 'string' && r.display ? r.display : r.root);
+
+  /** Recent entries filtered and ordered for `query`; ctx: {current, tabs (otherTabs)}. */
+  function rank(recent, query, { current = null, tabs = new Map() } = {}) {
     const q = String(query || '').trim().toLowerCase();
     const items = (Array.isArray(recent) ? recent : []).filter((r) => r && r.root).map((r, i) => {
-      const shown = homeShort(r.root, home);
+      const shown = displayOf(r);
       return {
         i,
         root: r.root,
@@ -139,7 +130,7 @@
   // ---------------------------------------------------------------- data + opening
 
   function createSource() {
-    let state = { recent: [], tabs: [], tabId: null, current: null, home: null };
+    let state = { recent: [], tabs: [], tabId: null, current: null };
     const subs = new Set();
     return {
       get: () => state,
@@ -153,6 +144,15 @@
     };
   }
   const source = createSource();
+
+  /**
+   * `root` as the recent list shows it (the toolbar's tooltip): its entry's display, else `root`
+   * itself (a repo the list no longer holds: main keeps the last 10 opened).
+   */
+  function shownPath(root) {
+    const entry = (source.get().recent || []).find((r) => r && r.root === root);
+    return entry ? displayOf(entry) : root;
+  }
 
   /** Main supports tabs (the other half of the tabs contract, preload's window.api.tabs). */
   const tabsAvailable = () => !!(window.api && window.api.tabs);
@@ -342,7 +342,7 @@
 
     function render() {
       const s = src.get();
-      items = rank(s.recent, query, { current: s.current, tabs: otherTabs(s), home: s.home });
+      items = rank(s.recent, query, { current: s.current, tabs: otherTabs(s) });
       const capped = !query.trim() && !showAll && opts.cap != null && items.length > opts.cap;
       shown = capped ? items.slice(0, opts.cap) : items;
       list.replaceChildren(...shown.map((it, i) => row(it, i)));
@@ -549,8 +549,9 @@
   }
 
   const api = {
-    CAP, homeShort, rank, segments, otherTabs, subsequence, source, tabsAvailable, openRepo, openFolder, choose,
+    shownPath, source, tabsAvailable, openRepo, openFolder, choose,
     createList, open, close, isOpen: () => !!current, setToggle, toggle, mountStart,
+    _internal: { CAP, rank, segments, subsequence, otherTabs }, // exported for unit tests only
   };
   window.PLRepoPicker = api;
   if (typeof module !== 'undefined') module.exports = api;

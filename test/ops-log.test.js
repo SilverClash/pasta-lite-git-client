@@ -212,7 +212,7 @@ test('buildDiagnostics: versions, folders, dumps and log lines, redacted, nothin
   assert.match(text, /^Electron 44\.4\.5 · Chrome 140\.0 · Node 24\.21\.0 · V8 14\.0$/m);
   assert.match(text, /^OS: darwin 24\.6\.0 \(arm64\)$/m);
   assert.match(text, /^git: 2\.51\.0 \(\/opt\/homebrew\/bin\/git\)$/m);
-  assert.match(text, /^Logs: ~\/Library\/Logs\/Pasta Lite$/m);
+  assert.ok(text.split('\n').includes(`Logs: ${path.join('~', 'Library/Logs/Pasta Lite')}`), text);
   assert.match(text, /^ {2}completed\/abc\.dmp {2}2026-09-25T00:00:00\.000Z$/m);
   assert.match(text, /^Last 1 log lines:$/m);
   assert.match(text, /https:\/\/\*\*\*@github\.com/);

@@ -39,7 +39,7 @@ const { createRecentView } = require('./src/recent-view');
 const { openTerminal } = require('./src/terminal');
 const { createOsThumbnailer } = require('./src/os-thumbnail');
 const { EVENTS } = require('./src/ipc-contract');
-const { createWindowHost, APP_NAME, DATA_DIR_NAME, ICON, STRIP_H, SECURE_WEB_PREFS } = require('./main/window');
+const { createWindowHost, APP_NAME, APP_ID, DATA_DIR_NAME, ICON, STRIP_H, SECURE_WEB_PREFS } = require('./main/window');
 const { createTabsController } = require('./main/tabs-controller');
 const { createSenderContext, registerChannels, createHandlers } = require('./main/ipc');
 const { createAppMenu } = require('./main/menu');
@@ -336,7 +336,9 @@ process.on('uncaughtException', (err) => {
   fatal = true;
   try {
     runner.cancelAll();
-    killChildren({ signal: 'SIGTERM' });
+    // sync: the error box blocks the event loop and app.exit follows it, so on Windows the kill
+    // (taskkill, then the MSYS commands of git's hooks) must be done before either.
+    killChildren({ signal: 'SIGTERM', sync: true });
   } catch { /* exiting anyway */ }
   try {
     dialog.showErrorBox(`${APP_NAME} hit an unexpected error`, `${redactString((err && err.message) || String(err), 500)}\n\n`
@@ -350,6 +352,9 @@ process.on('exit', () => logger.flushSync());
 
 app.enableSandbox();
 app.setName(APP_NAME);
+// Windows groups taskbar buttons, pins and notifications by AppUserModelID. Without the
+// installer shortcut's id, the running window is a second button beside a pinned shortcut.
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 /**
  * setName moves the default userData, logs and crash-dump folders to the new name. Pin them to

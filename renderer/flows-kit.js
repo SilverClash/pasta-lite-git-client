@@ -210,11 +210,20 @@
     return false;
   }
 
-  const AUTH_MESSAGE = 'Git could not authenticate with the remote. Pasta Lite uses your existing git setup and never asks for passwords itself:\n\n'
-    + '• HTTPS remotes: store your credentials with a credential helper (e.g. git config --global credential.helper osxkeychain) or sign in once from a terminal.\n'
+  // A credential helper to suggest on `platform` ('darwin' | 'win32' | other: Linux and the rest).
+  const CREDENTIAL_HELPERS = {
+    darwin: 'git config --global credential.helper osxkeychain',
+    win32: 'Git Credential Manager, which Git for Windows installs',
+  };
+  const credentialHelperHint = (platform) => CREDENTIAL_HELPERS[platform]
+    || 'Git Credential Manager, or git config --global credential.helper libsecret';
+
+  /** The "Authentication failed" dialog text, its credential helper example for `platform`. */
+  const authMessage = (platform = C.util.PLATFORM) => 'Git could not authenticate with the remote. Pasta Lite uses your existing git setup and never asks for passwords itself:\n\n'
+    + `• HTTPS remotes: store your credentials with a credential helper (e.g. ${credentialHelperHint(platform)}) or sign in once from a terminal.\n`
     + '• SSH remotes: add your key to ssh-agent (ssh-add) and check that the remote accepts it.\n\nThen try again.';
 
-  const authAlert = (store, e) => dialog(store).alert({ title: 'Authentication failed', message: AUTH_MESSAGE, detail: e && e.message });
+  const authAlert = (store, e) => dialog(store).alert({ title: 'Authentication failed', message: authMessage(), detail: e && e.message });
 
   async function tagConflictsAlert(store, res) {
     const tags = (res && res.tagConflicts) || [];
@@ -298,5 +307,6 @@
     register(bodies) {
       for (const [name, body] of Object.entries(bodies)) window.PLFlows[name] = flow(name, body);
     },
+    _internal: { authMessage }, // exported for unit tests only
   };
 })();

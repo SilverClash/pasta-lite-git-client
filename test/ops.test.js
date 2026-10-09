@@ -26,6 +26,32 @@ async function waitForFile(file, what, ms = 60000) {
   }
 }
 
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+/**
+ * The pid process.kill() takes for the process a hook named by its shell pid `pid` ($$ or $!),
+ * once it runs `name`. On Windows that is the Windows pid of the MSYS process: Git for Windows'
+ * sh numbers its processes itself, and its pid checked as a Windows pid names whatever Windows
+ * process has that number (its lowest two bits ignored), which can run on for good. Read from
+ * MSYS's /proc once the process runs `name`: until then it may still be the forked or exec'ing
+ * sh, a Windows process of its own.
+ */
+async function hookProcessPid(pid, name) {
+  if (process.platform !== 'win32') return pid;
+  const { execFileSync } = require('node:child_process');
+  const { msysShell } = require('../src/git-process')._internal;
+  const { findOnPath } = require('../src/which');
+  const sh = msysShell(findOnPath('git.exe'));
+  assert.ok(sh, 'Git for Windows\' sh next to the git on PATH');
+  // read's status is 1 at an end without a newline (/proc's files have none): the values count.
+  const read = '{ read -r e < /proc/$1/exename; read -r w < /proc/$1/winpid; } 2>/dev/null; echo "$e/$w"';
+  for (const t0 = Date.now(); ; await new Promise((r) => setTimeout(r, 50))) {
+    const m = /\/([^/]+?)(?:\.exe)?\/(\d+)$/.exec(execFileSync(sh, ['-c', read, 'sh', String(pid)], { encoding: 'utf8', windowsHide: true }).trim());
+    if (m && m[1] === name) return Number(m[2]);
+    assert.ok(Date.now() - t0 < 60000, `MSYS process ${pid} never ran ${name}`);
+  }
+}
+
 test('registry has exactly the documented operations', () => {
   const reads = ['status', 'refs', 'log', 'stashes', 'commitDiffView', 'workdirDiffView', 'commitFiles', 'diffCommitFile', 'diffWorkdir', 'undoState', 'remotes', 'lastCommitMessage', 'rebasePlan', 'worktrees', 'worktreeDirty', 'worktreePrunePreview', 'worktreeUnreachable', 'commitImageSide', 'workdirImageSide'];
   const writes = [
@@ -451,7 +477,7 @@ test('linkedWorktree: a worktree added from a linked worktree, and one opened th
   assert.deepEqual(info.linkedWorktree, want(wt));
 });
 
-test('linkedWorktree: a failed `worktree list` (an error, a timeout or a cancellation) never fails the open: git\'s guess, the common dir', async (t) => {
+test('linkedWorktree: a failed `worktree list` (an error, a timeout or a cancellation) never fails the open: git\'s guess, the common dir', { skip: process.platform === 'win32' && 'the fake git is a #!/bin/sh script, which Windows cannot spawn' }, async (t) => {
   const x = require('../src/exec');
   const { linkedWorktreeOf } = require('../src/repo-open');
   // The bare + worktrees layout is the one case that needs the list (no .git folder, no core.worktree).
@@ -666,6 +692,8 @@ test('cancel kills a write stuck in a hook; the next queued write then runs', as
   // Cancel only once the hook runs: a cancel during commit's check (git status) stops it before
   // it starts, which emits no events at all (see 'a write cancelled during its check ...').
   await waitForFile(marker, 'the pre-commit hook');
+  const hookPid = await hookProcessPid(Number(fs.readFileSync(marker, 'utf8')), 'sleep');
+  assert.ok(hookPid > 0 && alive(hookPid), 'the hook runs');
   const cancelledAt = Date.now();
   assert.equal(runner.cancel('c1'), true);
   assert.equal(runner.cancel('c1'), false); // already cancelled
@@ -677,11 +705,33 @@ test('cancel kills a write stuck in a hook; the next queued write then runs', as
   assert.equal(h.git(dir, 'log', '--format=%s').trim(), 'initial');
   assert.deepEqual(events, [{ repo: dir, op: 'commit', ok: false }, { repo: dir, op: 'stage', ok: true }]);
   // no hook process left behind (the group kill has reached it by now, or very soon)
-  const hookPid = Number(fs.readFileSync(marker, 'utf8'));
-  assert.ok(hookPid > 0);
-  const alive = () => { try { process.kill(hookPid, 0); return true; } catch { return false; } };
-  for (const t0 = Date.now(); alive(); await new Promise((r) => setTimeout(r, 20))) {
+  for (const t0 = Date.now(); alive(hookPid); await new Promise((r) => setTimeout(r, 20))) {
     assert.ok(Date.now() - t0 < 5000, 'the hook outlived the cancel');
+  }
+});
+
+test('a cancelled write settles once its hook\'s background command is gone, though that never held git\'s output', { skip: process.platform !== 'win32' && 'Windows: the MSYS kill, which git\'s close does not wait for' }, async () => {
+  const dir = h.initRepo();
+  const marker = path.join(h.tmpDir(), 'hook-started');
+  // The background sleep holds none of git's pipes (so git's close doesn't wait for it), and its
+  // Windows parent, the forked sh, is gone: only the MSYS kill ends it (signalGroup).
+  fs.writeFileSync(path.join(dir, '.git', 'hooks', 'pre-commit'), `#!/bin/sh\nsleep 60 </dev/null >/dev/null 2>&1 &\necho $! > '${marker}.tmp'\nmv '${marker}.tmp' '${marker}'\nexec sleep 30\n`, { mode: 0o755 });
+  h.write(dir, 'x.txt', 'x\n');
+  h.git(dir, 'add', 'x.txt');
+  const runner = ops.createRunner();
+  const p = runner.run(dir, 'commit', ['msg'], { opId: 'c1' });
+  await waitForFile(marker, 'the pre-commit hook');
+  let job = 0;
+  try {
+    job = await hookProcessPid(Number(fs.readFileSync(marker, 'utf8')), 'sleep');
+    assert.ok(alive(job), 'the hook\'s background sleep runs');
+    assert.equal(runner.cancel('c1'), true);
+    await assert.rejects(p, { kind: 'aborted' });
+    assert.equal(alive(job), false, 'the background sleep is gone when the cancel settles');
+  } finally {
+    // A failed assertion must not leave the commit or the sleep running.
+    if (runner.cancel('c1')) await p.catch(() => {});
+    if (job) try { process.kill(job); } catch { /* gone */ }
   }
 });
 
@@ -1564,8 +1614,16 @@ test('removeWorktree: worktree-busy while another tab\'s write runs or waits in 
   hold.resolve();
   assert.deepEqual(await Promise.all([running, queued, peeking]), ['held', 'held', undefined]);
   const hold2 = deferred();
-  const r2 = ops.createRunner({ ops: { ...ops.OPS, hold: () => hold2.promise }, writeOps: new Set([...ops.WRITE_OPS, 'hold']) });
+  const started2 = deferred();
+  const r2 = ops.createRunner({
+    ops: { ...ops.OPS, hold: () => { started2.resolve(); return hold2.promise; } },
+    writeOps: new Set([...ops.WRITE_OPS, 'hold']),
+  });
   const inside = r2.run(path.join(link, 'sub'), 'hold', []);
+  // Started (past its vet) before the delete is asked: a write whose vet overlaps the delete's
+  // is refused as well ('This worktree is being deleted'; both refused, by design), which on a
+  // loaded machine (its gate and realpath slower than the delete's check) made this flaky.
+  await started2.promise;
   await assert.rejects(r2.run(dir, 'removeWorktree', [wts.a]), busy);
   hold2.resolve();
   await inside;

@@ -52,14 +52,25 @@ const RULES = [
 
 let HOME = null;
 let homeRe = null;
-/** The home directory to replace with '~' (default os.homedir()); '' disables. For tests. */
-function setHome(dir) {
+
+// A Windows home matches in any case (git may print C:/users/ada for C:\Users\Ada), folded as
+// src/fs-paths.js folds a path: ASCII letters only. The regex `i` flag would fold more (U+212A
+// KELVIN SIGN is 'k' to it), and a folder Windows calls another one would be logged as the home.
+// A class per letter after escaping: escapeRe never leaves a letter after a backslash.
+const asciiCaseless = (re) => re.replace(/[A-Za-z]/g, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`);
+
+/**
+ * The home directory to replace with '~' (default os.homedir()); '' disables. For tests. On
+ * Windows (`platform`) in any ASCII case and with '/' or '\\' (or JSON's '\\\\').
+ */
+function setHome(dir, { platform = process.platform } = {}) {
   HOME = dir === undefined ? safeHome() : dir;
   homeRe = null;
   if (HOME && HOME.length > 1) {
     const forms = new Set([HOME, HOME.replace(/\\/g, '/'), HOME.replace(/\\/g, '\\\\')]);
+    const fold = platform === 'win32' ? asciiCaseless : (re) => re;
     // Only at a path boundary: /Users/ada must not eat /Users/adam.
-    homeRe = new RegExp(`(${[...forms].map(escapeRe).join('|')})(?=$|[\\\\/'"\\s:)\\]])`, 'g');
+    homeRe = new RegExp(`(${[...forms].map((f) => fold(escapeRe(f))).join('|')})(?=$|[\\\\/'"\\s:)\\]])`, 'g');
   }
 }
 function safeHome() {
@@ -204,5 +215,6 @@ function redactEnv(env) {
 }
 
 module.exports = {
-  redact, redactString, redactError, redactEnv, summarizeArgs, setHome, MAX_STRING,
+  redact, redactString, redactError, summarizeArgs,
+  _internal: { redactEnv, setHome, MAX_STRING }, // exported for unit tests only
 };

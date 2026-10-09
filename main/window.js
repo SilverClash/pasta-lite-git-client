@@ -12,6 +12,8 @@ const APP_NAME = 'Pasta Lite Git client';
 // "Pasta Lite" so existing installs keep their recent list, tabs, trusted repos and logs;
 // app.setName(APP_NAME) alone would move them (main.js pins them to this name).
 const DATA_DIR_NAME = 'Pasta Lite';
+// Windows' AppUserModelID (main.js): see main/app-id.js, Electron-free so its test needs no Electron.
+const { APP_ID } = require('./app-id');
 // The app icon (assets/). Windows and Linux take it from the window; macOS from the bundle, or
 // from app.dock.setIcon in a dev run (main.js).
 const ICON = path.join(ROOT, 'assets', 'icon.png');
@@ -93,4 +95,4 @@ function createWindowHost({ ui, isMac, stripUrl, addKeys, report, hooks }) {
   };
 }
 
-module.exports = { createWindowHost, APP_NAME, DATA_DIR_NAME, ICON, STRIP_H, BG, SECURE_WEB_PREFS };
+module.exports = { createWindowHost, APP_NAME, APP_ID, DATA_DIR_NAME, ICON, STRIP_H, BG, SECURE_WEB_PREFS };

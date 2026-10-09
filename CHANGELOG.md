@@ -29,6 +29,39 @@ minor versions may contain breaking changes.
   are the original's (turned, for a photo stored landscape and shown portrait). A multi-page TIFF
   shows its first page. On Windows and Linux, or when the system can't read the file, they still say
   "preview not supported".
+- **Windows builds (alpha):** NSIS installers for x64 and arm64 and a portable x64 zip, with a
+  `SHA256SUMS` file to check them against, since they aren't code-signed yet. A release workflow
+  builds them from the tag and attaches them to a draft release. Alpha means the app works in
+  testing on Windows 11 but has had little real use there: expect rough edges, and please report
+  what you find. CI now runs the whole test suite on Windows too.
+
+### Fixed
+
+On Windows:
+
+- Staging, unstaging and discarding hunks or lines, and discards that keep an undo backup, failed
+  with `EINVAL`.
+- Git's paths with forward slashes (`C:/...`) weren't matched to the folders the app opened, which
+  broke worktree operations and caching of the repository root.
+- Discarding many files at once could exceed Windows' command-line length limit.
+- Cancelling an operation or quitting the app now stops git and every program it started, hook
+  commands included, not just git itself. Cancelling a command that writes the index also removes
+  the `index.lock` the stopped git left, which used to make the next command fail with
+  "index.lock: File exists"; a lock another program's git holds is left alone. A git signing or
+  connecting over ssh may have started a background agent (gpg-agent, an ssh connection master):
+  it is stopped with the command and starts again when next needed.
+- Git and its helpers no longer flash a console window.
+- Git for Windows is found in its usual install folders (machine-wide or per user) when it isn't on
+  the PATH.
+- NTFS aliases of `.git` (its 8.3 short name, trailing dots or spaces, alternate data streams) are
+  treated as the git folder, so a hunk or line action can't write into it.
+- Paths are compared without regard to letter case and with either slash, as Windows does.
+- Saving the app's settings and state retries when another program (an antivirus scan, the search
+  indexer, a sync agent) briefly holds the file.
+- Deleting or renaming an open repository is now noticed (it used to go unnoticed and could spin
+  the CPU).
+- Commits, stashes and ref changes made outside the app are no longer missed when Windows coalesces
+  a burst of file changes.
 
 ### Security
 

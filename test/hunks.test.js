@@ -322,7 +322,7 @@ test('discardSelection: one hunk leaves the others', async () => {
   assert.equal(read(dir, 'u.txt'), 'keep\n');
 });
 
-test('executable file keeps 100755 through stage and discard', async () => {
+test('executable file keeps 100755 through stage and discard', { skip: process.platform === 'win32' && 'no executable bit on Windows (git there has core.fileMode=false)' }, async () => {
   const dir = repoWith('run.sh', '#!/bin/sh\necho a\n', 0o755);
   write(dir, 'run.sh', '#!/bin/sh\necho a\necho b\necho c\n');
   await stageSelection(dir, 'run.sh', [{ hunk: 0, lines: [2] }]);
@@ -502,11 +502,12 @@ test('operations work from a subdirectory cwd (paths are root-relative)', async 
   assert.equal(cachedDiff(dir), '');
   await discardSelection(sub, 'sub/f.txt', [{ hunk: 0 }]);
   assert.equal(read(dir, 'sub/f.txt'), BASE.replace('line11\n', 'line11\nnew\n'));
-  // Untracked, executable, from the subdirectory.
+  // Untracked, executable, from the subdirectory. Windows has no executable bit (chmod only
+  // toggles read-only), so there the file is staged as a regular one, as `git add` does.
   write(dir, 'sub/u.sh', 'a\nb\n');
   fs.chmodSync(path.join(dir, 'sub/u.sh'), 0o755);
   await stageSelection(sub, 'sub/u.sh', [{ hunk: 0, lines: [1] }]);
-  assert.match(git(dir, 'ls-files', '-s', 'sub/u.sh'), /^100755 /);
+  assert.match(git(dir, 'ls-files', '-s', 'sub/u.sh'), process.platform === 'win32' ? /^100644 / : /^100755 /);
   assert.equal(indexText(dir, 'sub/u.sh'), 'b\n');
   write(dir, 'sub/v.txt', 'v\n');
   await discardSelection(sub, 'sub/v.txt', [{ hunk: 0 }]);
@@ -585,7 +586,7 @@ test('hostile config: hunk boundaries, parsing and results are unchanged', async
 const { worktreeGuard, writeNoFollow, readNoFollow, testHooks } = require('../src/hunks');
 
 function outsideDir() {
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-out-')));
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-out-')));
   fs.writeFileSync(path.join(d, 'secret.txt'), 'outside\n');
   fs.writeFileSync(path.join(d, 'f.txt'), 'b\n');
   return d;
@@ -647,24 +648,83 @@ test('discardSelection refuses a symlinked parent: valid, dangling, inside the r
 test('worktreeGuard: real paths into the git dir or out of the worktree are kind outside', async () => {
   const dir = initRepo();
   const guard = await worktreeGuard(dir);
-  assert.equal(guard.check('sub/new.txt'), path.join(fs.realpathSync(dir), 'sub', 'new.txt'));
+  assert.equal(guard.check('sub/new.txt'), path.join(fs.realpathSync.native(dir), 'sub', 'new.txt'));
   for (const rel of ['.git/config', '.GIT/config', 'a/../../x', '/etc/passwd', '']) {
     assert.throws(() => guard.check(rel), isKind('outside'), rel);
   }
   // A separate git dir (as in linked worktrees / --separate-git-dir) reached without a '.git' segment.
   const wt = initRepo({ commits: false });
-  const gd = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-gd-')));
+  const gd = fs.realpathSync.native(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-gd-')));
   fs.rmSync(path.join(wt, '.git'), { recursive: true });
   git(wt, 'init', '-q', `--separate-git-dir=${path.join(gd, 'g')}`);
   // Nest the git dir inside the worktree: a real directory, so only the git-dir check stops it.
   const inner = path.join(wt, 'meta');
   fs.renameSync(path.join(gd, 'g'), inner);
-  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${inner}\n`);
+  // Rewritten in place: Git for Windows hides the .git file `init --separate-git-dir` writes (even
+  // with core.hideDotFiles=false), and Node can't open a hidden file with 'w' (CREATE_ALWAYS: EPERM).
+  fs.truncateSync(path.join(wt, '.git'));
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${inner}\n`, { flag: 'r+' });
   const g2 = await worktreeGuard(wt);
   assert.throws(() => g2.check('meta/config'), isKind('outside'));
   assert.throws(() => g2.check('meta/objects/new'), isKind('outside'));
   assert.ok(g2.check('other.txt'));
   fs.rmSync(gd, { recursive: true, force: true });
+});
+
+test('worktreeGuard on Windows: NTFS aliases of .git (8.3 name, trailing dots / spaces, streams) are kind outside', async () => {
+  // A linked worktree: its '.git' is a pointer file outside any git dir, so only the name stops it.
+  const dir = initRepo();
+  git(dir, 'branch', 'side');
+  const wt = path.join(fs.realpathSync.native(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-wt-'))), 'wt');
+  git(dir, 'worktree', 'add', '-q', wt, 'side');
+  const guard = await worktreeGuard(wt, { platform: 'win32' });
+  for (const rel of ['GIT~1', 'git~2', 'sub/GIT~1/x', 'sub\\Git~1', '.git.', '.git ', '.GIT. .', 'a/.git ./b',
+    'a.', 'a ', 'f.txt:s', '.git::$INDEX_ALLOCATION', 'sub\\..\\..\\x', 'nul', 'sub/COM1', 'aux.txt', 'Con .x/y']) {
+    assert.throws(() => guard.check(rel), isKind('outside'), rel);
+  }
+  // Ordinary names, a '~' that is no 8.3 alias of .git, and '\' as a separator are fine.
+  assert.ok(guard.check('sub\\new.txt'));
+  for (const rel of ['git~1x', 'xgit~1', '.gitignore', '.git~1', 'a.b', '.x']) assert.ok(guard.check(rel), rel);
+  // On POSIX those are ordinary names ('.git.' is not '.git' there), but '.git' itself never is.
+  // (Not on Windows itself, where 'GIT~1' may really be the .git file's short name.)
+  if (process.platform !== 'win32') {
+    const posix = await worktreeGuard(wt, { platform: 'linux' });
+    for (const rel of ['GIT~1', '.git.', 'a.']) assert.ok(posix.check(rel), rel);
+    assert.throws(() => posix.check('.git'), isKind('outside'));
+  }
+  fs.rmSync(path.dirname(wt), { recursive: true, force: true });
+});
+
+test('throughDotGit: the canonical path is checked for a .git component (an alias realpath expanded)', () => {
+  const { throughDotGit, isDotGitName } = require('../src/worktree-fs')._internal;
+  const win = { platform: 'win32' };
+  // What realpath makes of 'GIT~1\\x' / 'GI8F2A~1' in a repo at C:\r: the long name.
+  assert.equal(throughDotGit('C:\\r\\.git', 'C:\\r', win), true);
+  assert.equal(throughDotGit('C:\\r\\sub\\.GIT\\x', 'C:\\r', win), true);
+  assert.equal(throughDotGit('C:/r/.git/x', 'C:\\r', win), true, "'/' too");
+  assert.equal(throughDotGit('C:\\r\\sub\\f.txt', 'C:\\r', win), false);
+  assert.equal(throughDotGit('C:\\r', 'C:\\r', win), false);
+  assert.equal(throughDotGit('C:\\.git\\r\\f', 'C:\\.git\\r', win), false, 'only components below the root');
+  assert.equal(throughDotGit('/r/sub/.git', '/r', { platform: 'linux' }), true);
+  assert.equal(throughDotGit('/r/sub/.Git/x', '/r', { platform: 'darwin' }), true);
+  assert.equal(throughDotGit('/r/a\\.git', '/r', { platform: 'linux' }), false, "'\\' is a name character on POSIX");
+  assert.equal(throughDotGit('/.git/r/f', '/.git/r', { platform: 'linux' }), false);
+  for (const n of ['.git', '.GIT', 'GIT~1', 'git~12', '.git.', '.git  ', 'git~1. ']) assert.equal(isDotGitName(n, win), true, n);
+  for (const n of ['.gitx', 'git', 'git~', 'git~1x', '.git~1', 'x.git']) assert.equal(isDotGitName(n, win), false, n);
+  assert.equal(isDotGitName('GIT~1', { platform: 'linux' }), false);
+  assert.equal(isDotGitName('.Git', { platform: 'linux' }), true);
+});
+
+test('worktreeGuard on Windows: reserved device names (any case, an extension, trailing spaces) are refused', () => {
+  const { refusedName } = require('../src/worktree-fs')._internal;
+  const devices = ['nul', 'NUL', 'Nul.txt', 'nul.tar.gz', 'nul ', 'nul  .txt', 'CON', 'con.log', 'prn', 'aux', 'AUX.c',
+    'COM1', 'com9.txt', 'lpt1', 'LPT9.x', 'com0', 'lpt0', 'COM\u00b9', 'lpt\u00b2.txt', 'COM\u00b3', 'conin$', 'CONOUT$.x'];
+  for (const n of devices) assert.equal(refusedName(n, 'win32'), true, n);
+  // Only the whole name before the extension: these open the file they spell.
+  for (const n of ['null', 'nul_', 'nulx.txt', 'xnul', 'con1', 'console.log', 'com', 'com10', 'lpt', 'auxiliary', 'prn2', 'conin', 'f.nul', 'a.con.txt']) {
+    assert.equal(refusedName(n, 'win32'), false, n);
+  }
+  for (const n of ['nul', 'COM1', 'aux.txt']) assert.equal(refusedName(n, 'linux'), false, `${n}: an ordinary name on POSIX`);
 });
 
 test('discardSelection: a symlink swapped in between guard and write is refused', async (t) => {
@@ -710,6 +770,31 @@ test('writeNoFollow / readNoFollow refuse a final symlink (O_NOFOLLOW)', { skip:
   writeNoFollow(path.join(outside, 'x.sh'), Buffer.from('#!\n'), { create: true, mode: 0o755 });
   assert.equal(fs.statSync(path.join(outside, 'x.sh')).mode & 0o111, 0o111);
   assert.equal(readNoFollow(path.join(outside, 'nope')), null);
+  fs.rmSync(outside, { recursive: true, force: true });
+});
+
+test('writeNoFollow on Windows: opens without O_TRUNC (libuv: TRUNCATE_EXISTING, EINVAL) and truncates the descriptor', () => {
+  const { writeFlags } = require('../src/worktree-fs')._internal;
+  const { O_WRONLY, O_TRUNC, O_CREAT, O_EXCL } = fs.constants;
+  const win = { platform: 'win32' };
+  assert.equal(writeFlags(win) & (O_WRONLY | O_TRUNC | O_CREAT | O_EXCL), O_WRONLY, 'OPEN_EXISTING: plain O_WRONLY');
+  assert.equal(writeFlags({ ...win, create: true }) & (O_CREAT | O_EXCL | O_TRUNC), O_CREAT | O_EXCL, 'CREATE_NEW');
+  assert.equal(writeFlags({ platform: 'linux' }) & (O_TRUNC | O_CREAT), O_TRUNC, 'POSIX keeps O_TRUNC');
+  // The Windows branch, run here: a shorter write leaves no tail, the mode and exec bit work as on
+  // POSIX, a missing file is ENOENT (never created), create still refuses an existing file.
+  const outside = outsideDir();
+  const f = path.join(outside, 'long.txt');
+  fs.writeFileSync(f, 'a much longer old content\n', { mode: 0o600 });
+  writeNoFollow(f, Buffer.from('xy'), win);
+  assert.equal(fs.readFileSync(f, 'utf8'), 'xy');
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(f).mode & 0o777, 0o600, 'an existing file keeps its mode');
+    writeNoFollow(f, Buffer.from('#!\n'), { ...win, exec: true });
+    assert.equal(fs.statSync(f).mode & 0o777, 0o700);
+  }
+  assert.throws(() => writeNoFollow(path.join(outside, 'nope'), Buffer.from('x'), win), { code: 'ENOENT' });
+  assert.equal(fs.existsSync(path.join(outside, 'nope')), false);
+  assert.throws(() => writeNoFollow(f, Buffer.from('x'), { ...win, create: true }), { code: 'EEXIST' });
   fs.rmSync(outside, { recursive: true, force: true });
 });
 
@@ -801,7 +886,7 @@ test('hunk and line actions refuse symlinks (tracked or untracked) and submodule
   await assert.rejects(stageSelection(dir, 'new-link', [{ hunk: 0 }]), isKind('symlink'));
   await assert.rejects(discardSelection(dir, 'new-link', [{ hunk: 0 }]), isKind('symlink'));
   assert.equal(git(dir, 'ls-files', '--', 'new-link'), '');
-  assert.equal(fs.readlinkSync(path.join(dir, 'new-link')), 'some/where');
+  assert.equal(fs.readlinkSync(path.join(dir, 'new-link')), path.normalize('some/where'), 'on Windows Node writes the target with \\');
   // Submodule (gitlink) entry.
   const head = git(dir, 'rev-parse', 'HEAD').trim();
   git(dir, 'update-index', '--add', '--cacheinfo', `160000,${head},sub`);

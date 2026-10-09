@@ -7,9 +7,10 @@ const R = require('../src/redact');
 
 const { redact, redactString: rs, redactError, summarizeArgs } = R;
 
-// A fixed home for the '~' rule (restored after the file).
-R.setHome('/Users/ada');
-test.after(() => R.setHome());
+// A fixed home for the '~' rule (restored after the file), with POSIX rules whatever the host:
+// on Windows it would match in any case. The Windows rules have their own test.
+R._internal.setHome('/Users/ada', { platform: 'darwin' });
+test.after(() => R._internal.setHome());
 
 // Fake fixtures, assembled at runtime so no complete token-shaped literal sits in the source
 // (secret scanners such as GitHub push protection, gitleaks and trufflehog would flag it).
@@ -148,14 +149,30 @@ test('home directory becomes ~, only at a path boundary', () => {
   assert.equal(rs('at f (/Users/ada/x.js:1:2)'), 'at f (~/x.js:1:2)');
   assert.equal(rs('/Users/adam/projects'), '/Users/adam/projects');
   assert.equal(rs('file:///Users/ada/app/renderer/app.js:3'), 'file://~/app/renderer/app.js:3');
+  assert.equal(rs('/users/ADA/x'), '/users/ADA/x', 'case matters off Windows');
+});
+
+test('home directory on Windows: any case, either separator, still only at a path boundary', (t) => {
+  t.after(() => R._internal.setHome('/Users/ada', { platform: 'darwin' }));
+  R._internal.setHome('C:\\Users\\Ada', { platform: 'win32' });
+  assert.equal(rs('fatal: C:/users/ada/src/app: not a repo'), 'fatal: ~/src/app: not a repo');
+  assert.equal(rs('c:\\USERS\\ada\\x'), '~\\x');
+  assert.equal(rs('{"cwd":"C:\\\\users\\\\ADA\\\\x"}'), '{"cwd":"~\\\\x"}', "JSON's doubled '\\'");
+  assert.equal(rs('C:\\Users\\Adam\\x'), 'C:\\Users\\Adam\\x');
+  // Only ASCII folds, as src/fs-paths.js does: U+212A KELVIN SIGN is 'k' to a regex `i` flag only.
+  R._internal.setHome('C:\\Users\\work', { platform: 'win32' });
+  assert.equal(rs('C:\\Users\\wor\u212A\\x'), 'C:\\Users\\wor\u212A\\x');
+  assert.equal(rs('C:\\USERS\\WORK\\x'), '~\\x');
+  R._internal.setHome('/Users/ada', { platform: 'darwin' });
+  assert.equal(rs('/Users/ADA/x'), '/Users/ADA/x', 'off Windows the case is kept');
 });
 
 test('long strings are capped with a count', () => {
-  const s = rs('a'.repeat(R.MAX_STRING + 123));
-  assert.equal(s.length, R.MAX_STRING + '…[+123 chars]'.length);
+  const s = rs('a'.repeat(R._internal.MAX_STRING + 123));
+  assert.equal(s.length, R._internal.MAX_STRING + '…[+123 chars]'.length);
   assert.ok(s.endsWith('…[+123 chars]'));
   // A token past the cap is still redacted first (then cut).
-  const t = rs(`${'b'.repeat(R.MAX_STRING - 10)} https://u:${GHP}@h/`);
+  const t = rs(`${'b'.repeat(R._internal.MAX_STRING - 10)} https://u:${GHP}@h/`);
   clean(t, GHP);
 });
 
@@ -290,5 +307,5 @@ test('summarizeArgs: -c overrides dropped, pathspecs counted, messages hidden', 
 });
 
 test('redactEnv masks every secret-looking name', () => {
-  assert.deepEqual(R.redactEnv({ GH_TOKEN: 'x', LANG: 'C', MY_KEY: 'k', HOME: '/Users/ada' }), { GH_TOKEN: '***', LANG: 'C', MY_KEY: '***', HOME: '~' });
+  assert.deepEqual(R._internal.redactEnv({ GH_TOKEN: 'x', LANG: 'C', MY_KEY: 'k', HOME: '/Users/ada' }), { GH_TOKEN: '***', LANG: 'C', MY_KEY: '***', HOME: '~' });
 });

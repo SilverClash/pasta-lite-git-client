@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { tmpDir } = require('./helpers');
 const {
-  realPathSync, realPathOf, resetRealPathOf, isAtOrUnder, REALPATH_TIMEOUT_MS, MAX_PARALLEL,
+  realPathSync, realPathOf, resetRealPathOf, isAtOrUnder, homeShort, samePath, nativePath, _internal: { REALPATH_TIMEOUT_MS, MAX_PARALLEL },
 } = require('../src/fs-paths');
 
 /** A real folder, a symlink to it and a file, under one temp folder. */
@@ -122,4 +122,81 @@ test('isAtOrUnder: the folder itself or a path inside it, never a sibling with t
   assert.equal(isAtOrUnder('/w/ab', '/w/a'), false);
   assert.equal(isAtOrUnder('/w', '/w/a'), false);
   assert.equal(isAtOrUnder('/w/a', '/'), true, 'the root folder');
+  assert.equal(isAtOrUnder('/w/A', '/w/a', { platform: 'linux' }), false, 'case matters off Windows');
+});
+
+test('isAtOrUnder on Windows: any case and either separator, still never a same-prefix sibling', () => {
+  const win = { platform: 'win32' };
+  assert.equal(isAtOrUnder('C:\\Repo', 'c:\\repo', win), true);
+  assert.equal(isAtOrUnder('c:\\REPO\\Sub\\x', 'C:\\Repo', win), true);
+  assert.equal(isAtOrUnder('C:/Repo/sub', 'C:\\Repo\\', win), true, "git's forward slashes");
+  assert.equal(isAtOrUnder('C:\\Foobar', 'C:\\foo', win), false);
+  assert.equal(isAtOrUnder('C:\\FOOBAR\\x', 'c:\\foo', win), false);
+  assert.equal(isAtOrUnder('C:\\', 'C:\\foo', win), false);
+  assert.equal(isAtOrUnder('D:\\foo', 'C:\\foo', win), false);
+  assert.equal(isAtOrUnder('C:\\x', 'C:\\', win), true, 'the drive root');
+  assert.equal(isAtOrUnder('\\\\srv\\Share\\r', '\\\\SRV\\share', win), true, 'a UNC share');
+  // Only ASCII folds: Windows' case table is not JS's (U+212A KELVIN SIGN lowercases to 'k' in JS).
+  assert.equal(isAtOrUnder('C:\\wor\u212A\\x', 'C:\\work', win), false);
+  assert.equal(isAtOrUnder('C:\\Straße\\x', 'C:\\STRASSE', win), false);
+});
+
+test('isAtOrUnder {fold: false}: separators still either, the case exact (two canonical paths)', () => {
+  const exact = { platform: 'win32', fold: false };
+  assert.equal(isAtOrUnder('C:\\repo\\x', 'C:\\repo', exact), true);
+  assert.equal(isAtOrUnder('C:/repo/x', 'C:\\repo\\', exact), true, "'/' or '\\'");
+  assert.equal(isAtOrUnder('C:\\Repo\\x', 'C:\\repo', exact), false, 'a case-sensitive NTFS folder: another folder');
+  assert.equal(isAtOrUnder('C:\\Repo', 'C:\\repo', exact), false);
+  assert.equal(isAtOrUnder('C:\\Repo\\x', 'C:\\repo', { platform: 'win32' }), true, 'folding is the default');
+  assert.equal(isAtOrUnder('/w/a/x', '/w/a', { platform: 'linux', fold: false }), true);
+  assert.equal(isAtOrUnder('/w/A/x', '/w/a', { platform: 'linux', fold: true }), false, 'POSIX never folds');
+});
+
+test('homeShort: the home folder as ~, at a folder boundary only; POSIX keeps the case', () => {
+  const mac = { platform: 'darwin' };
+  assert.equal(homeShort('/Users/ada/src/x', '/Users/ada', mac), '~/src/x');
+  assert.equal(homeShort('/Users/ada', '/Users/ada', mac), '~');
+  assert.equal(homeShort('/srv/me/x', '/srv/me/', mac), '~/x', "a home with a trailing '/'");
+  assert.equal(homeShort('/srv/meme/x', '/srv/me', mac), '/srv/meme/x');
+  assert.equal(homeShort('/srv/ME/x', '/srv/me', mac), '/srv/ME/x');
+  assert.equal(homeShort('/x', '/', mac), '/x', "no home name: '/' is not shortened");
+  assert.equal(homeShort('/x', '', mac), '/x');
+  assert.equal(homeShort('', '/x', mac), '');
+  assert.equal(homeShort('/h\\x', '/h', { platform: 'linux' }), '/h\\x', "'\\' is a name character on POSIX, not a separator");
+  assert.equal(homeShort('/h\\/x', '/h\\', { platform: 'linux' }), '~/x', "a home named 'h\\' keeps its '\\'");
+});
+
+test('homeShort on Windows: any case and either separator, ASCII only, never a same-prefix sibling', () => {
+  const win = { platform: 'win32' };
+  assert.equal(homeShort('c:\\users\\Ada\\src\\x', 'C:\\Users\\ada', win), '~\\src\\x');
+  assert.equal(homeShort('C:\\USERS\\ADA', 'C:\\Users\\ada\\', win), '~');
+  assert.equal(homeShort('C:/Users/ada/src', 'C:\\Users\\ada', win), '~/src', "git's forward slashes: the rest keeps them");
+  assert.equal(homeShort('C:\\Users\\adam\\x', 'C:\\Users\\ada', win), 'C:\\Users\\adam\\x');
+  assert.equal(homeShort('D:\\Users\\ada\\x', 'C:\\Users\\ada', win), 'D:\\Users\\ada\\x');
+  assert.equal(homeShort('\\\\SRV\\home\\ada\\r', '\\\\srv\\home\\ada', win), '~\\r', 'a UNC home');
+  assert.equal(homeShort('C:\\Users\\wor\u212A\\x', 'C:\\Users\\work', win), 'C:\\Users\\wor\u212A\\x', 'only ASCII folds');
+  assert.equal(homeShort('C:\\x', 'C:\\', win), 'C:\\x', 'a drive root is no home');
+});
+
+test("nativePath: git's forward-slash Windows paths in path.resolve's spelling; elsewhere unchanged", () => {
+  const win = { platform: 'win32' };
+  assert.equal(nativePath('C:/Users/ada/repo', win), 'C:\\Users\\ada\\repo');
+  assert.equal(nativePath('C:/Users/ada/repo/', win), 'C:\\Users\\ada\\repo', 'no trailing separator');
+  assert.equal(nativePath('C:/Users/ada/repo', win), path.win32.resolve('C:\\Users\\ada\\repo'));
+  assert.equal(nativePath('c:/Users/Ada/Repo', win), 'c:\\Users\\Ada\\Repo', 'the case is kept');
+  assert.equal(nativePath('//srv/share/r', win), '\\\\srv\\share\\r', 'a UNC path');
+  assert.equal(nativePath('C:/', win), 'C:\\');
+  assert.equal(nativePath('.git', win), '.git', 'a relative path is left to its caller');
+  assert.equal(nativePath('', win), '');
+  assert.equal(nativePath('/x/y/', { platform: 'linux' }), '/x/y/');
+  assert.equal(nativePath('C:/x', { platform: 'darwin' }), 'C:/x');
+});
+
+test('samePath: exact off Windows; on Windows any case and either separator, ASCII only', () => {
+  const win = { platform: 'win32' };
+  assert.equal(samePath('C:\\Repo', 'c:/repo', win), true);
+  assert.equal(samePath('C:\\Repo', 'C:\\Repo2', win), false);
+  assert.equal(samePath('C:\\wor\u212A', 'C:\\work', win), false);
+  assert.equal(samePath('/w/A', '/w/a', { platform: 'darwin' }), false);
+  assert.equal(samePath('/w/a', '/w/a', { platform: 'linux' }), true);
 });

@@ -6,6 +6,7 @@
 // flagged `linked` for the strip's tree icon (repo.linkedWorktree, src/repo-open.js). The sender routing is src/ipc-contract.js, tabs.json
 // src/tabs-store.js.
 const path = require('node:path');
+const { homeShort } = require('./fs-paths');
 
 const NEW_TAB_TITLE = 'New Tab';
 
@@ -135,23 +136,15 @@ function tabTitle(repo) {
 /** The tab's repo is a linked worktree (main decided it: summary's linkedWorktree). */
 const isLinked = (repo) => !!(repo && repo.root && repo.linkedWorktree);
 
-/** `p` with the home folder as '~'. */
-function homeShort(p, home) {
-  if (home && (p === home || p.startsWith(home.endsWith(path.sep) ? home : home + path.sep))) {
-    return `~${p.slice(home.replace(/[\\/]+$/, '').length)}`;
-  }
-  return p;
-}
-
 /**
- * A tab's tooltip: the repo's full path with the home folder as '~' (a linked worktree's adds
- * 'Linked worktree of <main worktree>'), or 'New Tab'.
+ * A tab's tooltip: the repo's full path with the home folder as '~' (homeShort; a linked
+ * worktree's adds 'Linked worktree of <main worktree>'), or 'New Tab'.
  */
-function tabTooltip(repo, home = '') {
+function tabTooltip(repo, { home = '', platform = process.platform } = {}) {
   if (!repo || !repo.root) return NEW_TAB_TITLE;
-  const where = homeShort(repo.root, home);
+  const where = homeShort(repo.root, home, { platform });
   const main = isLinked(repo) && repo.linkedWorktree.mainPath;
-  return main ? `${where}\nLinked worktree of ${homeShort(main, home)}` : where;
+  return main ? `${where}\nLinked worktree of ${homeShort(main, home, { platform })}` : where;
 }
 
 /**
@@ -170,7 +163,7 @@ const pageTabs = (tabs) => tabs.list().map((t) => pageTab(tabs, t));
  * or running).
  */
 const stripTabs = (tabs, { home = '', busy = () => false } = {}) => tabs.list()
-  .map((t) => ({ ...pageTab(tabs, t), tooltip: tabTooltip(t.repo, home), busy: !!busy(t) }));
+  .map((t) => ({ ...pageTab(tabs, t), tooltip: tabTooltip(t.repo, { home }), busy: !!busy(t) }));
 
 // ---------------------------------------------------------------- ops of one tab
 
@@ -181,4 +174,7 @@ const ownerView = (runner, owner) => ({
   settled: () => runner.settled({ owner }),
 });
 
-module.exports = { createTabRegistry, pickOpenTarget, tabTitle, isLinked, tabTooltip, pageTabs, stripTabs, ownerView };
+module.exports = {
+  createTabRegistry, pickOpenTarget, tabTitle, pageTabs, stripTabs, ownerView,
+  _internal: { isLinked, tabTooltip }, // exported for unit tests only
+};

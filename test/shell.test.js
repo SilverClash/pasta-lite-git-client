@@ -21,16 +21,16 @@ test('findOnPath: absolute PATH entries only (empty, "." and relative ones skipp
   assert.equal(findOnPath('git.exe', { env: { Path: '.;cmd' }, platform: 'win32', isFile: () => true }), null);
 });
 
-test('findOnPath: the default check wants an executable regular file', (t) => {
+test('findOnPath: the default check wants an executable regular file (on Windows: any regular file)', (t) => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-which-'));
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   fs.writeFileSync(path.join(d, 'plain'), 'x', { mode: 0o644 });
   fs.writeFileSync(path.join(d, 'tool'), '#!/bin/sh\n', { mode: 0o755 });
   fs.mkdirSync(path.join(d, 'dir'));
   const env = { PATH: d };
-  assert.equal(findOnPath('tool', { env, platform: 'linux' }), path.join(d, 'tool'));
-  assert.equal(findOnPath('plain', { env, platform: 'linux' }), null);
-  assert.equal(findOnPath('dir', { env, platform: 'linux' }), null);
+  assert.equal(findOnPath('tool', { env }), path.join(d, 'tool'));
+  assert.equal(findOnPath('plain', { env }), process.platform === 'win32' ? path.join(d, 'plain') : null);
+  assert.equal(findOnPath('dir', { env }), null);
 });
 
 test('shell re-exports the PATH lookup (which.js) and the git-failure text (gitcheck.js)', () => {

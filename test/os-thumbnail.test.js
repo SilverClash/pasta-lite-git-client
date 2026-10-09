@@ -21,6 +21,16 @@ function deferred() {
   return d;
 }
 
+/** {done}: whether `p` has settled yet (it may reject: handled). */
+function settled(p) {
+  const s = { done: false };
+  p.then(() => { s.done = true; }, () => { s.done = true; });
+  return s;
+}
+
+/** The I/O callbacks due run, and the promise reactions after them. */
+const flush = () => new Promise((r) => setImmediate(r));
+
 /**
  * A thumbnailer on darwin over a fake OS call: `answer(file, size, calls)` (default: a PNG of the
  * size asked for). calls: [{file, size, bytes, mode, dirMode}] as the call saw its file.
@@ -151,14 +161,30 @@ test('render: cancelled before, or while the OS works: kind aborted at once; the
   assert.deepEqual(left(), [], 'removed once the call ended');
 });
 
-test('render: no answer within the timeout is null; the copy goes when the call ends', async () => {
+test('render: no answer within the timeout is null; the copy goes when the call ends', async (tc) => {
+  // The deadline runs on mocked timers: it passes once the OS has the file, however long the temp
+  // copy takes (real I/O; past a real deadline the OS is never asked, and nothing would take the
+  // gate's rejection).
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
   const gate = deferred();
-  const { t, left } = fake({ answer: () => gate.promise, timeoutMs: 30 });
-  assert.equal(await t.render(HEIC, { format: 'heic', dims: { width: 40, height: 30 } }), null);
-  assert.equal(left().length, 1);
+  const entered = deferred();
+  const timeoutMs = 30;
+  const { t, calls, left } = fake({
+    answer: () => {
+      entered.resolve();
+      return gate.promise;
+    },
+    timeoutMs,
+  });
+  const p = t.render(HEIC, { format: 'heic', dims: { width: 40, height: 30 } });
+  await entered.promise;
+  tc.mock.timers.tick(timeoutMs);
+  assert.equal(await p, null);
+  assert.equal(calls.length, 1);
+  assert.equal(left().length, 1, 'the OS still has the file');
   gate.reject(new Error('late'));
   await t.idle();
-  assert.deepEqual(left(), []);
+  assert.deepEqual(left(), [], 'removed once the call ended');
 });
 
 test('render: an answer turned a quarter is taken (portrait thumbnail of a landscape header)', async () => {
@@ -168,50 +194,87 @@ test('render: an answer turned a quarter is taken (portrait thumbnail of a lands
   await t.idle();
 });
 
-test('render: the timeout covers waiting for a slot and the OS call together', async () => {
+test('render: the timeout covers waiting for a slot and the OS call together', async (tc) => {
+  // The deadlines run on mocked timers, so b reaches the OS between a's deadline and its own however
+  // long the temp copy takes (real I/O) and however late the event loop runs.
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
   const gate = deferred();
+  const entered = [deferred(), deferred()]; // the OS call has been made, by call
   const timeoutMs = 200;
-  const { t, calls, left } = fake({ answer: () => gate.promise, concurrent: 1, timeoutMs });
+  const { t, calls, left } = fake({
+    answer: (file, size, all) => {
+      entered[all.length - 1].resolve();
+      return gate.promise;
+    },
+    concurrent: 1, timeoutMs,
+  });
   const dims = { width: 40, height: 30 };
   const a = t.render(HEIC, { format: 'heic', dims });
-  while (!calls.length) await new Promise((r) => setTimeout(r, 5));
-  const t0 = Date.now();
-  // b waits for a's slot; a hangs, so at a's deadline its slot is b's, whose own deadline comes soon after.
-  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null);
-  const took = Date.now() - t0;
-  assert.ok(took < timeoutMs * 1.6, `one deadline over the wait and the call (${took} ms)`);
+  const aState = settled(a);
+  await entered[0].promise;
+  tc.mock.timers.tick(50);
+  // b starts 50 ms after a and waits for a's slot; a hangs.
+  const b = t.render(HEIC, { format: 'heic', dims });
+  const bState = settled(b);
+  tc.mock.timers.tick(timeoutMs - 50 - 1);
+  await flush();
+  assert.deepEqual([calls.length, aState.done, bState.done], [1, false, false], 'b still waits for the slot');
+  tc.mock.timers.tick(1); // a's deadline: a is null, and its slot is b's
   assert.equal(await a, null);
-  assert.equal(calls.length, 2);
+  await entered[1].promise;
+  assert.equal(calls.length, 2, 'b reached the OS once a was abandoned');
+  // b's deadline counts from its start (at 250 ms), not from getting the slot (at 200 ms; else 400 ms).
+  tc.mock.timers.tick(50 - 1);
+  await flush();
+  assert.equal(bState.done, false, 'b runs until its own deadline');
+  tc.mock.timers.tick(1);
+  assert.equal(await b, null, 'one deadline over the wait and the call');
   gate.resolve(png(40, 30));
   await t.idle();
   assert.deepEqual(left(), []);
 });
 
-test('render: a hung OS call stops holding its slot at its deadline; while maxAbandoned hang, nothing new is asked', async () => {
+test('render: a hung OS call stops holding its slot at its deadline; while maxAbandoned hang, nothing new is asked', async (tc) => {
+  // Mocked timers, as above: each deadline passes only once its call has reached the OS.
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
   const gates = [deferred(), deferred(), deferred()];
+  const entered = gates.map(() => deferred()); // the OS call has been made, by call
+  const timeoutMs = 30;
   const { t, calls, left } = fake({
-    answer: (file, size, all) => (all.length <= gates.length ? gates[all.length - 1].promise : png(size.width, size.height)),
-    concurrent: 1, timeoutMs: 30, maxAbandoned: 2,
+    answer: (file, size, all) => {
+      if (all.length > gates.length) return png(size.width, size.height);
+      entered[all.length - 1].resolve();
+      return gates[all.length - 1].promise;
+    },
+    concurrent: 1, timeoutMs, maxAbandoned: 2,
   });
   const dims = { width: 40, height: 30 };
-  assert.equal(await t.render(HEIC, { format: 'heic', dims }), null, 'the first hangs: null at its deadline');
+  const a = t.render(HEIC, { format: 'heic', dims });
+  await entered[0].promise;
+  tc.mock.timers.tick(timeoutMs);
+  assert.equal(await a, null, 'the first hangs: null at its deadline');
   assert.equal(t.busy(), true);
   // A cancelled call holds its slot until it ends or its deadline passes, then frees it as well.
   const ctrl = new AbortController();
   const b = t.render(HEIC, { format: 'heic', dims, signal: ctrl.signal });
-  while (calls.length < 2) await new Promise((r) => setTimeout(r, 5));
+  await entered[1].promise;
+  tc.mock.timers.tick(10);
   ctrl.abort();
   await assert.rejects(b, { kind: 'aborted' });
   const c = t.render(HEIC, { format: 'heic', dims });
+  const cState = settled(c);
+  await flush();
+  assert.equal(cState.done, false, 'c waits for the slot the cancelled call holds');
+  tc.mock.timers.tick(timeoutMs - 10); // b's deadline; c's is 10 ms later
   assert.equal(await c, null, 'it waited for the cancelled call\'s deadline, and got no slot then: two calls hang');
   assert.equal(calls.length, 2);
   assert.equal(await t.render(HEIC, { format: 'heic', dims }), null, 'two hang: null at once');
   assert.equal(calls.length, 2, 'not handed to the OS');
   gates[0].resolve(null); // one hung call ends
-  while (left().length > 1) await new Promise((r) => setTimeout(r, 5));
-  await new Promise((r) => setTimeout(r, 5));
+  while (left().length > 1) await flush();
+  await flush();
   const d = t.render(HEIC, { format: 'heic', dims });
-  while (calls.length < 3) await new Promise((r) => setTimeout(r, 5));
+  await entered[2].promise;
   gates[2].resolve(png(40, 30));
   assert.equal((await d).width, 40, 'asked again once fewer hang');
   gates[1].resolve(null);

@@ -4,7 +4,7 @@
 // the working tree's own state (src/working-state.js): nothing here knows about rebases or merges.
 const fs = require('node:fs');
 const path = require('node:path');
-const { kindError, tagError, run, out, argvChunks, LITERAL_ENV } = require('./exec');
+const { kindError, tagError, run, out, cleanFiles } = require('./exec');
 const { resolveRoot } = require('./repo-dirs');
 const { OID } = require('./gitref');
 const { v2Records } = require('./porcelain');
@@ -157,7 +157,7 @@ async function undoApply(cwd, sha, untracked) {
     throw kindError('dirty', 'The working tree changed while the stash was being re-applied, so it was not reset');
   }
   await run(cwd, ['reset', '-q', '--hard', '--no-recurse-submodules', 'HEAD']);
-  for (const chunk of argvChunks(untracked)) await run(cwd, ['clean', '-f', '-q', '--', ...chunk], { env: LITERAL_ENV });
+  await cleanFiles(cwd, untracked);
 }
 
 /**

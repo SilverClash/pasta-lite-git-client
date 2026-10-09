@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { gitAt, tryGitAt, GitError } = require('./git-process');
 const { branchOf } = require('./gitref');
+const { nativePath, samePath } = require('./fs-paths');
 
 // Every command runs at the worktree root, so root-relative paths from `status` are valid
 // pathspecs no matter which subdirectory the caller passed. Bare repos, a .git folder and
@@ -22,13 +23,6 @@ const { branchOf } = require('./gitref');
 const rootCache = new Set();
 const bareRoots = new Set();
 
-/**
- * The cache key of a git dir git printed: `--absolute-git-dir` gives forward slashes on Windows
- * ('C:/x/.bare') while every lookup uses path.resolve ('C:\\x\\.bare'). `pathMod` for tests
- * (path.win32).
- */
-const gitDirKey = (p, pathMod = path) => pathMod.resolve(p);
-
 /** Forget everything cached about the folder `dir` (a worktree root, a bare git dir, its git dirs). */
 function forgetRoot(dir) {
   const abs = path.resolve(dir);
@@ -40,14 +34,19 @@ function forgetRoot(dir) {
 /**
  * The worktree root containing `cwd` (a cached root, or a bare repo's git dir, as is), or `cwd`
  * itself when it has none: a bare repo, a .git folder or a non-repo (--show-toplevel fails).
+ * git's answer is in native spelling (fs-paths.nativePath: Git for Windows prints 'C:/x'); `cwd`
+ * is the root when it is that folder in any spelling samePath accepts (on Windows, any case), and
+ * is then cached and returned as given.
  */
 async function resolveRoot(cwd) {
   const abs = path.resolve(cwd);
   if (rootCache.has(abs) || bareRoots.has(abs)) return abs;
-  const top = await gitAt(abs, ['rev-parse', '--show-toplevel']).then((r) => r.stdout.trim(), () => null);
-  if (!top) return abs; // not (yet) a repo or no worktree: `git init` may follow
-  if (top === abs) rootCache.add(abs);
-  return top;
+  const printed = await gitAt(abs, ['rev-parse', '--show-toplevel']).then((r) => r.stdout.trim(), () => null);
+  if (!printed) return abs; // not (yet) a repo or no worktree: `git init` may follow
+  const top = nativePath(printed);
+  if (!samePath(top, abs)) return top;
+  rootCache.add(abs);
+  return abs;
 }
 
 /**
@@ -63,7 +62,8 @@ async function bareGitDir(dir) {
   const { stdout } = await gitAt(abs, ['rev-parse', '--is-bare-repository', '--absolute-git-dir']);
   const [flag, gitDirPath] = stdout.split('\n');
   const bare = flag === 'true';
-  const gitDir = gitDirPath ? gitDirKey(gitDirPath) : abs;
+  // nativePath: Git for Windows prints 'C:/x/.bare', every lookup is spelled 'C:\\x\\.bare'.
+  const gitDir = gitDirPath ? nativePath(gitDirPath) : abs;
   if (bare && gitDirPath) bareRoots.add(gitDir);
   return { bare, gitDir };
 }
@@ -156,7 +156,7 @@ async function repoDirs(cwd) {
   const root = await resolveRoot(cwd);
   const hit = dirsCache.get(root);
   if (hit && fs.statSync(hit.gitDir, { throwIfNoEntry: false })?.isDirectory()) return hit;
-  const [gd, common] = (await gitAt(root, ['rev-parse', '--absolute-git-dir', '--path-format=absolute', '--git-common-dir'])).stdout.split('\n');
+  const [gd, common] = (await gitAt(root, ['rev-parse', '--absolute-git-dir', '--path-format=absolute', '--git-common-dir'])).stdout.split('\n').map((p) => nativePath(p));
   const dirs = { gitDir: gd, commonDir: common || gd };
   dirsCache.set(root, dirs);
   return dirs;
@@ -168,5 +168,6 @@ async function gitDir(cwd) {
 }
 
 module.exports = {
-  resolveRoot, forgetRoot, gitDirKey, bareGitDir, isBare, repoDirs, gitDir, headState, STATE_FILES, repoState, stateAt,
+  resolveRoot, forgetRoot, bareGitDir, isBare, repoDirs, gitDir, headState, repoState, stateAt,
+  _internal: { STATE_FILES }, // exported for unit tests only
 };

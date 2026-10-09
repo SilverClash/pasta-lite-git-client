@@ -1,0 +1,28 @@
+# Text files are stored with LF and checked out with LF on every OS (.editorconfig), even where
+# git's core.autocrlf is true (Git for Windows' default).
+* text=auto eol=lf
+
+# Binary files: no line-ending conversion and no text diff.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.avif binary
+*.bmp binary
+*.ico binary
+*.icns binary
+*.heic binary
+*.tif binary
+*.tiff binary
+*.psd binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.7z binary
+
+# The image fixtures (the SVGs too) are sniffed by content and copied into the demo repository
+# (scripts/demo-repo.js): keep their bytes exactly as committed.
+test/fixtures/images/** binary

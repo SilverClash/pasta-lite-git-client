@@ -1,7 +1,8 @@
 # Contributing to Pasta Lite
 
 Thanks for your interest in Pasta Lite. It is a small, alpha-stage Electron git client. It has no
-framework and no bundler: you develop it from source, and releases are packaged as macOS DMGs.
+framework and no bundler: you develop it from source, and releases are packaged as macOS DMGs
+and, in alpha, Windows installers.
 Bug reports, fixes and focused features are welcome.
 
 Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). To report a security problem, do not
@@ -13,9 +14,13 @@ open an issue: follow [SECURITY.md](SECURITY.md) instead.
   needs 22.13 or newer, because ESLint 10 requires it.
 - **git 2.51 or newer.** The app checks this at startup (`src/gitcheck.js`) and refuses to run
   with an older git, because undo relies on `git reflog write`. The tests need it too. Apple's
-  bundled git is usually older, so install git with Homebrew or your package manager.
-- **OS:** the app is developed and tested on macOS. Windows and Linux are untested, though CI runs
-  the test suite on Ubuntu. Reports and fixes for other platforms are welcome.
+  bundled git is usually older, so install git with Homebrew or your package manager. On Windows,
+  install Git for Windows: the tests run git's hooks and the rebase editor through its `sh`.
+- **OS:** the app is developed and tested on macOS. Windows support is alpha: the app works in
+  testing on Windows 11, but it has had far less real use, so expect rough edges. Linux gets
+  little hands-on use. CI runs the test suite on Ubuntu and on Windows (where a few tests that
+  can't run there are skipped, each with its reason). Reports and fixes for other platforms are
+  welcome.
 
 ## Setup
 
@@ -50,6 +55,13 @@ runners. The tests use Node's built-in test runner and don't start Electron. The
 `main/` and the renderer scripts under plain Node (`test/renderer-harness.js` supplies a fake
 `window`). They create throwaway repositories under the OS temp folder. `test/helpers.js` isolates
 them from your `~/.gitconfig` and sets their own author, so no git identity setup is needed.
+
+`node --test` runs each file in its own process, and `--test-timeout` then bounds each file's
+whole run, not each test in it (on Node 22 a file's tests get no timeout from it). If you pass it,
+give it well over the slowest file's time: some files take several minutes on Windows, and CI
+there uses ten. On Windows, keep the paths a test creates well under 260 characters, the temp
+folder included: Git for Windows doesn't enable `core.longpaths` by default, and neither the app
+nor the tests set it, so git can't open a longer path ("Filename too long").
 
 ### Smoke run
 
@@ -165,13 +177,74 @@ context:primary-signature` on each DMG, and `xcrun stapler validate` on both. It
 `spctl -a -vvv -t install` for the DMGs as information. If notarization fails, read Apple's log
 with `xcrun notarytool log <submission id> --keychain-profile pasta-lite-notary`.
 
-Upload the two DMGs from `dist/` to the GitHub release.
+Then upload the two DMGs from `dist/` to the GitHub release (see
+[Publishing a release](#publishing-a-release)).
 
 **Entitlements.** `build/entitlements.mac.plist` grants only `com.apple.security.cs.allow-jit`,
 which V8 needs for its JIT under the hardened runtime. The app has no native modules, loads no
 unsigned libraries, sends no Apple Events (Open in Terminal runs `/usr/bin/open -a Terminal`) and
 isn't sandboxed. Starting git or other programs needs no entitlement, because they run under their
 own signatures.
+
+## Building the Windows app
+
+The `"win"` and `"nsis"` settings in `package.json` make an NSIS installer for x64 and one for
+arm64, plus a portable zip for x64. The installer asks whether to install per user (the default,
+with no administrator rights) or for all users, lets the user choose the folder, adds "Pasta
+Lite" shortcuts to the desktop and the Start menu. Uninstalling leaves the app's data
+(`%APPDATA%\Pasta Lite`) in place: electron-builder's uninstaller deletes app data only when run
+with `--delete-app-data` or built with `nsis.deleteAppDataOnUninstall` (left at its default,
+off), and even then only the folders named after the product and the package, not `Pasta Lite`.
+The app icon is `assets/icon.ico`, made from `assets/icon.png`. The Windows builds are not
+code-signed, and have no auto-update (no blockmaps or `latest.yml`).
+
+```sh
+npm ci
+npm run dist:win
+# dist/Pasta-Lite-<version>-x64-setup.exe, dist/Pasta-Lite-<version>-arm64-setup.exe
+# dist/Pasta-Lite-<version>-win-x64.zip, dist/win-unpacked/, dist/win-arm64-unpacked/
+```
+
+This works on Windows, and on a Mac too: electron-builder downloads its own NSIS, and an
+unsigned build needs no Wine. The macOS hooks (`scripts/mac-adhoc-sign.js`,
+`scripts/mac-notarize-dmg.js`) do nothing for a Windows build, and the Electron fuses and the
+asar integrity check apply to the Windows executable as well.
+
+## Publishing a release
+
+1. Update the version in `package.json` (and `package-lock.json`) and `CHANGELOG.md`, and merge
+   that to `main`.
+2. Tag the merge commit and push the tag:
+
+   ```sh
+   git tag v<version>
+   git push origin v<version>
+   ```
+
+   The tag starts `.github/workflows/release.yml`. Its `build` job, on a Windows runner with a
+   read-only token, checks that the tag matches the version in `package.json`, builds the Windows
+   installers and the zip with `npx electron-builder --win --publish never`, and writes
+   `Pasta-Lite-<version>-SHA256SUMS-windows.txt` for them (`<hash>  <file>` lines, as
+   `sha256sum -c` reads them), since they aren't signed. It keeps these files as a workflow
+   artifact named `windows`. Its `publish` job then attaches them to the GitHub release for the
+   tag, which it creates as a draft prerelease if there's none yet. It only ever changes a draft:
+   if the release is already published, the job fails and leaves the release's files alone, and
+   if the draft gets published while the job is attaching its files, the job fails loudly too.
+   Only a re-run replaces files (of the draft) it attached before.
+   Running the workflow by hand on a branch (Actions → release → Run workflow) builds the
+   workflow artifact only.
+3. On a Mac, build, sign and notarize the DMGs from the same tag
+   ([Release build](#release-build-maintainers)), then add them to the same release:
+
+   ```sh
+   gh release upload v<version> dist/Pasta-Lite-<version>-arm64.dmg dist/Pasta-Lite-<version>-x64.dmg
+   ```
+
+   Wait for the workflow to create the draft first, or create the release yourself
+   (`gh release create v<version> --draft --prerelease`): the workflow then attaches its files to
+   that one. Don't publish the release before the workflow has attached the Windows files.
+4. Write the release notes from `CHANGELOG.md` and publish the release. It should carry two DMGs,
+   two `-setup.exe` installers, the zip and the SHA256SUMS file.
 
 ## Architecture
 
@@ -180,9 +253,14 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
 - **`src/`** is the git layer and the app's logic, free of Electron: nothing in it requires
   `electron`, so all of it runs and is tested under plain Node (dialogs, windows and `spawn` are
   passed in). It runs the `git` CLI through `src/git-process.js` with fixed `-c` overrides and an
-  env allowlist, and messages and path lists go on stdin. `src/git.js` is the git facade,
-  `src/ops.js` the registry of operations and `src/runner.js` their queue (one write at a time per
-  repository, reads don't wait).
+  env allowlist, and messages and path lists go on stdin. A cancel ends git's hooks too. Windows
+  has no process groups, so there every git gets a random `PASTA_LITE_GIT_ID` that its hooks
+  inherit and the cancel finds them by (so a daemon a cancelled command started, an MSYS
+  gpg-agent or an ssh ControlPersist master, ends with it, which is fine: it starts again on
+  next use), and for a command that writes the index, the `index.lock` the killed git left is
+  removed when it can tell that git took it (`signalGroup`, `releaseKilledLock`). `src/git.js` is
+  the git facade, `src/ops.js` the registry of operations and `src/runner.js` their queue (one
+  write at a time per repository, reads don't wait).
 - **`main.js` and `main/`** are the main process. `main.js` is the composition root; `main/` holds
   the window, the tabs (one `WebContentsView` and one `src/tab-session.js` per tab), the menu,
   IPC registration, the Help and crash UI, and the `--smoke` harness.
@@ -268,7 +346,7 @@ license). There is no CLA.
 
 - **Keep PRs focused**: one feature or fix per PR. Put unrelated clean-ups in their own PR.
 - **Add or update tests** for every behaviour change, and run `npm test` before you push. CI runs
-  it on macOS and Ubuntu.
+  it on macOS, Ubuntu and Windows.
 - **Run `npm run lint`** and don't add findings.
 - For UI changes, include a screenshot. A smoke-run PNG is fine.
 - If the change alters how a part works, update its header comment, and the Architecture section

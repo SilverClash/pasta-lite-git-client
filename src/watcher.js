@@ -41,6 +41,22 @@
 // (worktrees/<name>), locked, or switched to another branch (worktrees/<name>/HEAD) is a 'refs'
 // change as in any repository (see above). On Linux the walk prunes the git dir's noisy parts
 // (objects, logs, and the same parts of worktrees/) as for `.git`.
+//
+// The root going away (deleted, moved) is reported once as 'gone' and closes the watcher. A batch
+// checks the root before it is emitted; events check it too, at most every ROOT_CHECK_MS, and
+// always for an event naming the root itself: Windows reports a watched folder's deletion as
+// events named by its own '\\?\C:\...' path, repeated in a tight loop (~60,000 a second) until the
+// watch is closed, so waiting for a debounce would burn a core. On Windows renaming the root sends
+// no event at all (the watch follows the folder to its new name), so there the root's path is
+// also polled every rootPollMs. Every check is an async stat (the event-driven one: one at a time),
+// so a slow network share never blocks main, and only ENOENT / ENOTDIR counts as gone: a mapped
+// or SMB drive hiccuping (EPERM, EBUSY, EIO) must not bounce the tab to the start screen.
+//
+// A nameless event (libuv's change buffer overflowed: Windows, routinely during an npm install or
+// a build, even in ignored folders) may hide a ref or HEAD change, so it is a full refresh, but on
+// the working folder's timing (debounceWork / maxWaitWork): on the refs lane a build would re-read
+// log, branches and status every second. FSEvents and inotify never send one: libuv drops
+// FSEvents' dropped-event notices and inotify's queue overflow, and names every other event.
 const fs = require('node:fs');
 const path = require('node:path');
 const { out } = require('./exec');
@@ -131,6 +147,22 @@ const MAX_CHECK = 5000;
 const CACHE_MAX = 20000;
 // event.paths is a hint for the renderer (which open diff to reload); beyond this it is left out.
 const MAX_PATHS = 200;
+// Events check that the root still exists at most this often (one stat, whatever the burst).
+const ROOT_CHECK_MS = 1000;
+// Windows: how often the root's path is polled (a rename sends no event there).
+const ROOT_POLL_MS = 5000;
+
+/**
+ * An fs.watch file name with Windows' device prefix taken off: '\\?\C:\x' -> 'C:\x',
+ * '\\?\UNC\srv\share\x' -> '\\srv\share\x' (the spelling the app holds). libuv names the watched
+ * folder itself that way (when it is deleted); other names are relative. Elsewhere `name` as is: on
+ * POSIX '\\?\' is a plain file name.
+ */
+function withoutDevicePrefix(name, platform) {
+  if (platform !== 'win32') return name;
+  if (/^\\\\\?\\UNC\\/i.test(name)) return `\\\\${name.slice(8)}`;
+  return name.startsWith('\\\\?\\') ? name.slice(4) : name;
+}
 
 /**
  * Default isIgnored: the subset of root-relative `paths` git ignores (one git process, two when a
@@ -173,6 +205,10 @@ const realpath = realPathSync;
 
 const isRuleFile = (p) => p === '.gitignore' || p.endsWith('/.gitignore');
 
+// A stat error that says the root is gone. Anything else (EPERM, EBUSY, EIO, a network error)
+// doesn't say the folder moved, only that it couldn't be read just now.
+const isGoneError = (err) => !!err && (err.code === 'ENOENT' || err.code === 'ENOTDIR');
+
 /**
  * Watch the repository whose worktree root is `root`.
  * @param {string} root worktree root (as repo-dirs.resolveRoot / ops.openRepo report it)
@@ -182,7 +218,7 @@ const isRuleFile = (p) => p === '.gitignore' || p.endsWith('/.gitignore');
  *   resumeGrace?: number, ignoreCacheMs?: number,
  *   isIgnored?: (paths: string[]) => Promise<Iterable<string>>,
  *   fsWatch?: typeof fs.watch, clock?: {setTimeout, clearTimeout, now},
- *   log?: (message: string, error: unknown) => void, bare?: boolean,
+ *   log?: (message: string, error: unknown) => void, bare?: boolean, rootPollMs?: number,
  * }} o
  *   kinds: any of 'status' | 'refs' | 'stashes', or exactly ['full'], ['gone'] (the root was deleted;
  *   the watcher closed itself) or ['error'] (with `error`: fs.watch failed, e.g. EMFILE / ENOSPC /
@@ -198,11 +234,14 @@ const isRuleFile = (p) => p === '.gitignore' || p.endsWith('/.gitignore');
  *   log: failures that don't stop the watcher (check-ignore, listing submodules); each message
  *   is logged once.
  *   bare: `root` is a bare repository's git dir (see the header): its paths are all gitdir paths.
+ *   rootPollMs: how often the root's path is checked with no event (a rename sends none on
+ *   Windows; see the header); 0: never. Default ROOT_POLL_MS on Windows, 0 elsewhere.
  *   onEvent must not throw: it runs from timers and fs callbacks.
  * @param {{gitDir?: string, platform?: string, gitlinks?: (root: string) => Promise<string[]>,
- *   ignoredEntries?: (root: string) => Promise<string[]>}} [internal] test hooks only: gitDir skips
- *   `git rev-parse` (used as the common dir too); platform replaces process.platform; gitlinks /
- *   ignoredEntries replace the `git ls-files` calls.
+ *   ignoredEntries?: (root: string) => Promise<string[]>, stat?: (p: string) => Promise<unknown>}}
+ *   [internal] test hooks only: gitDir skips `git rev-parse` (used as the common dir too); platform
+ *   replaces process.platform; gitlinks / ignoredEntries replace the `git ls-files` calls; stat
+ *   replaces fs.promises.stat for the root checks.
  * @returns {{pause(): void, resume(): void, close(): void, ready: Promise<void>}}
  *   pause() nests (counted). While paused, changes are collected but nothing is emitted; the
  *   last resume() emits at most one batch with everything collected. ready resolves once every
@@ -211,14 +250,16 @@ const isRuleFile = (p) => p === '.gitignore' || p.endsWith('/.gitignore');
 function createWatcher(root, {
   onEvent, debounceWork = 2000, maxWaitWork = 10000, debounceRefs = 250, maxWaitRefs = 1000,
   resumeGrace = debounceRefs, ignoreCacheMs = 10000, isIgnored = null, fsWatch = fs.watch,
-  clock = { setTimeout, clearTimeout, now: Date.now }, log = defaultLog, bare = false,
+  clock = { setTimeout, clearTimeout, now: Date.now }, log = defaultLog, bare = false, rootPollMs = null,
 } = {}, {
   gitDir = null, platform = process.platform, gitlinks: listLinks = listGitlinks, ignoredEntries = listIgnored,
+  stat = fs.promises.stat,
 } = {}) {
   if (typeof onEvent !== 'function') throw new TypeError('createWatcher: onEvent must be a function');
   const rootAbs = realpath(path.resolve(root));
   const ignoredSubset = isIgnored || ((paths) => checkIgnore(rootAbs, paths));
   const linux = platform === 'linux';
+  const pollMs = rootPollMs ?? (platform === 'win32' ? ROOT_POLL_MS : 0);
   // Until rev-parse answers, assume the usual layout (root/.git); events are mapped with the
   // current value, so nothing that happens meanwhile is lost. A bare root is its own git dir.
   const gitHome = bare ? rootAbs : path.join(rootAbs, '.git');
@@ -243,6 +284,8 @@ function createWatcher(root, {
   let flushing = false;
   let flushAgain = false;
   let closed = false;
+  const rootCheck = { at: -Infinity, running: false }; // the last event-driven check that the root exists
+  const poll = { timer: null, running: false };
 
   const inside = isAtOrUnder;
   const posixRel = (from, abs) => path.relative(from, abs).split(path.sep).join('/');
@@ -257,11 +300,15 @@ function createWatcher(root, {
   /** Root-relative path for classify ('.git/...' for gitdir entries), or undefined to drop it. */
   function mapPath(base, name) {
     if (name == null || name === '') {
-      // fs.watch did not say what changed: the worktree may have; inside a gitdir (a bare root is
-      // one), assume anything.
-      return base === rootAbs && !bare ? null : '.git/HEAD';
+      // fs.watch did not say what changed (Windows: a burst, a stash or a commit, overflowed
+      // libuv's change buffer). A watch that covers a gitdir (the gitdir's own, a bare root, or
+      // the root with `.git` a folder inside it) may have missed a ref, HEAD or stash change in it:
+      // assume anything. Only a root whose gitdirs live elsewhere (a linked worktree, a
+      // submodule: they have their own watches) knows it was its working folder.
+      const coversGit = base !== rootAbs || [dirs.git, dirs.common].some((d) => inside(d, rootAbs));
+      return coversGit ? '.git/HEAD' : null;
     }
-    const abs = path.resolve(base, String(name));
+    const abs = path.resolve(base, withoutDevicePrefix(String(name), platform));
     if (inside(abs, dirs.git)) return abs === dirs.git ? '.git' : `.git/${posixRel(dirs.git, abs)}`;
     if (dirs.common !== dirs.git && inside(abs, dirs.common)) {
       const rel = posixRel(dirs.common, abs);
@@ -297,6 +344,10 @@ function createWatcher(root, {
   function onFsEvent(base, name) {
     if (closed || starting) return;
     const rel = mapPath(base, name);
+    // The root itself (Windows: its deletion, repeated until the watch closes), or the first event
+    // in ROOT_CHECK_MS: a root that is gone closes the watch as soon as the stat answers, not after
+    // a debounce that the events keep re-arming. One stat in flight, whatever the burst.
+    if (!rootCheck.running && (rel === '' || clock.now() - rootCheck.at >= ROOT_CHECK_MS)) checkRoot();
     if (rel === undefined) return;
     const kind = classify(rel);
     if (kind === null) return;
@@ -315,7 +366,9 @@ function createWatcher(root, {
     } else {
       pending.kinds.add(kind);
     }
-    schedule('refs');
+    // Nameless: a buffer overflow, mapped to `.git/HEAD` (full) but timed as a working-folder
+    // change (see the header).
+    schedule(name == null || name === '' ? 'work' : 'refs');
   }
 
   const blindStatus = () => pending.kinds.has('full') || pending.kinds.has('status');
@@ -495,7 +548,8 @@ function createWatcher(root, {
     return e;
   }
 
-  function deliver({ kinds, work }, paths, epoch) {
+  async function deliver({ kinds, work }, paths, epoch) {
+    const missing = await rootGone();
     if (closed) return;
     // A .gitignore that isn't itself ignored changed (unfiltered batch: assume it matters).
     if ((paths === null || kinds.has('full') ? work : paths).some(isRuleFile)) rulesChanged();
@@ -504,7 +558,7 @@ function createWatcher(root, {
       flushAgain = true;
       return;
     }
-    if (!fs.existsSync(rootAbs)) {
+    if (missing) {
       gone();
       return;
     }
@@ -546,6 +600,8 @@ function createWatcher(root, {
     if (closed) return;
     closed = true;
     clearTimers();
+    if (poll.timer) clock.clearTimeout(poll.timer);
+    poll.timer = null;
     pending.kinds.clear();
     pending.work.clear();
     pending.known.clear();
@@ -553,17 +609,52 @@ function createWatcher(root, {
   }
 
   function gone() {
+    if (closed) return;
     close();
     onEvent({ kinds: ['gone'] });
   }
 
-  /** A watch failed: stop everything and report once (no retry: the caller decides when). */
+  /**
+   * Resolves true when the root is gone (isGoneError), false when it is there or couldn't be
+   * read; never rejects. Async: a slow drive never blocks main.
+   */
+  function rootGone() {
+    return Promise.resolve().then(() => stat(rootAbs)).then(() => false, isGoneError);
+  }
+
+  /** The event-driven check (onFsEvent): one at a time, so a burst never piles up stats. */
+  function checkRoot() {
+    rootCheck.at = clock.now();
+    rootCheck.running = true;
+    rootGone().then((missing) => {
+      rootCheck.running = false;
+      if (missing) gone();
+    });
+  }
+
+  /** Check the root's path every pollMs (see the header), one stat at a time. */
+  function armPoll() {
+    if (closed || pollMs <= 0 || poll.timer || poll.running) return;
+    poll.timer = clock.setTimeout(() => {
+      poll.timer = null;
+      poll.running = true;
+      rootGone().then((missing) => {
+        poll.running = false;
+        if (missing) gone();
+        else armPoll();
+      });
+    }, pollMs);
+  }
+
+  /**
+   * A watch failed: stop everything and report once (no retry: the caller decides when). As
+   * 'gone' when the root is gone (the watch failed because of it), else as 'error'.
+   */
   function fail(error) {
     if (closed) return;
-    const missing = !fs.existsSync(rootAbs);
     close();
-    // Deferred: fail() can run inside createWatcher, before the caller has the handle.
-    queueMicrotask(() => onEvent(missing ? { kinds: ['gone'] } : { kinds: ['error'], error }));
+    // Reported after the stat, so never inside createWatcher, before the caller has the handle.
+    rootGone().then((missing) => onEvent(missing ? { kinds: ['gone'] } : { kinds: ['error'], error }));
   }
 
   function watch(base) {
@@ -595,6 +686,7 @@ function createWatcher(root, {
   // Linux waits for the gitdirs and the ignored entries, so the walk can skip them; elsewhere the
   // root is watched right away.
   if (!linux) watch(rootAbs);
+  armPoll();
   const ready = gitDirs().then(async (d) => {
     if (closed) return;
     Object.assign(dirs, d);
@@ -629,4 +721,6 @@ function createWatcher(root, {
   };
 }
 
-module.exports = { createWatcher, classify, noisyGit, MAX_CHECK, MAX_PATHS };
+module.exports = {
+  createWatcher, classify, noisyGit, withoutDevicePrefix, MAX_CHECK, MAX_PATHS, ROOT_CHECK_MS,
+};

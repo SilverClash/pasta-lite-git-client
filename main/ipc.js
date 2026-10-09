@@ -14,7 +14,6 @@
 // across IPC. Arguments are coerced by the table's coercers and needsRepo is checked before the
 // handler runs; those refusals are logged here. Handler failures are logged too, except for
 // 'op', whose runner logs every op it runs.
-const os = require('node:os');
 const ops = require('../src/ops');
 const { kindError } = require('../src/exec');
 const { freshWorktreeEntry } = require('../src/repo-opening');
@@ -130,7 +129,7 @@ function createHandlers({ runner, controller, opening, recentView, rendererLog, 
         if (s.repo) s.watch.retry();
       }
       const { gitVersion, gitPath } = git();
-      return { repo: s.repo, recent: await recentView.refresh(), gitVersion, gitPath, home: os.homedir(), tabs: { count: tabs.size, id: s.id } };
+      return { repo: s.repo, recent: await recentView.refresh(), gitVersion, gitPath, tabs: { count: tabs.size, id: s.id } };
     },
     'app:openDialog': ({ session: s }, o) => opening().openFromDialog(s, o),
     // By root, but only one from the list the renderer was last shown: never an arbitrary path.

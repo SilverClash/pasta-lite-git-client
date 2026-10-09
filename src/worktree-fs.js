@@ -14,7 +14,46 @@ const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 // The separators of a repository-relative path: '/' (git's), and on Windows '\' too. On POSIX '\' is
 // an ordinary file name character (git tracks 'a\b.png' as one name), so the guard checks the very
 // file git means, not 'a/b.png'.
-const SEPARATORS = process.platform === 'win32' ? /[\\/]+/ : /\/+/;
+const separators = (platform) => (platform === 'win32' ? /[\\/]+/ : /\/+/);
+
+/**
+ * True when path component `name` opens the repository's '.git' (dir, or a linked worktree's /
+ * submodule's pointer file): '.git' in any case (macOS and Windows file systems ignore case); on
+ * Windows (`platform`) also NTFS's 8.3 short name 'GIT~1' ('GIT~2' ... when that is taken) and any
+ * spelling with trailing dots or spaces, which Win32 strips ('.git.', '.git '). git refuses the
+ * same names (core.protectNTFS).
+ */
+function isDotGitName(name, { platform = process.platform } = {}) {
+  if (platform !== 'win32') return name.toLowerCase() === '.git';
+  return /^(?:\.git|git~\d+)[. ]*$/i.test(name);
+}
+
+// Win32's reserved device names: a file name 'nul', 'COM1' or 'aux.txt' (an extension or trailing
+// spaces don't matter, nor the case) opens the device, not a file in the folder, so a write there
+// would go to a serial port or the console. CONIN$ / CONOUT$ are the console's own; COM0 / LPT0 and
+// the superscript digits (COM¹ ...) are on Microsoft's reserved list too. Git for Windows refuses
+// the same names (is_valid_win32_path).
+const DEVICE_NAME = /^(?:aux|con|nul|prn|conin\$|conout\$|(?:com|lpt)[0-9\u00b9\u00b2\u00b3]) *(?:[.:]|$)/i;
+
+// A component of an input path the guard refuses by its spelling: '..', a '.git' (isDotGitName),
+// and on Windows any name Win32 doesn't open as the file spelled: trailing dots / spaces are
+// stripped ('a.' opens 'a'), ':' names an NTFS alternate data stream ('a:s',
+// '.git::$INDEX_ALLOCATION') and a device name (DEVICE_NAME) opens a device. Git for Windows
+// doesn't check such names out either.
+const refusedName = (name, platform) => name === '..' || isDotGitName(name, { platform })
+  || (platform === 'win32' && (/[. ]$|:/.test(name) || DEVICE_NAME.test(name)));
+
+/**
+ * True when real path `real` (at or under real path `realRoot`) goes through a '.git' component
+ * below the root: the canonical spelling of the path, so it catches the aliases the input check
+ * can't know (an 8.3 name realpath expanded, say 'GI8F2A~1' for '.git'). realpath expands only the
+ * part that exists; the rest is the input's own spelling, which the input check already refused
+ * any alias in, and a missing name can't be an alias of an existing '.git'.
+ */
+function throughDotGit(real, realRoot, { platform = process.platform } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  return p.relative(realRoot, real).split(p.sep).some((name) => isDotGitName(name, { platform }));
+}
 const realpath = (p) => fs.realpathSync.native(p); // native: canonical case on case-insensitive fs
 
 // Real path of `abs`, which may not exist yet: realpath of the deepest existing ancestor plus the rest.
@@ -45,7 +84,7 @@ function realpathOfMaybeMissing(abs) {
  * check(rel, {allowFinalLink: true}) accepts a symlink as the last component (for deleting a
  * tracked link itself: unlink never follows it); its parents are still checked the same way.
  */
-async function worktreeGuard(cwd) {
+async function worktreeGuard(cwd, { platform = process.platform } = {}) {
   const root = await resolveRoot(cwd);
   const realRoot = realpath(root);
   const dirs = (await out(root, ['rev-parse', '--git-dir', '--git-common-dir'])).split('\n').filter(Boolean);
@@ -53,8 +92,8 @@ async function worktreeGuard(cwd) {
 
   function check(rel, { allowFinalLink = false } = {}) {
     if (typeof rel !== 'string' || !rel || path.isAbsolute(rel)) throw kindError('outside', `not a repository-relative path: ${rel}`);
-    const parts = rel.split(SEPARATORS).filter((s) => s && s !== '.');
-    if (!parts.length || parts.some((s) => s === '..' || s.toLowerCase() === '.git')) {
+    const parts = rel.split(separators(platform)).filter((s) => s && s !== '.');
+    if (!parts.length || parts.some((s) => refusedName(s, platform))) {
       throw kindError('outside', `path leaves the worktree: ${rel}`);
     }
     let p = realRoot;
@@ -70,7 +109,12 @@ async function worktreeGuard(cwd) {
     const abs = path.join(realRoot, ...parts);
     // A permitted final link is judged by where it sits, not where it points.
     const real = finalLink ? path.join(realpathOfMaybeMissing(path.dirname(abs)), path.basename(abs)) : realpathOfMaybeMissing(abs);
-    if (!isAtOrUnder(real, realRoot)) throw kindError('outside', `${rel}: path resolves outside the worktree`);
+    // Exact case: both are canonical (realpath), and a path is let in only when it really is under
+    // the root (in a case-sensitive NTFS folder 'C:\\Repo\\x' is not inside 'C:\\repo').
+    if (!isAtOrUnder(real, realRoot, { fold: false })) throw kindError('outside', `${rel}: path resolves outside the worktree`);
+    // A linked worktree's / submodule's '.git' is a pointer file outside any git dir.
+    if (throughDotGit(real, realRoot, { platform })) throw kindError('outside', `${rel}: path is a .git`);
+    // Folded (on Windows any case): a refusal may err on the safe side.
     if (gitDirs.some((g) => isAtOrUnder(real, g))) throw kindError('outside', `${rel}: path is inside the git directory`);
     return abs;
   }
@@ -98,21 +142,34 @@ function readNoFollow(abs) {
 }
 
 /**
+ * The open flags of writeNoFollow: write only, never through a final symlink (POSIX), and either
+ * creating the file (O_CREAT | O_EXCL) or truncating an existing one. On Windows (`platform`)
+ * without O_TRUNC: libuv opens O_TRUNC without O_CREAT as TRUNCATE_EXISTING, which CreateFile
+ * refuses (EINVAL) for the write access libuv asks; plain O_WRONLY is OPEN_EXISTING, and
+ * writeNoFollow truncates through the descriptor. OPEN_EXISTING also opens a hidden file, which
+ * O_CREAT | O_TRUNC (CREATE_ALWAYS) would refuse with EPERM.
+ */
+function writeFlags({ create = false, platform = process.platform } = {}) {
+  const { O_WRONLY, O_TRUNC, O_CREAT, O_EXCL } = fs.constants;
+  if (create) return O_WRONLY | O_NOFOLLOW | O_CREAT | O_EXCL;
+  return O_WRONLY | O_NOFOLLOW | (platform === 'win32' ? 0 : O_TRUNC);
+}
+
+/**
  * Write `buf` to `abs` without following a final symlink. An existing file is truncated and keeps
  * its mode; `create: true` requires the file not to exist (O_EXCL) and creates it with `mode`.
  * `exec: true|false` then sets or clears the executable bits (where the read bits are set), like
- * git checking out a 100755 / 100644 entry.
+ * git checking out a 100755 / 100644 entry. `platform` for tests (see writeFlags).
  */
-function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec } = {}) {
-  const { O_WRONLY, O_TRUNC, O_CREAT, O_EXCL } = fs.constants;
-  const flags = O_WRONLY | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : O_TRUNC);
+function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec, platform = process.platform } = {}) {
   let fd;
   try {
-    fd = fs.openSync(abs, flags, mode);
+    fd = fs.openSync(abs, writeFlags({ create, platform }), mode);
   } catch (e) {
     throw nofollowError(e, abs);
   }
   try {
+    if (!create && platform === 'win32') fs.ftruncateSync(fd, 0);
     fs.writeFileSync(fd, buf);
     if (exec !== undefined) {
       const cur = fs.fstatSync(fd).mode & 0o7777;
@@ -124,4 +181,7 @@ function writeNoFollow(abs, buf, { create = false, mode = 0o644, exec } = {}) {
   }
 }
 
-module.exports = { worktreeGuard, readNoFollow, writeNoFollow, realpathOfMaybeMissing, O_NOFOLLOW };
+module.exports = {
+  worktreeGuard, readNoFollow, writeNoFollow, O_NOFOLLOW,
+  _internal: { writeFlags, isDotGitName, throughDotGit, refusedName }, // exported for unit tests only
+};

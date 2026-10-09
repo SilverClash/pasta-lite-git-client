@@ -84,11 +84,11 @@
     return { text: 'worktree', title: `${displayName(r.root)}\nLinked worktree of ${displayName(lw.mainPath)}` };
   }
 
-  /** The repository stack's tooltip: the repo's folder (home-relative with the picker), or "Open". */
+  /** The repository stack's tooltip: the repo's folder (as the picker's recent list shows it), or "Open". */
   function repoTitle(r) {
     if (!r) return withKeyHint('Open a repository', 'open');
     const picker = window.PLRepoPicker;
-    const where = picker ? picker.homeShort(r.root, picker.source.get().home) : r.root;
+    const where = picker ? picker.shownPath(r.root) : r.root;
     return withKeyHint(`${displayName(where)}\nSwitch or open a repository`, picker ? 'repoPicker' : 'open');
   }
 

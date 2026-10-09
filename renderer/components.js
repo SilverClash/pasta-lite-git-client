@@ -46,16 +46,12 @@
   const report = (store, e) => { if (!e || !e.toasted) store.actions.toast(e); };
 
   /**
-   * macOS? The User-Agent Client Hints platform ('macOS') where the browser has it, else the user
-   * agent string ('Macintosh'); navigator.platform is deprecated.
+   * The platform the app runs on, as Node names it ('darwin', 'win32', 'linux', ...): the preload's
+   * process.platform (window.api.platform), not a guess from the user agent. Without a preload (the
+   * unit tests load these scripts bare) 'linux': Ctrl shortcuts, no Finder or Explorer.
    */
-  function detectMac() {
-    if (typeof navigator === 'undefined') return false;
-    const hinted = navigator.userAgentData && navigator.userAgentData.platform;
-    if (hinted) return /mac/i.test(hinted);
-    return /Mac/i.test(navigator.userAgent || '');
-  }
-  const IS_MAC = detectMac();
+  const PLATFORM = (typeof window !== 'undefined' && window.api && typeof window.api.platform === 'string' && window.api.platform) || 'linux';
+  const IS_MAC = PLATFORM === 'darwin';
   /** The platform's command modifier is held: ⌘ on macOS, Ctrl elsewhere. */
   const modKey = (e) => (IS_MAC ? !!e.metaKey : !!e.ctrlKey);
 
@@ -346,7 +342,7 @@
   window.Components = {
     el,
     util: {
-      toError, plural, short, OID_RE, report, modKey, IS_MAC, relTime, absTime, initials, displayName, pathTree, storage, repoKey, isEditable, inTextField, modalOpen,
+      toError, plural, short, OID_RE, report, modKey, PLATFORM, IS_MAC, relTime, absTime, initials, displayName, pathTree, storage, repoKey, isEditable, inTextField, modalOpen,
       button, log, logToast, isUnexpectedError, EXPECTED_KINDS, QUIET_KINDS, UNEXPECTED_KINDS, load,
     },
     register(name, def) {

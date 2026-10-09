@@ -4,7 +4,32 @@
 // window goes away.
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { createTabsController } = require('../main/tabs-controller');
+const Module = require('node:module');
+
+/**
+ * main/tabs-controller.js (and main/window.js, which it imports) take Electron's classes at load.
+ * This test injects fakes for all of them (View, menu, the window host), so under plain Node they
+ * are never used (with the package installed, require('electron') is just the binary's path), but
+ * the require must still resolve: a checkout without node_modules has no `electron`. A stub with
+ * nothing in it answers for it while the controller loads, and only then.
+ */
+function requireWithoutElectron(id) {
+  const stub = new Module('electron-stub');
+  stub.filename = 'electron-stub';
+  stub.loaded = true;
+  const resolve = Module._resolveFilename;
+  require.cache[stub.filename] = stub;
+  Module._resolveFilename = function resolveElectron(request, ...rest) {
+    return request === 'electron' ? stub.filename : resolve.call(this, request, ...rest);
+  };
+  try {
+    return require(id);
+  } finally {
+    Module._resolveFilename = resolve;
+    delete require.cache[stub.filename];
+  }
+}
+const { createTabsController } = requireWithoutElectron('../main/tabs-controller');
 
 let nextId = 100;
 function fakeContents() {

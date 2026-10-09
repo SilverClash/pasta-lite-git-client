@@ -3,7 +3,7 @@ const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { git, initRepo, write, read, commitFile, repoWithRemote, cleanup } = require('./helpers');
+const { git, initRepo, write, read, commitFile, repoWithRemote, cleanup, globalConfig } = require('./helpers');
 const undo = require('../src/undo');
 const { execFileSync } = require('node:child_process');
 
@@ -316,7 +316,7 @@ test('discard backup works with no identity configured', async () => {
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   for (const k of keys) delete process.env[k];
   try {
-    assert.equal(process.env.GIT_CONFIG_GLOBAL, '/dev/null');
+    assert.equal(process.env.GIT_CONFIG_GLOBAL, globalConfig); // test/helpers.js: no user.* there
     write(d, 'README.md', 'mine\n');
     const sha = await discard(d, ['README.md']);
     assert.match(git(d, 'log', '-1', '--format=%an <%ae>', sha), /^Pasta Lite <pasta-lite@localhost>/);
@@ -662,7 +662,7 @@ test('copyIndex on real files: the mtime-1 fallback still sees a racily clean sa
 // ---- deletes go through the worktree guard -------------------------------------------------------
 
 test('discard redo refuses to delete through a symlinked directory', async () => {
-  const outside = fs.realpathSync(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-out-')));
+  const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pl-out-')));
   fs.writeFileSync(path.join(outside, 'u.txt'), 'keep\n');
   const d = initRepo();
   const { worktreeGuard } = require('../src/hunks');
@@ -717,23 +717,63 @@ test('discard undo restores symlinks as links and the executable bit', async () 
   fs.unlinkSync(path.join(d, 'lnk'));
   fs.symlinkSync('target-b', path.join(d, 'lnk'));
   fs.symlinkSync('new-target', path.join(d, 'new-link'));
-  fs.chmodSync(path.join(d, 'run.sh'), 0o755);
+  // Windows has no executable bit on disk (Node reports none, Git for Windows sets
+  // core.fileMode=false): there the index entry says the file is executable, as for one checked
+  // out from a repo where it is, and the backup takes its mode from there.
+  const win = process.platform === 'win32';
+  if (win) git(d, 'update-index', '--chmod=+x', 'run.sh');
+  else fs.chmodSync(path.join(d, 'run.sh'), 0o755);
   write(d, 'run.sh', 'echo b\n');
-  await discard(d, ['lnk', 'new-link', 'run.sh'], () => {
+  const backup = await discard(d, ['lnk', 'new-link', 'run.sh'], () => {
     git(d, 'checkout', '--', 'lnk', 'run.sh');
     fs.unlinkSync(path.join(d, 'new-link'));
   });
+  assert.match(git(d, 'ls-tree', `${backup}^`, '--', 'run.sh'), /^100755 /, 'the before commit');
   assert.equal(fs.readlinkSync(path.join(d, 'lnk')), 'target-a');
   assert.equal(fs.statSync(path.join(d, 'run.sh')).mode & 0o111, 0);
   await undo.undo(d);
   assert.equal(fs.readlinkSync(path.join(d, 'lnk')), 'target-b');
   assert.equal(fs.readlinkSync(path.join(d, 'new-link')), 'new-target');
   assert.equal(read(d, 'run.sh'), 'echo b\n');
-  assert.notEqual(fs.statSync(path.join(d, 'run.sh')).mode & 0o100, 0);
+  if (!win) assert.notEqual(fs.statSync(path.join(d, 'run.sh')).mode & 0o100, 0);
   await undo.redo(d);
   assert.equal(fs.readlinkSync(path.join(d, 'lnk')), 'target-a');
   assert.equal(fs.lstatSync(path.join(d, 'new-link'), { throwIfNoEntry: false }), undefined);
   assert.equal(fs.statSync(path.join(d, 'run.sh')).mode & 0o111, 0);
+});
+
+test('discard backup under core.fileMode=false: the executable bit on disk, from the index on Windows (as git add does there)', async () => {
+  const d = initRepo();
+  write(d, 'x.sh', 'x\n');
+  write(d, 'plain.txt', 'p\n');
+  git(d, 'add', 'x.sh', 'plain.txt');
+  git(d, 'update-index', '--chmod=+x', 'x.sh');
+  git(d, 'commit', '-q', '-m', 'modes');
+  git(d, 'config', 'core.fileMode', 'false');
+  // The bits on disk say the opposite of the index (where a file system has them at all).
+  fs.chmodSync(path.join(d, 'x.sh'), 0o644);
+  fs.chmodSync(path.join(d, 'plain.txt'), 0o755);
+  write(d, 'x.sh', 'x2\n');
+  write(d, 'plain.txt', 'p2\n');
+  write(d, 'new.sh', 'n\n');
+  fs.chmodSync(path.join(d, 'new.sh'), 0o755);
+  const backup = await discard(d, ['x.sh', 'plain.txt', 'new.sh'], () => {
+    git(d, 'checkout', '--', 'x.sh', 'plain.txt');
+    fs.unlinkSync(path.join(d, 'new.sh'));
+  });
+  const modes = Object.fromEntries(git(d, 'ls-tree', `${backup}^`).trim().split('\n')
+    .map((l) => /^(\d+) \w+ \w+\t(.*)$/.exec(l)).map((m) => [m[2], m[1]]));
+  if (process.platform === 'win32') {
+    // No executable bit on disk: the index entry's mode (an untracked file has none: 100644).
+    assert.deepEqual(modes, { 'README.md': '100644', 'new.sh': '100644', 'plain.txt': '100644', 'x.sh': '100755' });
+    return;
+  }
+  // Elsewhere the bits on disk, as before core.fileMode was read at all: undo puts back what was there.
+  assert.deepEqual(modes, { 'README.md': '100644', 'new.sh': '100755', 'plain.txt': '100755', 'x.sh': '100644' });
+  await undo.undo(d);
+  assert.notEqual(fs.statSync(path.join(d, 'plain.txt')).mode & 0o100, 0, 'the +x the discard took away is back');
+  assert.notEqual(fs.statSync(path.join(d, 'new.sh')).mode & 0o100, 0);
+  assert.equal(fs.statSync(path.join(d, 'x.sh')).mode & 0o111, 0);
 });
 
 test('withDiscardBackup refuses paths that match nothing (kind stale) before fn runs', async () => {

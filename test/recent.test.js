@@ -181,11 +181,56 @@ test('recent store: an entry saved under another letter case is not listed twice
 test('trust store tolerates a corrupt or wrongly shaped file', () => {
   const [a] = dirs(1);
   const file = path.join(h.tmpDir(), 'trusted.json');
-  for (const junk of ['{not json', '{"root": 1}', `[null, {"root": "rel"}, {"root": "${a}", "keys": "x"}, {"root": "${a}", "keys": [1]}]`, '']) {
+  for (const junk of ['{not json', '{"root": 1}', `[null, {"root": "rel"}, {"root": ${JSON.stringify(a)}, "keys": "x"}, {"root": ${JSON.stringify(a)}, "keys": [1]}]`, '']) {
     fs.writeFileSync(file, junk);
     const store = createTrustStore(file);
     assert.equal(store.isTrusted(a, ['k']), false);
     store.trust(a, ['k']);
     assert.equal(store.isTrusted(a, ['k']), true);
   }
+});
+
+// ---------------------------------------------------------------- json-file: atomic writes
+
+test('writeJson on Windows: a rename over a file held open (EPERM / EBUSY / EACCES) is tried again, briefly', () => {
+  const { writeJson, readJson, _internal: { RENAME_DELAYS_MS } } = require('../src/json-file');
+  const dir = h.tmpDir('pl-json-');
+  const file = path.join(dir, 'tabs.json');
+  writeJson(file, { v: 1 });
+  const err = (code) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+  // Held for two tries, then free: written, after two sleeps (no busy-wait).
+  let fails = ['EPERM', 'EBUSY'];
+  const slept = [];
+  const rename = (from, to) => {
+    if (fails.length) throw err(fails.shift());
+    fs.renameSync(from, to);
+  };
+  const win = { platform: 'win32', rename, sleep: (ms) => slept.push(ms) };
+  writeJson(file, { v: 2 }, win);
+  assert.deepEqual(readJson(file), { v: 2 });
+  assert.deepEqual(slept, RENAME_DELAYS_MS.slice(0, 2));
+  // Held for good: bounded tries, the last error thrown, the tmp file removed, the old file kept.
+  fails = Array(100).fill('EACCES');
+  slept.length = 0;
+  assert.throws(() => writeJson(file, { v: 3 }, win), { code: 'EACCES' });
+  assert.equal(slept.length, RENAME_DELAYS_MS.length);
+  assert.equal(fails.length, 100 - RENAME_DELAYS_MS.length - 1);
+  assert.deepEqual(fs.readdirSync(dir), ['tabs.json']);
+  assert.deepEqual(readJson(file), { v: 2 });
+  // Other errors, and every error off Windows, are not retried.
+  for (const [platform, code] of [['win32', 'ENOSPC'], ['linux', 'EPERM'], ['darwin', 'EBUSY']]) {
+    fails = [code];
+    slept.length = 0;
+    assert.throws(() => writeJson(file, { v: 4 }, { ...win, platform }), { code }, `${platform} ${code}`);
+    assert.deepEqual(slept, [], `${platform} ${code}`);
+    assert.deepEqual(fs.readdirSync(dir), ['tabs.json']);
+  }
+});
+
+test('sleepSync blocks for about the time asked', () => {
+  const { sleepSync } = require('../src/json-file')._internal;
+  const t0 = process.hrtime.bigint();
+  sleepSync(20);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms >= 15 && ms < 1000, `${ms} ms`);
 });

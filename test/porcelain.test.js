@@ -91,7 +91,9 @@ test('parseWorktrees: main entry first, bare / detached / locked / prunable with
   const entry = (o) => ({
     head: null, branch: null, bare: false, detached: false, locked: false, lockReason: null, prunable: false, prunableReason: null, ...o,
   });
-  assert.deepEqual(p.parseWorktrees(raw), [
+  // POSIX paths, so POSIX rules: on Windows '/r/main' is rooted and gets the current drive (the
+  // Windows spelling has its own test below).
+  assert.deepEqual(p.parseWorktrees(raw, { platform: 'linux' }), [
     entry({ path: '/r/.bare', bare: true }),
     entry({ path: '/r/main', head: SHA, branch: 'main' }),
     entry({ path: '/r/det', head: SHA, detached: true, locked: true, lockReason: 'on a stick: keep' }),
@@ -108,7 +110,7 @@ test('parseWorktrees: a lock without a reason, a prunable locked entry, an unbor
     // No closing empty field: the last record still counts.
     'worktree /r/last', 'HEAD ' + SHA, 'branch refs/heads/last',
   ].join('\0');
-  const list = p.parseWorktrees(raw);
+  const list = p.parseWorktrees(raw, { platform: 'linux' }); // POSIX paths: see above
   assert.deepEqual(list.map((w) => w.path), ['/r/m', '/r/l', '/r/both', '/r/unborn', '/r/last']);
   assert.equal(Object.hasOwn(list[0], 'future-key'), false, 'unknown keys are ignored');
   assert.deepEqual([list[1].locked, list[1].lockReason], [true, null], 'no reason: null');
@@ -117,6 +119,12 @@ test('parseWorktrees: a lock without a reason, a prunable locked entry, an unbor
   assert.deepEqual([list[4].branch, list[4].head], ['last', SHA]);
   assert.deepEqual(p.parseWorktrees(''), []);
   assert.deepEqual(p.parseWorktrees('HEAD ' + SHA + '\0\0'), [], 'fields before any worktree line are ignored');
+});
+
+test("parseWorktrees on Windows: git's 'C:/x' paths in native spelling, case kept", () => {
+  const raw = ['worktree C:/Users/Ada/r/.bare', 'bare', '', 'worktree //srv/share/wt', 'HEAD ' + SHA, 'detached', ''].join('\0');
+  assert.deepEqual(p.parseWorktrees(raw, { platform: 'win32' }).map((w) => w.path), ['C:\\Users\\Ada\\r\\.bare', '\\\\srv\\share\\wt']);
+  assert.deepEqual(p.parseWorktrees(raw, { platform: 'linux' }).map((w) => w.path), ['C:/Users/Ada/r/.bare', '//srv/share/wt']);
 });
 
 test('parseNameStatus: renames and copies carry their source', () => {

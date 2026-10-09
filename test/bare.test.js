@@ -595,9 +595,3 @@ test('opening a bare repo through a symlink: the root is the real git dir', { sk
   assert.equal(await exec.isBare(path.join(links, 'to-bare')), true);
   await assert.rejects(ops.createRunner().run(bare, 'stageAll', []), { kind: 'bare-repo' });
 });
-
-test('exec.gitDirKey: git\'s forward-slash Windows git dir is keyed the way path.resolve spells lookups', () => {
-  assert.equal(exec.gitDirKey('C:/x/.bare', path.win32), 'C:\\x\\.bare');
-  assert.equal(exec.gitDirKey('C:/x/.bare', path.win32), path.win32.resolve('C:\\x\\.bare'));
-  assert.equal(exec.gitDirKey('/x/y/.bare/', path.posix), '/x/y/.bare');
-});

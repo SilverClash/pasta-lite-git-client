@@ -74,12 +74,14 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 
 ## Requirements
 
-- **git 2.51 or newer**, installed on your system. Pasta Lite checks this at startup and won't run with an older git (undo depends on `git reflog write`). The git that ships with macOS is usually older, so install one with [Homebrew](https://brew.sh) (`brew install git`). The app finds Homebrew's git even when it's started from the Finder or the Dock.
-- **macOS 13 or newer** for the downloadable app.
+- **git 2.51 or newer**, installed on your system. Pasta Lite checks this at startup and won't run with an older git (undo depends on `git reflog write`). The git that ships with macOS is usually older, so install one with [Homebrew](https://brew.sh) (`brew install git`). The app finds Homebrew's git even when it's started from the Finder or the Dock. On Windows, install [Git for Windows](https://git-scm.com/download/win) (or run `winget install --id Git.Git -e`). The app uses the git on your PATH, or else finds Git for Windows in its usual install folder (under Program Files, or `AppData\Local\Programs` for a per-user install).
+- **macOS 13 or newer**, or **Windows 10 or 11** (x64 or arm64), for the downloadable app.
 - **Node.js 22.12 or newer**, only to run it from source (Electron's installer needs it).
-- **Platforms:** developed and tested on macOS. Windows and Linux are supported in the code but not yet tested, and there are no builds for them.
+- **Platforms:** developed and tested on macOS. Windows support is alpha: the app works in testing on Windows 11 and CI runs the test suite on Windows too (skipping a few tests that can't run there), but it has seen far less real use than on macOS, so expect rough edges and please [report what you find](https://github.com/SilverClash/pasta-lite-git-client/issues). Linux is supported in the code but not yet tested, and there are no builds for it.
 
 ## Download
+
+### macOS
 
 Download the DMG for your Mac from the [Releases page](https://github.com/SilverClash/pasta-lite-git-client/releases):
 
@@ -91,6 +93,25 @@ Download the DMG for your Mac from the [Releases page](https://github.com/Silver
 Not sure which one you have? Choose Apple menu → About This Mac: an Apple silicon Mac lists a "Chip" such as Apple M2, an Intel Mac lists a "Processor". Open the DMG and drag Pasta Lite Git client to Applications.
 
 The app is signed with a Developer ID and notarized by Apple, so it opens like any other app. If macOS still refuses to open it, go to System Settings → Privacy & Security and click Open Anyway.
+
+### Windows (alpha)
+
+Windows support is alpha: the app works in testing, but it has had far less real use than on macOS, so expect rough edges, and please [report what you find](https://github.com/SilverClash/pasta-lite-git-client/issues). Download the installer for your PC from the same [Releases page](https://github.com/SilverClash/pasta-lite-git-client/releases):
+
+| Your PC | File |
+| --- | --- |
+| Intel or AMD (x64) | `Pasta-Lite-<version>-x64-setup.exe` |
+| ARM (arm64), such as a Snapdragon laptop | `Pasta-Lite-<version>-arm64-setup.exe` |
+
+Not sure which one you have? Open Settings → System → About and look at "System type". There's also a portable `Pasta-Lite-<version>-win-x64.zip` that runs without installing: unzip it and start `Pasta Lite Git client.exe`.
+
+The installer asks whether to install for you only (the default, with no administrator rights needed) or for all users, lets you choose the folder, and adds a "Pasta Lite" shortcut to the desktop and the Start menu. Uninstall it from Settings → Apps. Your settings and recent repositories are kept, in `%APPDATA%\Pasta Lite`: delete that folder to remove them too.
+
+The Windows builds are not code-signed yet, so SmartScreen shows "Windows protected your PC" the first time you run the installer. Click More info, then Run anyway. To check that the download is the one the release published, compare its hash with the line for it in `Pasta-Lite-<version>-SHA256SUMS-windows.txt` on the release (PowerShell prints it in capitals):
+
+```powershell
+Get-FileHash .\Pasta-Lite-<version>-x64-setup.exe -Algorithm SHA256
+```
 
 ## Getting started
 
@@ -133,7 +154,7 @@ It also creates `/tmp/pasta-demo.origin.git` next to it. The screenshots above w
 - No commit search, file history or blame.
 - Dark theme only.
 - HEIC, TIFF and PSD images preview only on macOS, as the system's thumbnail (at most about 2,048 pixels wide), not at full resolution. On Windows and Linux they say "preview not supported".
-- Downloadable builds for macOS only.
+- Downloadable builds for macOS and, in alpha, Windows. None for Linux yet.
 
 ## Development
 

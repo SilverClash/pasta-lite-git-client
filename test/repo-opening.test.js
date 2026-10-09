@@ -72,19 +72,25 @@ describe('app:openWorktree / app:revealWorktree helpers', () => {
 
 // ---------------------------------------------------------------- recent view
 
-test('recent view: the list last read, names and roots only; an older, slower read never wins', async () => {
+test('recent view: the list last read, names, roots and the shown path only; an older, slower read never wins', async () => {
   let store = null;
-  const view = createRecentView({ store: () => store });
+  const view = createRecentView({ store: () => store, home: () => '/r' });
   assert.deepEqual(await view.refresh(), [], 'no store yet: empty');
   const reads = [];
   store = { list: () => new Promise((resolve) => reads.push(resolve)) };
   const older = view.refresh();
   const newer = view.refresh();
-  reads[1]([{ root: '/r/new', name: 'new', openedAt: 2 }]);
-  assert.deepEqual(await newer, [{ root: '/r/new', name: 'new' }]);
+  reads[1]([{ root: '/r/new', name: 'new', openedAt: 2 }, { root: '/rx/y', name: 'y', openedAt: 1 }]);
+  const list = [{ root: '/r/new', name: 'new', display: '~/new' }, { root: '/rx/y', name: 'y', display: '/rx/y' }];
+  assert.deepEqual(await newer, list, 'display: the home folder as ~, at a folder boundary only');
   reads[0]([{ root: '/r/old', name: 'old', openedAt: 1 }]);
-  assert.deepEqual(await older, [{ root: '/r/new', name: 'new' }], 'the older read returns the newer list');
-  assert.deepEqual(view.shown, [{ root: '/r/new', name: 'new' }]);
+  assert.deepEqual(await older, list, 'the older read returns the newer list');
+  assert.deepEqual(view.shown, list);
+});
+
+test('recent view: no home folder, every path in full', async () => {
+  const view = createRecentView({ store: () => ({ list: async () => [{ root: '/r/a', name: 'a' }] }), home: () => '' });
+  assert.deepEqual(await view.refresh(), [{ root: '/r/a', name: 'a', display: '/r/a' }]);
 });
 
 // ---------------------------------------------------------------- the open flow
@@ -119,7 +125,7 @@ function setup({ repos = {}, tabs: roots = [null], risky = [], trustAnswers = []
     remove: (root) => { calls.push(['recent.remove', root]); },
     list: async () => recentList.slice(),
   };
-  const recentView = createRecentView({ store: () => store });
+  const recentView = createRecentView({ store: () => store, home: () => '/home/nobody' });
   const errors = [];
   const opening = createRepoOpening({
     tabs,
@@ -158,7 +164,7 @@ describe('openExternal (CLI, dock, second launch)', () => {
     const s = tabs.get(1);
     assert.equal(s.repo.root, '/r/a');
     assert.deepEqual(calls, [['trust', '/r/a'], ['recent.add', '/r/a', 'a'], ['setRepo', 1, '/r/a'], ['menu'], ['activate', 1], ['front']]);
-    assert.deepEqual(sent, [[1, 'repo-opened', { repo: res, recent: [{ root: '/r/a', name: 'a' }] }]]);
+    assert.deepEqual(sent, [[1, 'repo-opened', { repo: res, recent: [{ root: '/r/a', name: 'a', display: '/r/a' }] }]]);
   });
 
   test('already open in a tab: that tab is shown, nothing asked, nothing added', async () => {

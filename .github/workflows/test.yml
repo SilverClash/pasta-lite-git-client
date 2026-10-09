@@ -73,9 +73,9 @@ jobs:
   test-windows:
     name: test (windows-latest, Node 22)
     runs-on: windows-latest
-    # The full suite took about 12 minutes of tests on a Windows runner, against a few on
-    # macOS/Linux: 45 leaves room for slower runners. A hung test fails on its own (--test-timeout
-    # below) instead of using up the job's budget.
+    # The full suite takes about 7 minutes on a Windows runner (some 12 minutes of tests, three
+    # files at a time), against a few on macOS/Linux: 45 leaves room for slower runners. A hung
+    # test fails its file (--test-timeout below) instead of using up the job's budget.
     timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
@@ -105,13 +105,20 @@ jobs:
       # on Windows is skipped there with a reason: #!/bin/sh fakes of git, POSIX signals, the
       # executable bit, names Windows forbids. The tests that cancel git during a hook run here
       # too: cancelling is taskkill /T /F plus a kill of the hook's MSYS processes there
-      # (src/git-process.js signalGroup). --test-timeout fails a hung test instead of the job;
-      # --test-force-exit ends a file whose test left a handle open, so a leaked handle can't hang
-      # the job (the step below looks for the watcher's).
-      - run: node --test --test-timeout=120000 --test-force-exit "test/*.test.js"
+      # (src/git-process.js signalGroup).
+      # Each test file runs in its own process, and --test-timeout bounds each file's whole run
+      # (waiting for its process to exit included), not each test in it: on Node 22 a file's own
+      # tests get no timeout from it. So it is a hang guard per file, well above the slowest file
+      # (git.test.js and rebase-interactive.test.js take three to four minutes here): a hung test
+      # fails its file, and the job goes on. --test-force-exit ends a file whose test left a
+      # handle open, so a leaked handle can't hold its file to the timeout (the step below looks
+      # for the watcher's).
+      - name: Tests
+        run: node --test --test-timeout=600000 --test-force-exit "test/*.test.js"
 
       # The watcher's tests again, without --test-force-exit: a watch one of them leaves open keeps
-      # the process alive, and the step's timeout fails it instead of the full run hiding it.
+      # the file's process from exiting, and the file then fails at --test-timeout (the step's
+      # timeout is the backstop) instead of the full run hiding it. The file takes well under that.
       - name: Watcher tests leave no watch open
         timeout-minutes: 5
         run: node --test --test-timeout=120000 test/watcher.test.js

@@ -648,11 +648,17 @@ test('argvChunks: every Windows command line fits CreateProcess (32,767 UTF-16 u
 });
 
 test('lsUntracked: many paths go to ls-files in argv chunks (Windows command line), each file once; cleanFiles removes them', async () => {
-  const { argvChunks } = require('../src/git-process');
+  const { argvChunks, _internal: { WIN_CMDLINE_MAX } } = require('../src/git-process');
   const d = h.initRepo();
+  // What's long is the command line, not any one path: git without core.longpaths can't open a
+  // path past MAX_PATH (260) on Windows ("Filename too long"), so the names are sized from the temp
+  // dir's length to keep the longest path (<dir>/ignored.log) within 220, and there are as many as
+  // fill one and a half Windows command lines.
+  const nameLen = Math.max(32, Math.min(200, 220 - d.length - '/'.length - '/ignored.log'.length));
+  const count = Math.ceil((1.5 * WIN_CMDLINE_MAX) / (nameLen + 1));
   const dirs = [];
-  for (let i = 0; i < 160; i++) {
-    const dir = `${String(i).padStart(3, '0')}-${'d'.repeat(200)}`;
+  for (let i = 0; i < count; i++) {
+    const dir = `${String(i).padStart(4, '0')}-${'d'.repeat(nameLen - 5)}`;
     h.write(d, `${dir}/u.txt`, 'x\n');
     dirs.push(dir);
   }
@@ -662,7 +668,7 @@ test('lsUntracked: many paths go to ls-files in argv chunks (Windows command lin
   if (process.platform !== 'win32') h.write(d, '*', 'a literal star\n');
   dirs.push(`${dirs[0]}/`); // also listed by another chunk: counted once
   assert.ok(argvChunks(dirs, { prefix: ['ls-files', '-z', '--others', '--exclude-standard', '--'], platform: 'win32' }).length > 1, 'more than one command line on Windows');
-  const want = dirs.slice(0, 160).map((dir) => `${dir}/u.txt`).sort();
+  const want = dirs.slice(0, count).map((dir) => `${dir}/u.txt`).sort();
   // Off Windows also as on Windows; there only (a single POSIX-sized chunk is ENAMETOOLONG).
   for (const platform of process.platform === 'win32' ? ['win32'] : ['win32', 'linux']) {
     assert.deepEqual([...await x.lsUntracked(d, dirs, { platform })].sort(), want, platform);
@@ -671,23 +677,80 @@ test('lsUntracked: many paths go to ls-files in argv chunks (Windows command lin
   if (process.platform !== 'win32') assert.deepEqual([...await x.lsUntracked(d, ['*'])], ['*']);
   // From a subdirectory: still root-relative paths.
   assert.deepEqual([...await x.lsUntracked(path.join(d, dirs[1]), [`${dirs[1]}/u.txt`])], [`${dirs[1]}/u.txt`]);
-  await x.cleanFiles(d, want.slice(0, 150), { platform: 'win32' });
-  assert.deepEqual([...await x.lsUntracked(d, dirs)].sort(), want.slice(150));
+  await x.cleanFiles(d, want.slice(0, count - 10), { platform: 'win32' });
+  assert.deepEqual([...await x.lsUntracked(d, dirs)].sort(), want.slice(count - 10));
   assert.equal(fs.existsSync(path.join(d, dirs[0], 'ignored.log')), true);
 });
 
+/**
+ * Windows: which of the processes `pids` name run now, each as its identity `pid|image|start`
+ * (Get-Process: the image name and the start time, no command lines). A pid alone doesn't name a
+ * process: Windows hands a freed pid to the next process (under load another test's sleep had it
+ * within 300 ms), and process.kill(pid, 0) ignores a pid's lowest two bits, so it answers for a
+ * neighbour too. A process that got the pid later has another start time. `end`: identities to end
+ * if they still run (in the same PowerShell, so never a process that got the pid meanwhile).
+ */
+function winProcesses(pids, end = []) {
+  if (!pids.length) return [];
+  const { execFileSync } = require('node:child_process');
+  const { system32 } = require('../src/which');
+  const script = [
+    `$end = @(${end.map((id) => `'${id}'`).join(', ')})`,
+    `Get-Process -Id ${pids.map(Number).join(', ')} -ErrorAction SilentlyContinue | ForEach-Object {`,
+    '  $start = 0; try { $start = $_.StartTime.ToFileTimeUtc() } catch {}',
+    '  $id = \'{0}|{1}|{2}\' -f $_.Id, $_.ProcessName, $start',
+    '  if ($end -contains $id) { try { $_.Kill() } catch {} } else { $id }',
+    '}',
+    'exit 0',
+  ].join('\n');
+  const ps = path.win32.join(system32(), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const out = execFileSync(ps, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 120000 });
+  return out.split(/\r?\n/).filter(Boolean);
+}
+/** Windows: the identities among `ids` (winProcesses) whose process still runs. */
+const stillRunning = (ids) => {
+  const now = winProcesses(ids.map((id) => id.split('|')[0]));
+  return ids.filter((id) => now.includes(id));
+};
+/**
+ * Windows: the identities among `ids` that still run once the cancel settled. A killed process
+ * ends a moment after TerminateProcess returns (seen 0-1 ms after the settle), so a few looks
+ * within `ms`, which is far shorter than any sleep the test started.
+ */
+async function runningAfterKill(ids, ms = 2000) {
+  for (const t0 = Date.now(); ; await new Promise((r) => setTimeout(r, 100))) {
+    const left = stillRunning(ids);
+    if (!left.length || Date.now() - t0 >= ms) return left;
+  }
+}
+
 test('cancelling on Windows ends git, its hook and the MSYS commands the hook started (not through the Windows tree), and nothing else', { skip: process.platform !== 'win32' && 'Windows: taskkill and the MSYS processes of Git for Windows' }, async (t) => {
-  const { spawn, execFileSync } = require('node:child_process');
-  const { findOnPath, system32 } = require('../src/which');
+  const { spawn } = require('node:child_process');
+  const { findOnPath } = require('../src/which');
   const { msysShell } = require('../src/git-process')._internal;
   const sh = msysShell(findOnPath('git.exe'));
   assert.ok(sh, 'Git for Windows\' sh next to the git on PATH');
-  const taskkill = (pid) => { try { execFileSync(path.join(system32(), 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ } };
-  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  // A bystander: an MSYS sleep of our own, outside git's tree. It must survive the cancel.
-  const bystander = spawn(sh, ['-c', 'exec /usr/bin/sleep 60'], { windowsHide: true, stdio: 'ignore' });
-  t.after(() => taskkill(bystander.pid));
   const dir = h.initRepo();
+  // A bystander: an MSYS sleep of our own, outside git's tree. It must survive the cancel. Its sh
+  // writes the sleep's Windows pid once it runs sleep (see the hook below) and waits for it. Not
+  // started by git, it has no /usr/bin on PATH.
+  const bystanderPid = path.join(dir, '.git', 'bystander').replace(/\\/g, '/');
+  fs.writeFileSync(`${bystanderPid}.sh`, [
+    '/usr/bin/sleep 60 & a=$!',
+    'n=0',
+    'while [ $n -lt 100 ]; do case "$(/usr/bin/cat /proc/$a/exename 2>/dev/null)" in */sleep*) break ;; esac; n=$((n+1)); /usr/bin/sleep 0.1; done',
+    `/usr/bin/cat /proc/$a/winpid > '${bystanderPid}.tmp' && /usr/bin/mv '${bystanderPid}.tmp' '${bystanderPid}'`,
+    'wait',
+    '',
+  ].join('\n'));
+  const bystander = spawn(sh, [`${bystanderPid}.sh`], { windowsHide: true, stdio: 'ignore' });
+  let sleeper = [];
+  // Ended by its handle (Node's, held until it has seen the exit) and by identity: never a process
+  // that got one of their pids since.
+  t.after(() => {
+    bystander.kill();
+    winProcesses(sleeper.map((id) => id.split('|')[0]), sleeper);
+  });
   const before = h.git(dir, 'rev-parse', 'HEAD');
   h.write(dir, 'README.md', 'changed\n');
   // `commit -a` holds index.lock across pre-commit. The hook writes its own Windows pid and its
@@ -708,27 +771,38 @@ test('cancelling on Windows ends git, its hook and the MSYS commands the hook st
     'wait',
     '',
   ].join('\n'));
+  const waitFor = async (file, what) => {
+    for (const t0 = Date.now(); !fs.existsSync(file); await new Promise((r) => setTimeout(r, 50))) {
+      assert.ok(Date.now() - t0 < 60000, `${what} never started`);
+    }
+    return fs.readFileSync(file, 'utf8').trim().split(/\s+/).map(Number);
+  };
+  const [bystanderSleep] = await waitFor(bystanderPid, 'the bystander');
+  sleeper = winProcesses([bystanderSleep]);
+  assert.deepEqual(sleeper.map((id) => id.split('|').slice(0, 2).join('|')), [`${bystanderSleep}|sleep`], 'the bystander runs sleep');
   const ac = new AbortController();
   let hook = [];
   // A failed assertion before the cancel must not leave the commit and its sleeps running.
   t.after(() => {
     ac.abort();
-    for (const pid of hook) taskkill(pid);
+    winProcesses(hook.map((id) => id.split('|')[0]), hook);
   });
   const p = x.run(dir, ['commit', '-q', '-a', '-m', 'x'], { signal: ac.signal });
-  for (const t0 = Date.now(); !fs.existsSync(pids); await new Promise((r) => setTimeout(r, 50))) {
-    assert.ok(Date.now() - t0 < 60000, 'the hook never started');
-  }
-  hook = fs.readFileSync(pids, 'utf8').trim().split(/\s+/).map(Number);
-  assert.equal(hook.length, 3);
-  assert.ok(hook.every(alive), 'the hook and its sleeps run');
+  const hookPids = await waitFor(pids, 'the hook');
+  assert.equal(hookPids.length, 3);
+  // Each process named by pid, image and start time while it surely runs (the hook waits for its
+  // sleeps): after the cancel, a process that got one of these pids is not taken for it.
+  const found = winProcesses(hookPids);
+  hook = hookPids.map((pid) => found.find((id) => id.startsWith(`${pid}|`))).filter(Boolean);
+  assert.equal(hook.length, 3, 'the hook and its sleeps run');
+  assert.deepEqual(hook.slice(1).map((id) => id.split('|')[1]), ['sleep', 'sleep']);
   assert.ok(fs.existsSync(path.join(dir, '.git', 'index.lock')), 'git holds the index lock across the hook');
   const cancelledAt = Date.now();
   ac.abort();
   await assert.rejects(p, (e) => e.kind === 'aborted');
   assert.ok(Date.now() - cancelledAt < 10000, 'settled once its processes were killed, not when the sleeps ended');
-  await new Promise((r) => setTimeout(r, 300));
-  assert.deepEqual(hook.filter(alive), [], 'the hook and both sleeps are gone');
+  assert.deepEqual(await runningAfterKill(hook), [], 'the hook and both sleeps are gone');
+  assert.deepEqual(stillRunning(sleeper), sleeper, 'the bystander\'s sleep still runs');
   assert.equal(bystander.exitCode, null, 'the bystander still runs');
   // git was gone before its hook's commands were killed: it never went on to commit.
   assert.equal(h.git(dir, 'rev-parse', 'HEAD'), before);
@@ -752,10 +826,6 @@ test('cancelling on Windows: a command that doesn\'t write the index leaves anot
 });
 
 test('cancelling on Windows after git exited on its own (a hook\'s background job holds its output): the job is ended, no lock is touched', { skip: process.platform !== 'win32' && 'Windows: the MSYS processes of Git for Windows' }, async (t) => {
-  const { execFileSync } = require('node:child_process');
-  const { system32 } = require('../src/which');
-  const taskkill = (pid) => { try { execFileSync(path.join(system32(), 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ } };
-  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const dir = h.initRepo();
   const before = h.git(dir, 'rev-parse', 'HEAD');
   h.write(dir, 'README.md', 'changed\n');
@@ -771,10 +841,10 @@ test('cancelling on Windows after git exited on its own (a hook\'s background jo
     '',
   ].join('\n'));
   const ac = new AbortController();
-  let bg = null;
+  let bg = [];
   t.after(() => {
     ac.abort();
-    if (bg) taskkill(bg);
+    winProcesses(bg.map((id) => id.split('|')[0]), bg);
   });
   let settled = false;
   const p = x.run(dir, ['commit', '-q', '-a', '-m', 'x'], { signal: ac.signal });
@@ -782,8 +852,9 @@ test('cancelling on Windows after git exited on its own (a hook\'s background jo
   for (const t0 = Date.now(); !fs.existsSync(pidFile); await new Promise((r) => setTimeout(r, 50))) {
     assert.ok(Date.now() - t0 < 60000, 'the hook never ran');
   }
-  bg = Number(fs.readFileSync(pidFile, 'utf8').trim());
-  assert.ok(alive(bg));
+  const bgPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+  bg = winProcesses([bgPid]); // by pid, image and start time: see winProcesses
+  assert.deepEqual(bg.map((id) => id.split('|').slice(0, 2).join('|')), [`${bgPid}|sleep`], 'the background sleep runs');
   await new Promise((r) => setTimeout(r, 1000)); // git is done
   assert.notEqual(h.git(dir, 'rev-parse', 'HEAD'), before, 'git committed');
   assert.equal(settled, false, 'the sleep keeps the command from settling');
@@ -794,8 +865,7 @@ test('cancelling on Windows after git exited on its own (a hook\'s background jo
   ac.abort();
   await assert.rejects(p, (e) => e.kind === 'aborted');
   assert.ok(Date.now() - cancelledAt < 10000, 'settled once the sleep was killed');
-  await new Promise((r) => setTimeout(r, 300));
-  assert.equal(alive(bg), false, 'the background job is gone');
+  assert.deepEqual(await runningAfterKill(bg), [], 'the background job is gone');
   assert.equal(fs.existsSync(lock), true, 'git had exited on its own: no lock of its is left');
   fs.rmSync(lock);
 });

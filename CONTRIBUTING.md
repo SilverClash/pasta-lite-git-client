@@ -56,6 +56,13 @@ runners. The tests use Node's built-in test runner and don't start Electron. The
 `window`). They create throwaway repositories under the OS temp folder. `test/helpers.js` isolates
 them from your `~/.gitconfig` and sets their own author, so no git identity setup is needed.
 
+`node --test` runs each file in its own process, and `--test-timeout` then bounds each file's
+whole run, not each test in it (on Node 22 a file's tests get no timeout from it). If you pass it,
+give it well over the slowest file's time: some files take several minutes on Windows, and CI
+there uses ten. On Windows, keep the paths a test creates well under 260 characters, the temp
+folder included: Git for Windows doesn't enable `core.longpaths` by default, and neither the app
+nor the tests set it, so git can't open a longer path ("Filename too long").
+
 ### Smoke run
 
 To check the real app, the `--smoke` harness renders a view without ever showing a window, saves

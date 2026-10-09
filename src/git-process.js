@@ -229,6 +229,10 @@ const msysShellOf = (gitExe) => {
  *   settle until it ended. Those carry git's KILL_TOKEN_VAR: Git for Windows' sh (`sh`, next to
  *   git) kills every MSYS process that does (MSYS_KILL), by its environment, not by a pid,
  *   once taskkill is done.
+ * The returned promise resolves once both are done (each finished, failed or timed out), and
+ * spawnGit settles the command only then: git's `close` can come first (taskkill ended every
+ * process holding its output, or a hook's background command doesn't hold it), and a cancelled
+ * command whose hook still runs a moment longer would let the next one start beside it.
  * taskkill runs detached (outside libuv's kill-on-close job), so it still finishes when the app
  * exits right after asking. The MSYS kill is not (a detached console program's children would
  * open console windows); a quit waits for the cancelled command to settle, which is after it.
@@ -255,6 +259,8 @@ const msysShellOf = (gitExe) => {
  *   sh?: string|null}} [o] token: the command's KILL_TOKEN_VAR value; sh: Git for Windows' sh
  *   (msysShell); run: execFile, or execFileNow (killChildren's `sync`); platform / env / logTo,
  *   and any run, for tests
+ * @returns {Promise<void>|null} Windows: resolves once the kill is done (never rejects); null
+ *   when there is nothing to wait for (POSIX: the signal is sent already; no pid)
  */
 function signalGroup(child, sig, {
   platform = process.platform, env = process.env, run = execFile, logTo = log, token = null, sh = null,
@@ -265,10 +271,12 @@ function signalGroup(child, sig, {
     } catch {
       child.kill(sig);
     }
-    return;
+    return null;
   }
   const exited = () => child.exitCode !== null || child.signalCode !== null;
-  if (!child.pid) return;
+  if (!child.pid) return null;
+  let finished;
+  const killed = new Promise((resolve) => { finished = resolve; });
   const fallback = (e) => {
     // Exited meanwhile: the expected race (debug); otherwise git's tree may still run (warn).
     logTo.log(exited() ? 'debug' : 'warn', 'taskkill failed', { pid: child.pid, error: e.code || e.message });
@@ -277,7 +285,7 @@ function signalGroup(child, sig, {
   // Only once git is gone: a hook whose commands were killed first would return, and git would
   // go on with the commit (or merge, ...) the user cancelled.
   const killMsys = () => {
-    if (!token || !sh) return;
+    if (!token || !sh) return finished();
     const failed = (e, stderr) => logTo.log('warn', 'killing the MSYS processes failed', {
       pid: child.pid, error: e.code || e.message, ...(String(stderr || '').trim() ? { detail: String(stderr).trim().slice(0, 200) } : {}),
     });
@@ -285,14 +293,16 @@ function signalGroup(child, sig, {
       run(sh, ['-c', MSYS_KILL, 'sh', `${KILL_TOKEN_VAR}=${token}`], { windowsHide: true, timeout: 10000 }, (err, stdout, stderr) => {
         if (err) failed(err, stderr || err.stderr);
         else logTo.log('debug', 'killed the MSYS processes of a git', { pid: child.pid, killed: Number(String(stdout || '').trim()) || 0 });
+        finished();
       });
     } catch (e) {
       failed(e);
+      finished();
     }
   };
   if (exited()) {
     killMsys();
-    return;
+    return killed;
   }
   try {
     const taskkill = path.win32.join(system32(env), 'taskkill.exe');
@@ -304,6 +314,7 @@ function signalGroup(child, sig, {
     fallback(e);
     killMsys();
   }
+  return killed;
 }
 
 /**
@@ -506,9 +517,11 @@ function spawnGit(cwd, args, {
     const err = [];
     let bytes = 0;
     let killedBy = null;
+    let killing = null; // Windows: the kills sent, until they are done (signalGroup)
     const signalTree = (sig, { sync = false } = {}) => {
       noteKill(lockWatch, child);
-      signalGroup(child, sig, { token, sh: win ? msysShellOf(exe) : null, ...(sync ? { run: execFileNow } : {}) });
+      const k = signalGroup(child, sig, { token, sh: win ? msysShellOf(exe) : null, ...(sync ? { run: execFileNow } : {}) });
+      if (k) killing = killing ? Promise.all([killing, k]) : k;
     };
     const kill = (why) => {
       if (killedBy) return;
@@ -561,9 +574,17 @@ function spawnGit(cwd, args, {
     child.on('close', (code) => {
       done();
       record({ code, ...(okCodes.includes(code) || killedBy ? {} : { failed: true }) });
-      // Settled once a lock the hard kill left is gone, so the next command doesn't trip on it.
-      if (lockWatch && lockWatch.killedAt !== null) releaseKilledLock(cwd, env, t0, lockWatch).then(() => finish(code));
-      else finish(code);
+      // Settled once the kill is done (on Windows git's `close` can come first: the hook's
+      // MSYS processes may still run, see signalGroup) and a lock the hard kill left is gone, so
+      // the next command neither runs beside the cancelled one's hook nor trips on its lock.
+      const release = lockWatch && lockWatch.killedAt !== null;
+      if (killing || release) {
+        Promise.resolve(killing)
+          .then(() => release && releaseKilledLock(cwd, env, t0, lockWatch))
+          .then(() => finish(code));
+      } else {
+        finish(code);
+      }
     });
     child.stdin.on('error', () => {}); // git may exit before reading stdin
     child.stdin.end(input);

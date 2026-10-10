@@ -150,7 +150,9 @@ test('deriveName cleans the name for the platform, and gives up ("") when nothin
   assert.equal(deriveName('git@h:o/con', { platform: 'win32' }), '', 'a device name');
   assert.equal(deriveName('git@h:o/con', { platform: 'darwin' }), 'con');
   assert.equal(deriveName('git@h:o/..', { platform: 'darwin' }), '');
-  assert.equal(deriveName('https://h/o/.GIT', { platform: 'darwin' }), '');
+  assert.equal(deriveName('https://h/o/.GIT', { platform: 'darwin' }), 'GIT', 'leading dots dropped');
+  assert.equal(deriveName('https://host/o/.config.git', { platform: 'darwin' }), 'config', 'never a dot-folder (~/.config)');
+  assert.equal(deriveName('git@h:o/...', { platform: 'linux' }), '');
 });
 
 test('nameError: one segment, not . / .., not too long, no .git; on Windows the device and character rules', () => {
@@ -181,7 +183,7 @@ test('nameError: one segment, not . / .., not too long, no .git; on Windows the 
     assert.match(win(n), /end with a dot or a space/, n);
     assert.equal(mac(n), null, n);
   }
-  for (const n of ['a:b', 'a<b', 'a>b', 'a"b', 'a|b', 'a?b', 'a*b']) {
+  for (const n of ['a<b', 'a>b', 'a"b', 'a|b', 'a?b', 'a*b']) {
     assert.match(win(n), /can't contain </, n);
     assert.equal(mac(n), null, n);
   }
@@ -249,5 +251,13 @@ test('zero-width and format characters are refused in a URL and a folder name, a
     assert.match(parseCloneUrl(`https://git${ch(c)}hub.com/o/r`).reason, /invisible or control/, c.toString(16));
     assert.match(nameError(`r${ch(c)}`, { platform: 'darwin' }), /invisible or control/, c.toString(16));
     assert.equal(deriveName(`https://h/o/a${ch(c)}b.git`, { platform: 'darwin' }), 'ab', c.toString(16));
+  }
+});
+
+test('nameError on every platform: no leading dot (a dot-folder in home: ~/.config, ~/.ssh) and no ":" (git reads "host:path" as a local folder)', () => {
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    for (const n of ['.config', '.ssh', '.aws', '.kube', '.gradle', '.x', '...']) assert.match(nameError(n, { platform }), /start with a dot|"\."|\.git/, `${platform} ${n}`);
+    for (const n of ['a:b', 'host:repo.git', ':x']) assert.match(nameError(n, { platform }), /":"|can't contain </, `${platform} ${n}`);
+    assert.equal(nameError('a.b', { platform }), null, 'a dot inside is fine');
   }
 });

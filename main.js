@@ -25,7 +25,7 @@ const ops = require('./src/ops');
 const git = require('./src/git');
 const { findGit, describeGitFailure } = require('./src/gitcheck');
 const { createRecentStore, createTrustStore, createClonePrefs } = require('./src/recent');
-const { createCleanup } = require('./src/clone-cleanup');
+const { createCleanup, keepListed } = require('./src/clone-cleanup');
 const { createCloneService } = require('./src/clone-service');
 const { setGitBinary, killChildren } = require('./src/exec');
 const { parseArgs: parseArgv } = require('./src/cli-args');
@@ -243,6 +243,9 @@ controller = createTabsController({
   store: () => tabsStore,
   report,
   log: tabLog,
+  // App ops (clone): their runner events name the target's absolute path, which no page gets.
+  privateOps: ops.APP_OPS,
+  onTabClosed: (s) => { if (cloneService) cloneService.sessionClosed(s); },
 });
 
 /** The recent list changed outside an open (cleared, an entry dropped): the menu and every page. */
@@ -517,16 +520,20 @@ async function start() {
   // Clone: the last parent folder and the removals a quit or a crash interrupted (clone.json);
   // those are finished now, in the background (src/clone-cleanup.js checks each folder first).
   const clonePrefs = createClonePrefs(path.join(app.getPath('userData'), 'clone.json'), { log: cloneLog });
-  cloneCleanup = createCleanup({ prefs: clonePrefs, log: cloneLog });
+  cloneCleanup = createCleanup({
+    prefs: clonePrefs,
+    log: cloneLog,
+    // Never removed, whatever clone.json says: a folder the recent list or a saved tab names.
+    keep: keepListed(async () => [...(await recent.list()).map((e) => e.root), ...tabsStore.load().roots]),
+  });
   cloneCleanup.resume().catch((err) => cloneLog.warn('could not finish the pending removals', { err }));
   cloneService = createCloneService({
     runner,
     opening,
     prefs: clonePrefs,
     cleanup: cloneCleanup,
+    // No default parent: the user picks one (a smoke run: main/smoke.js seeds clone.json).
     pickFolder: harness ? harness.clone.pickFolder : pickCloneFolder,
-    // A smoke run never falls back to the real home folder (main/smoke.js seeds clone.json).
-    home: harness ? () => null : () => os.homedir(),
     log: cloneLog,
   });
   registerIpc();

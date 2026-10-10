@@ -779,6 +779,8 @@ const APP = {
 const APP_DESCRIPTORS = Object.freeze({ ...APP });
 const APP_RUN = Object.freeze(Object.fromEntries(Object.entries(APP).map(([n, d]) => [n, d.run])));
 const APP_WRITE_OPS = Object.keys(APP).filter((n) => APP[n].write);
+/** The app ops' names: their runner events name a folder no page holds (main keeps them from the pages). */
+const APP_OPS = Object.freeze(new Set(Object.keys(APP)));
 
 /** Every op's descriptor, by name (see describe). */
 const DESCRIPTORS = Object.freeze({ ...READ, ...WRITE });
@@ -823,7 +825,7 @@ function createRunner({ thumbnailer = null, ...o } = {}) {
 }
 
 module.exports = {
-  OPS, WRITE_OPS, WORKTREE_OPS, BARE_OK, DESCRIPTORS, createRunner, serializeError, relPath,
+  OPS, WRITE_OPS, WORKTREE_OPS, BARE_OK, DESCRIPTORS, APP_OPS, createRunner, serializeError, relPath,
   // src/repo-open.js, part of the facade main.js uses.
   openRepo, summary, repoName,
 };

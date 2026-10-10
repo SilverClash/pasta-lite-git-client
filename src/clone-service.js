@@ -5,16 +5,18 @@
 // dialog are passed in, so it is unit-tested with fakes.
 //
 // Security boundary: the page never sends a path, and never names a local source. The parent is
-// main's (its folder dialog, clone.json's last parent, else the home folder); the page only echoes
+// main's: the folder the user last picked in its native dialog (clone.json's last parent). There
+// is no default: until a folder is picked, the form asks for one, so a clone never lands in the
+// home folder (or a dot-folder in it) unless the user chose home itself. The page only echoes
 // its display back, and a mismatch (another tab picked another folder meanwhile) is refused as
 // 'stale'. The source is a typed URL that must pass parseCloneUrl (a network URL: local paths and
 // file:// are refused), and the name nameError (one segment). Main builds the target.
 const os = require('node:os');
 const path = require('node:path');
-const { kindError } = require('./exec');
+const { kindError, GitError } = require('./exec');
 const { parseCloneUrl, nameError } = require('./clone-url');
-const { homeShort, samePath, isDir } = require('./fs-paths');
-const { serializeError, logError } = require('./ipc-errors');
+const { homeShort, samePath } = require('./fs-paths');
+const { serializeError, logError, kindOf } = require('./ipc-errors');
 const { EVENTS, ownedOpId } = require('./ipc-contract');
 
 /**
@@ -26,14 +28,12 @@ const { EVENTS, ownedOpId } = require('./ipc-contract');
  *   cleanup: {journal(made): Promise<void>, forget(made): Promise<void>, remove(made: object): Promise<string>,
  *     running(): {abs: string}[]},
  *   pickFolder: (o: {defaultPath?: string}) => Promise<string|null>,
- *   home: () => string|null,
  *   log: {info: Function, warn: Function},
  *   platform?: string, homeDir?: () => string,
- * }} o  pickFolder: main's "Choose where to clone" dialog (the smoke harness answers it from its environment), null
- *   when cancelled. home: the default parent (null in a smoke run: never the real home folder).
- *   homeDir: what the displays shorten to '~' (os.homedir).
+ * }} o  pickFolder: main's "Choose where to clone" dialog (the smoke harness answers it from its
+ *   environment), null when cancelled. homeDir: what the displays shorten to '~' (os.homedir).
  */
-function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home, log, platform = process.platform, homeDir = os.homedir }) {
+function createCloneService({ runner, opening, prefs, cleanup, pickFolder, log, platform = process.platform, homeDir = os.homedir }) {
   // session id -> {opId, target, started, cancelled, made}: the page's opId, the target as shown
   // (null until it is known), whether the runner has the op, a cancel that came before it did, the
   // folder the clone made. Set before anything is awaited, so a second clone from the tab is refused.
@@ -49,13 +49,8 @@ function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home,
     return err;
   };
 
-  /** The parent folder now: clone.json's last one (still a directory), else home(), else null. */
-  async function currentParent() {
-    const last = await prefs.lastParent();
-    if (last) return last;
-    const h = home();
-    return h && path.isAbsolute(h) && await isDir(h) ? h : null;
-  }
+  /** The parent folder now: the one last picked in main's dialog (still a directory), else null. */
+  const currentParent = () => prefs.lastParent();
 
   /** The parent as the page sees it: {display, chars} (chars: its length, for Windows' long-path warning). */
   const parentView = (abs) => (abs ? { display: display(abs), chars: abs.length } : null);
@@ -100,7 +95,11 @@ function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home,
       throw refuse(kindError('in-progress', 'The previous clone\'s folder is still being removed', { state: 'cleanup', leftover: display(target) }));
     }
     entry.target = display(target);
+    // The last checks, with no await from here to runner.run: a cancel, or the tab closing, while
+    // the checks above ran means no clone at all (a closed tab's clone would run headless, with
+    // no close or quit guard ever having seen it).
     if (entry.cancelled) throw refuse(kindError('aborted', 'Clone cancelled'));
+    if (session.closed) throw refuse(kindError('aborted', 'The tab closed before the clone started'));
     const hooks = {
       onProgress: (frame) => session.send(EVENTS.CLONE_PROGRESS, { opId, ...frame }),
       // Pending in clone.json from the moment it exists: a quit, a crash or a git that outlives
@@ -125,7 +124,7 @@ function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home,
     const outcome = { status: res.status, target: display(res.root), name: res.name, submodules: !!res.submodules, empty: !!res.empty, opened: null };
     if (res.status === 'checkout-failed') {
       kept = { opId: ownedOpId(session.id, opId), root: res.root };
-      remember(session, opId, req, { status: res.status, target: outcome.target, name: res.name, opened: false });
+      remember(session, opId, req, { status: res.status, target: outcome.target, name: res.name, opened: false, message: res.message });
       return { ...outcome, message: res.message };
     }
     const done = { ...outcome, ...(await openIt(session, res.root)) };
@@ -137,9 +136,11 @@ function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home,
    * What a reattached page needs to tell the user how clone `opId` ended: {opId, req: {url},
    * status: 'done' | 'checkout-failed' | 'failed', target, name, opened, reason?} or, failed,
    * {error: {message, kind, state, ...}} (what renderer/clone.js errorView reads; the message is
-   * cloneRepo's, redacted). req.url: the typed URL (credentials in it were refused).
+   * cloneRepo's, redacted), checkout-failed with git's `message`. req.url: the typed URL
+   * (credentials in it were refused). Nothing for a tab that closed (sessionClosed forgot it).
    */
   function remember(session, opId, req, outcome) {
+    if (session.closed) return;
     last.set(session.id, { opId, req: { url: String(req.url) }, ...outcome });
   }
 
@@ -202,11 +203,26 @@ function createCloneService({ runner, opening, prefs, cleanup, pickFolder, home,
       try {
         return await cloneIn(session, req, opId, entry);
       } catch (err) {
+        // The runner logs every op it ran; a refusal is logged by refuse(). Anything else before
+        // the runner (a bug, an fs error) would be logged nowhere (app:clone is QUIET in
+        // main/ipc.js), though the dialog points at the logs: its name, code and stack frames,
+        // never its message (it could quote the URL).
+        if (!entry.started && !kindOf(err) && !(err instanceof GitError)) {
+          log.warn('clone failed before it started', {
+            name: (err && err.name) || 'Error', code: (err && err.code) || null,
+            stack: String((err && err.stack) || '').split('\n').slice(1, 8).join('\n'),
+          });
+        }
         remember(session, opId, req, { status: 'failed', target: entry.target || '', name: req.name, opened: false, error: serializeError(err) });
         throw err;
       } finally {
         if (running.get(session.id) === entry) running.delete(session.id);
       }
+    },
+
+    /** The tab `session` closed: forget its last outcome (it holds the typed URL). */
+    sessionClosed(session) {
+      last.delete(session.id);
     },
 
     /**

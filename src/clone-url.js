@@ -25,9 +25,8 @@
 
   const MAX_URL = 2048;
   const MAX_NAME_BYTES = 255;
-  const { INVISIBLE, hasInvisible } = DisplayText;
+  const { INVISIBLE, JOINERS, hasInvisible } = DisplayText;
   const { isDotGitName, DEVICE_NAME, WIN_INVALID_CHARS, defaultPlatform } = PathNames;
-  const { JOINERS } = DisplayText;
 
   const LOCAL = 'Enter a remote URL (https://…, ssh://…, git@host:…): a local path or file:// URL isn\'t cloned here';
   const refuse = (reason) => ({ ok: false, reason });
@@ -153,9 +152,9 @@
    * The folder name `git clone` would derive from `source` (git's git_url_basename, with '\\' a
    * separator too): skip the scheme and the user, drop trailing separators and a '/.git', a bare
    * host's port, everything up to the last separator or ':', then a '.git' or '.bundle'. No
-   * decoding ('a%20b' stays). Then cleaned for `platform`: invisible characters removed, and on
-   * Windows its invalid characters made '-' and trailing dots and spaces dropped. '' when no
-   * valid name (nameError) is left.
+   * decoding ('a%20b' stays). Then cleaned: invisible characters and leading dots removed (no
+   * '.config', '.ssh' ...), and on Windows its invalid characters made '-' and trailing dots and
+   * spaces dropped. '' when no valid name (nameError) is left: the dialog asks for one.
    */
   function deriveName(source, { platform = defaultPlatform() } = {}) {
     let s = String(source == null ? '' : source).trim();
@@ -173,7 +172,7 @@
     if (!/[/\\]/.test(s) && s.includes(':')) s = s.replace(/:\d*$/, ''); // a bare host's port
     const cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'), s.lastIndexOf(':'));
     s = s.slice(cut + 1).replace(/\.(?:git|bundle)$/, '');
-    s = s.replace(INVISIBLE, '').replace(JOINERS, '');
+    s = s.replace(INVISIBLE, '').replace(JOINERS, '').replace(/^\.+/, '');
     if (platform === 'win32') s = s.replace(new RegExp(WIN_INVALID_CHARS.source, 'g'), '-').replace(/[. ]+$/, '');
     return nameError(s, { platform }) ? '' : s;
   }
@@ -181,7 +180,12 @@
   /** UTF-8 length of `s` (TextEncoder: in Node and in the page). */
   const utf8Length = (s) => new TextEncoder().encode(s).length;
 
-  /** Why `name` can't be the folder a clone creates (one segment), or null. The rules main enforces. */
+  /**
+   * Why `name` can't be the folder a clone creates (one segment), or null. The rules main enforces.
+   * On every platform: no leading dot (a clone into ~/.config would make its git/config the user's
+   * global git config, into ~/.ssh their ssh setup) and no ':' (git takes an scp-like
+   * "host:path" that exists as a local folder for one).
+   */
   function nameError(name, { platform = defaultPlatform() } = {}) {
     const n = String(name == null ? '' : name);
     if (!n.trim()) return 'Enter a folder name';
@@ -190,6 +194,8 @@
     if (utf8Length(n) > MAX_NAME_BYTES) return 'The folder name is too long';
     if (hasInvisible(n, { joiners: true })) return 'The folder name contains invisible or control characters';
     if (isDotGitName(n, { platform })) return 'A folder can\'t be named ".git"';
+    if (n.startsWith('.')) return 'A folder name can\'t start with a dot';
+    if (n.includes(':')) return 'A folder name can\'t contain ":"';
     if (platform === 'win32') {
       if (DEVICE_NAME.test(n)) return `"${n}" is a name Windows reserves for a device`;
       if (/[. ]$/.test(n)) return 'On Windows a folder name can\'t end with a dot or a space';

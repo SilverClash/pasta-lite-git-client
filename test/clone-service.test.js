@@ -22,7 +22,7 @@ function session(id) {
 }
 
 /** A service over fakes. `homeDir` is what displays shorten to '~'. */
-function setup({ last = null, home = null, homeDir = '/nowhere', picks = [], removing = [], openAnswers = [] } = {}) {
+function setup({ last = null, homeDir = '/nowhere', picks = [], removing = [], openAnswers = [] } = {}) {
   const calls = [];
   const runs = [];
   const prefs = {
@@ -59,7 +59,6 @@ function setup({ last = null, home = null, homeDir = '/nowhere', picks = [], rem
   const service = createCloneService({
     runner, opening, prefs, cleanup,
     pickFolder: async (o) => { calls.push(['pickFolder', o.defaultPath]); return picks.length ? picks.shift() : null; },
-    home: () => home,
     log: { info: (m, f) => logged.push([m, f]), warn: (m, f) => logged.push([m, f]) },
     platform: process.platform,
     homeDir: () => homeDir,
@@ -69,12 +68,11 @@ function setup({ last = null, home = null, homeDir = '/nowhere', picks = [], rem
 
 const doneRes = (root, o = {}) => ({ status: 'done', root, name: path.basename(root), submodules: false, empty: false, ...o });
 
-test('the parent: the last one used, else home, else none; shown with ~ for the home folder', async () => {
-  const [a, b] = [h.tmpDir(), h.tmpDir()];
+test('the parent: the one last picked; none until the user picks one (never the home folder by default)', async () => {
+  const a = h.tmpDir();
   assert.deepEqual((await setup({ last: a }).service.defaults(session(1))).parent, { display: a, chars: a.length });
-  assert.deepEqual((await setup({ home: b }).service.defaults(session(1))).parent, { display: b, chars: b.length });
-  assert.equal((await setup({}).service.defaults(session(1))).parent, null, 'a smoke run without a seed: no parent');
-  assert.equal((await setup({ home: path.join(b, 'gone') }).service.defaults(session(1))).parent, null);
+  assert.equal((await setup({}).service.defaults(session(1))).parent, null, 'nothing picked yet: no parent, the form asks for one');
+  await assert.rejects(setup({}).service.clone(session(1), { url: 'https://h/r', name: 'r', parent: '~' }, 'x'), { kind: 'not-found', state: 'parent' }, 'and main refuses to guess');
   const shown = await setup({ last: a, homeDir: path.dirname(a) }).service.defaults(session(1));
   assert.equal(shown.parent.display, `~${path.sep}${path.basename(a)}`);
 });
@@ -250,8 +248,10 @@ test('opening: declined, stale (one more try in a new tab), an open that throws 
   assert.deepEqual(t.calls, [['openCloned', 1, root, false], ['rememberRecent', root]]);
 });
 
-test('the home folder default is the real one only when main passes it (os.homedir in the app)', async () => {
-  const t = setup({ home: os.homedir(), homeDir: os.homedir() });
+test('the home folder itself is a parent only once the user picked it in main\'s dialog', async () => {
+  const t = setup({ homeDir: os.homedir(), picks: [os.homedir()] });
+  assert.equal((await t.service.defaults(session(1))).parent, null);
+  assert.equal((await t.service.pickParent(session(1))).display, '~');
   assert.equal((await t.service.defaults(session(1))).parent.display, '~');
 });
 
@@ -353,5 +353,57 @@ test('refusals about the parent say so (state): none, or changed', async () => {
   const s = session(1);
   await assert.rejects(setup({}).service.clone(s, { url: 'https://h/r', name: 'r', parent: '' }, 'x'), { kind: 'not-found', state: 'parent' });
   await assert.rejects(t.service.clone(s, { url: 'https://h/r', name: 'r', parent: '~/x' }, 'x'), { kind: 'stale', state: 'parent' });
-  assert.equal(t.service.pickSource, undefined, 'clones come from remotes only: no local source');
+});
+
+test('a tab that closes while the clone is still in its checks gets no clone (no headless run, nothing a guard didn\'t see)', async () => {
+  const parent = h.tmpDir();
+  let release;
+  const t = setup({});
+  t.prefs.lastParent = () => new Promise((r) => { release = () => r(parent); }); // the checks wait here, once
+  const s = session(1);
+  const p = t.service.clone(s, { url: 'https://h/r', name: 'r', parent }, 'a');
+  s.closed = true;
+  release();
+  t.prefs.lastParent = async () => parent;
+  await assert.rejects(p, { kind: 'aborted' });
+  assert.equal(t.runs.length, 0, 'the runner never got it');
+  assert.equal((await t.service.defaults(s)).last, null, 'nothing remembered for a closed tab');
+});
+
+test('an unexpected error before the runner is logged (name, code, stack frames; never the URL), a refusal only as a refusal', async () => {
+  const parent = h.tmpDir();
+  const t = setup({ last: parent });
+  t.prefs.lastParent = async () => { throw Object.assign(new TypeError('cannot read https://secret-host.example/r'), { code: 'EBROKEN' }); };
+  const s = session(1);
+  await assert.rejects(t.service.clone(s, { url: 'https://secret-host.example/r', name: 'r', parent }, 'a'), TypeError);
+  const rec = t.logged.find(([m]) => m === 'clone failed before it started');
+  assert.ok(rec, JSON.stringify(t.logged));
+  assert.equal(rec[1].name, 'TypeError');
+  assert.equal(rec[1].code, 'EBROKEN');
+  assert.match(rec[1].stack, /clone-service\.test\.js/);
+  assert.ok(!JSON.stringify(t.logged).includes('secret-host'), 'no URL in the log');
+  const u = setup({ last: parent });
+  await assert.rejects(u.service.clone(s, { url: '/local', name: 'r', parent }, 'b'), { kind: 'invalid-args' });
+  assert.deepEqual(u.logged.map(([m]) => m), ['clone refused'], 'a kinded refusal: logged once, as such');
+});
+
+test('sessionClosed forgets the tab\'s last outcome (it holds the typed URL); a clone finishing after the tab closed leaves none', async () => {
+  const parent = h.tmpDir();
+  const t = setup({ last: parent });
+  const s = session(1);
+  let p = t.service.clone(s, { url: 'https://h/r', name: 'r', parent }, 'a');
+  await flush();
+  t.runs[0].resolve({ status: 'checkout-failed', root: path.join(parent, 'r'), name: 'r', message: 'error: File name too long' });
+  await p;
+  const last = (await t.service.defaults(s)).last;
+  assert.equal(last.status, 'checkout-failed');
+  assert.equal(last.message, 'error: File name too long', 'a reloaded page can show it and offer Open Anyway');
+  t.service.sessionClosed(s);
+  assert.equal((await t.service.defaults(s)).last, null);
+  p = t.service.clone(s, { url: 'https://h/q', name: 'q', parent }, 'b');
+  await flush();
+  s.closed = true;
+  t.runs[1].resolve(doneRes(path.join(parent, 'q')));
+  await p;
+  assert.equal((await t.service.defaults(s)).last, null);
 });

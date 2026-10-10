@@ -1833,7 +1833,7 @@ test.describe('clone: an app op in the shared runner', () => {
       [t('r'), { source: 'https://h/r', parent: 'relative', name: 'r' }],
       [t('r'), { source: '/srv/secret.git', parent, name: 'r' }],
       [t('r'), { source: 'ext::sh -c x', parent, name: 'r' }],
-      [t('r'), { source: 'relative/path', parent, name: 'r', local: true }],
+      [t('r'), { source: 'relative/path', parent, name: 'r' }],
       [t('r'), { source: pathToFileURL(parent).href, parent, name: 'r' }],
       [t('r'), 'not an object'],
     ];

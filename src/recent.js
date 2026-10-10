@@ -103,13 +103,19 @@ function createTrustStore(filePath) {
 
 /**
  * A Made ({abs, dev, ino, born?}: src/clone.js) as stored: those fields, the ids and the birth
- * time (nanoseconds, where the file system keeps one) decimal strings.
+ * time (nanoseconds, where the file system keeps one) decimal strings, and `state: 'failed'` once
+ * its clone failed and its removal began (src/clone-cleanup.js). An entry without it is a folder
+ * whose clone's outcome is unknown (still running, or a crash or a quit cut it short).
  */
 const digits = (v) => typeof v === 'string' && /^\d+$/.test(v);
 const isMade = (m) => !!m && typeof m.abs === 'string' && path.isAbsolute(m.abs) && digits(m.dev) && digits(m.ino)
-  && (m.born === undefined || digits(m.born));
-const pickMade = (m) => ({ abs: m.abs, dev: m.dev, ino: m.ino, ...(m.born ? { born: m.born } : {}) });
+  && (m.born === undefined || digits(m.born)) && (m.state === undefined || m.state === 'failed');
+const pickMade = (m) => ({ abs: m.abs, dev: m.dev, ino: m.ino, ...(m.born ? { born: m.born } : {}), ...(m.state === 'failed' ? { state: 'failed' } : {}) });
+/** The same folder (its state aside). */
 const sameMade = (a, b) => a.abs === b.abs && a.dev === b.dev && a.ino === b.ino && (a.born || null) === (b.born || null);
+const madeKey = (m) => [m.abs, m.dev, m.ino, m.born || ''].join('\0');
+
+const FORGET_RETRY_MS = Object.freeze([250, 1000, 4000]);
 
 /**
  * clone.json (docs/plans/clone-repository.md §6.5): {lastParent: <abs>, pendingCleanup: [Made]}.
@@ -117,24 +123,39 @@ const sameMade = (a, b) => a.abs === b.abs && a.dev === b.dev && a.ino === b.ino
  * writeJsonAsync). Edits run one after another, each on a fresh read, and are best effort: a
  * failure is logged (`log.warn`, without the path), never thrown, so it never fails a clone.
  *   lastParent(): the saved parent folder while it is an absolute path to a directory, else null
- *   setLastParent(abs), addPendingCleanup(made), dropPendingCleanup(made): resolve when saved (or not).
- *   addPendingCleanup replaces every entry for the same path: a folder was just made there, so the
- *   one an older entry names is gone, and its (reusable) inode must never point at the new one.
- *   pendingCleanup(): the removals src/clone-cleanup.js hasn't finished (well-formed entries only)
+ *   setLastParent(abs), addPendingCleanup(made): resolve when saved (or not). addPendingCleanup
+ *   replaces every entry for the same path: a folder was just made there, so the one an older
+ *   entry names is gone, and its (reusable) inode must never point at the new one.
+ *   markFailed(made, {add}): the entry for that folder gets `state: 'failed'` (src/clone-cleanup.js
+ *   writes it before removing anything); `add`: also when there is none. Resolves whether an entry
+ *   is marked now.
+ *   dropPendingCleanup(made): the folder is no longer pending. It is also remembered for this run,
+ *   so every later write drops it too, and a write that fails is tried again (`retryDelays`): a
+ *   successful clone whose entry outlived it must never look like a removal to finish.
+ *   pendingCleanup(): the entries src/clone-cleanup.js hasn't settled (well-formed ones only)
  */
-function createClonePrefs(filePath, { log = { warn() {} } } = {}) {
+function createClonePrefs(filePath, { log = { warn() {} }, retryDelays = FORGET_RETRY_MS, wait = (ms) => new Promise((r) => { setTimeout(r, ms); }) } = {}) {
   let tail = Promise.resolve();
+  const forgotten = new Set(); // madeKey of every entry dropped in this run
   const load = async () => {
     const data = await readJsonAsync(filePath);
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   };
-  const pending = (data) => (Array.isArray(data.pendingCleanup) ? data.pendingCleanup.filter(isMade).map(pickMade) : []);
+  const pending = (data) => (Array.isArray(data.pendingCleanup) ? data.pendingCleanup.filter(isMade).map(pickMade) : [])
+    .filter((m) => !forgotten.has(madeKey(m)));
+  /** Resolves true when written, false when the write failed (logged). */
   const update = (change) => {
-    tail = tail
-      .then(async () => writeJsonAsync(filePath, change(await load())))
-      .catch((e) => log.warn('could not save clone.json', { error: (e && e.code) || 'error' }));
-    return tail;
+    const run = tail.then(async () => {
+      await writeJsonAsync(filePath, change(await load()));
+      return true;
+    }).catch((e) => {
+      log.warn('could not save clone.json', { error: (e && e.code) || 'error' });
+      return false;
+    });
+    tail = run;
+    return run;
   };
+  const withPending = (change) => (data) => ({ ...data, pendingCleanup: change(pending(data)) });
 
   async function lastParent() {
     await tail;
@@ -147,13 +168,44 @@ function createClonePrefs(filePath, { log = { warn() {} } } = {}) {
     return pending(await load());
   }
 
+  async function markFailed(made, { add = true } = {}) {
+    let marked = false;
+    await update(withPending((list) => {
+      const out = list.map((m) => {
+        if (!sameMade(m, made)) return m;
+        marked = true;
+        return { ...m, state: 'failed' };
+      });
+      if (!marked && add) {
+        marked = true;
+        return [...out.filter((m) => !samePath(m.abs, made.abs)), { ...pickMade(made), state: 'failed' }];
+      }
+      return out;
+    }));
+    return marked;
+  }
+
+  async function dropPendingCleanup(made) {
+    forgotten.add(madeKey(made));
+    const drop = withPending((list) => list.filter((m) => !sameMade(m, made)));
+    if (await update(drop)) return;
+    for (const ms of retryDelays) {
+      await wait(ms);
+      if (await update(drop)) return;
+    }
+  }
+
   return {
     lastParent,
-    setLastParent: (abs) => update((data) => ({ ...data, lastParent: abs })),
+    setLastParent: (abs) => update((data) => ({ ...data, lastParent: abs })).then(() => {}),
     pendingCleanup,
-    addPendingCleanup: (made) => update((data) => ({ ...data, pendingCleanup: [...pending(data).filter((m) => !samePath(m.abs, made.abs)), pickMade(made)] })),
-    dropPendingCleanup: (made) => update((data) => ({ ...data, pendingCleanup: pending(data).filter((m) => !sameMade(m, made)) })),
+    addPendingCleanup: (made) => {
+      forgotten.delete(madeKey(made));
+      return update(withPending((list) => [...list.filter((m) => !samePath(m.abs, made.abs)), pickMade(made)])).then(() => {});
+    },
+    markFailed,
+    dropPendingCleanup,
   };
 }
 
-module.exports = { createRecentStore, createTrustStore, createClonePrefs };
+module.exports = { createRecentStore, createTrustStore, createClonePrefs, sameMade };

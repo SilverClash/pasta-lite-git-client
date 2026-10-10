@@ -268,7 +268,7 @@ test('clone wording: quitting or closing a tab says what happens to the folder; 
   }
   const unsafe = dialogOptions('unsafe', 'clone');
   assert.match(unsafe.message, /\(clone\)/);
-  assert.equal(unsafe.detail, 'Git is still stopping. Quitting now leaves a partial folder, which is removed the next time Pasta Lite starts.');
+  assert.equal(unsafe.detail, 'Git is still stopping. Quitting now may leave a partial folder: the next start removes it if its download hadn\'t finished, and otherwise leaves it for you to check.');
   assert.deepEqual(unsafe.buttons, ['Quit', 'Wait']);
   assert.match(dialogOptions('unsafe', 'undo').detail, /half-restored/, 'undo / discard keep their text');
   assert.match(dialogOptions('unsafe', 'undo, clone').detail, /half-restored/, 'restoring files is the graver risk');

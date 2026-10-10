@@ -297,15 +297,14 @@ describe('the clone channels', () => {
         stripId: 1, isView: () => false, isPage: () => true,
       }), null, `${ch}: a strip sender is refused`);
     }
-    assert.equal(c.CHANNELS['app:pickCloneSource'], undefined, 'no local source: remotes only');
     assert.deepEqual(Object.keys(c.CHANNELS).filter((ch) => /clone/i.test(ch)).sort(), [...CLONE].sort(), 'four clone channels');
     assert.equal(c.EVENTS.CLONE_PROGRESS, 'clone-progress');
     assert.equal(c.MENU_COMMANDS.CLONE, 'clone');
   });
 
   test('cloneRequest: three fields picked, extra ones dropped; the URL, the name and the parent display bounded; refusals quote no value', () => {
-    const ok = c.cloneRequest({ source: 'picked', url: 'https://h/r.git', name: 'r', parent: '~/code', path: '/etc', extra: 1 });
-    assert.deepEqual(ok, { url: 'https://h/r.git', name: 'r', parent: '~/code' }, 'no source kind: a URL is the only one');
+    const ok = c.cloneRequest({ kind: 'local', url: 'https://h/r.git', name: 'r', parent: '~/code', path: '/etc', extra: 1 });
+    assert.deepEqual(ok, { url: 'https://h/r.git', name: 'r', parent: '~/code' });
     const secret = 'https://u:hunter2@h/r';
     const bad = [
       null, 'x', ['url'], {}, { url: `${secret}${'x'.repeat(2048)}`, name: 'r', parent: '~' },

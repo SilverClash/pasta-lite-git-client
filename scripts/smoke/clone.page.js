@@ -40,7 +40,6 @@
     clone.click();
     if (!check(await until(() => q('.clone-url')), 'the clone form opened')) return false;
     steps.parent = q('.clone-parent').value;
-    check(!button('Choose Local Repository…'), 'remotes only: no local-repository picker');
     type(q('.clone-url'), window.PL_SMOKE_URL);
     steps.source = q('.clone-url').value;
     steps.derived = q('.clone-name').value;

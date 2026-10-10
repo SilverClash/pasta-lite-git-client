@@ -1,8 +1,8 @@
 'use strict';
 // cloneRepo (src/clone.js) with real git, against local fixtures only: bare repositories over
-// file:// (built with pathToFileURL so Windows paths work) and local paths, which only main's
-// folder dialog may pass in the app, plus local HTTP servers on 127.0.0.1 (401, never answering).
-// No test touches the network.
+// file:// (built with pathToFileURL so Windows paths work) and local paths, which the app never
+// passes (it clones remotes only; these tests pass localFixtures), plus local HTTP servers on
+// 127.0.0.1 (401, dropped connections, never answering). No test touches the network.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -12,7 +12,8 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const h = require('./helpers');
-const { cloneRepo, CLONE_ARGS, _internal: { testHooks, throttle, mkdirError, classified, MAX_CLONE_OUTPUT } } = require('../src/clone');
+const { cloneRepo, CLONE_ARGS, _internal: { testHooks, throttle, mkdirError, classified, MAX_CLONE_OUTPUT, FIXTURE_ARGS } } = require('../src/clone');
+const { bornOf } = require('../src/clone-cleanup');
 const { createCleanup } = require('../src/clone-cleanup');
 const { createClonePrefs } = require('../src/recent');
 const { killChildren, GitError } = require('../src/exec');
@@ -52,9 +53,11 @@ async function listen(handler) {
   return { server, url: `http://127.0.0.1:${server.address().port}/repo.git`, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
-test('CLONE_ARGS: the transport allowlist, file at git\'s default "user"', () => {
+test('CLONE_ARGS: the transport allowlist, the file transport never (the tests\' fixtures: FIXTURE_ARGS, "user")', () => {
   assert.deepEqual([...CLONE_ARGS], ['-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'protocol.http.allow=always',
-    '-c', 'protocol.ssh.allow=always', '-c', 'protocol.git.allow=always', '-c', 'protocol.file.allow=user']);
+    '-c', 'protocol.ssh.allow=always', '-c', 'protocol.git.allow=always', '-c', 'protocol.file.allow=never']);
+  assert.deepEqual(FIXTURE_ARGS.slice(-2), ['-c', 'protocol.file.allow=user']);
+  assert.ok(Object.isFrozen(FIXTURE_ARGS));
   assert.ok(Object.isFrozen(CLONE_ARGS));
   assert.equal(MAX_CLONE_OUTPUT, 16 * 1024 * 1024);
 });
@@ -64,7 +67,7 @@ test('a file:// clone: the files, origin pointing at the source, progress to 100
   const parent = h.tmpDir();
   const frames = [];
   let made = null;
-  const res = await cloneRepo({ source: fileUrl(remote), parent, name: 'copy', onProgress: (p) => frames.push(p), onMade: (m) => { made = m; } });
+  const res = await cloneRepo({ source: fileUrl(remote), localFixtures: true, parent, name: 'copy', onProgress: (p) => frames.push(p), onMade: (m) => { made = m; } });
   const root = path.join(parent, 'copy');
   assert.deepEqual(res, { status: 'done', root, name: 'copy', submodules: false, empty: false });
   assert.equal(h.read(root, 'README.md'), 'hello\n');
@@ -73,15 +76,18 @@ test('a file:// clone: the files, origin pointing at the source, progress to 100
   assert.equal(receiving.at(-1).percent, 100);
   assert.equal(receiving.at(-1).done, true, 'a phase\'s done always gets through the throttle');
   const st = fs.lstatSync(root, { bigint: true });
-  const born = st.birthtimeNs > 0n && st.birthtimeNs !== st.ctimeNs ? { born: String(st.birthtimeNs) } : {};
-  assert.deepEqual(made, { abs: root, dev: String(st.dev), ino: String(st.ino), ...born }, 'with its birth time where the file system keeps one');
+  // The birth time by the code's own rule (bornOf): every file system the app runs on keeps one,
+  // and a folder's birth time doesn't move as git writes into it.
+  const born = bornOf(st);
+  assert.deepEqual(made, { abs: root, dev: String(st.dev), ino: String(st.ino), ...(born ? { born } : {}) });
+  if (process.platform === 'darwin' || process.platform === 'win32') assert.match(made.born, /^\d+$/, 'APFS and NTFS keep a birth time');
 });
 
 test('a local path (the tests\' fixtures; never the app\'s): the local fast path prints no transfer frames', async () => {
   const { remote } = h.repoWithRemote();
   const parent = h.tmpDir();
   const frames = [];
-  const res = await cloneRepo({ source: remote, parent, name: 'r', onProgress: (p) => frames.push(p) });
+  const res = await cloneRepo({ source: remote, localFixtures: true, parent, name: 'r', onProgress: (p) => frames.push(p) });
   assert.equal(res.status, 'done');
   assert.equal(frames.filter((f) => f.phase === 'Receiving objects').length, 0);
   assert.equal(h.read(res.root, 'README.md'), 'hello\n');
@@ -89,7 +95,7 @@ test('a local path (the tests\' fixtures; never the app\'s): the local fast path
 
 test('an empty bare repository clones as empty (an unborn HEAD)', async () => {
   const bare = h.initRepo({ bare: true });
-  const res = await cloneRepo({ source: fileUrl(bare), parent: h.tmpDir(), name: 'e' });
+  const res = await cloneRepo({ source: fileUrl(bare), localFixtures: true, parent: h.tmpDir(), name: 'e' });
   assert.equal(res.status, 'done');
   assert.equal(res.empty, true);
   assert.ok(fs.existsSync(path.join(res.root, '.git')));
@@ -101,7 +107,7 @@ test('.gitmodules at the root: submodules is true and no submodule is cloned', a
     h.git(seed, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib');
     h.git(seed, 'commit', '-q', '-m', 'add lib');
   });
-  const res = await cloneRepo({ source: fileUrl(bare), parent: h.tmpDir(), name: 's' });
+  const res = await cloneRepo({ source: fileUrl(bare), localFixtures: true, parent: h.tmpDir(), name: 's' });
   assert.equal(res.submodules, true);
   assert.equal(res.empty, false);
   assert.deepEqual(fs.readdirSync(path.join(res.root, 'lib')), [], 'the submodule folder stays empty');
@@ -118,7 +124,7 @@ test('checkout-failed: a 300-byte file name (git mktree) keeps the clone and res
   assert.throws(() => execFileSync('git', ['clone', '-q', '--', fileUrl(bare), 'x'], { cwd: raw, stdio: 'pipe' }), (e) => e.status === 128);
   assert.ok(fs.existsSync(path.join(raw, 'x', '.git')));
 
-  const res = await cloneRepo({ source: fileUrl(bare), parent: h.tmpDir(), name: 'long' });
+  const res = await cloneRepo({ source: fileUrl(bare), localFixtures: true, parent: h.tmpDir(), name: 'long' });
   assert.equal(res.status, 'checkout-failed');
   assert.equal(res.name, 'long');
   assert.match(res.message, /Clone succeeded, but checkout failed/);
@@ -135,7 +141,7 @@ test('exists: a file, an empty folder or a folder with content at the target is 
   fs.mkdirSync(path.join(parent, 'full'));
   fs.writeFileSync(path.join(parent, 'full', 'keep.txt'), 'keep');
   for (const name of ['file', 'empty', 'full']) {
-    const err = await cloneRepo({ source: fileUrl(remote), parent, name }).then(() => null, (e) => e);
+    const err = await cloneRepo({ source: fileUrl(remote), localFixtures: true, parent, name }).then(() => null, (e) => e);
     assert.equal(err.kind, 'exists', name);
     assert.match(err.message, new RegExp(`A folder named ${name} already exists`));
     assert.equal(err.made, undefined, 'nothing made, nothing to remove');
@@ -184,10 +190,10 @@ test('the mkdir errors map to kinds (EROFS, ENOSPC, ENAMETOOLONG, Windows\' Cont
 
 test('not-found: a missing local path and a missing file:// repository; the folder made is removed', async () => {
   const gone = path.join(h.tmpDir(), 'nope.git');
-  const local = await rejectsWithMade(cloneRepo({ source: gone, parent: h.tmpDir(), name: 'a' }), 'not-found');
-  assert.match(local.message, /does not exist/);
+  const local = await rejectsWithMade(cloneRepo({ source: gone, localFixtures: true, parent: h.tmpDir(), name: 'a' }), 'not-found');
+  assert.match(local.message, /does not exist|does not appear to be a git repository/, 'git words it per platform (Windows: the latter)');
   assert.doesNotMatch(local.message, /Cloning into/, 'our own target is not news');
-  await rejectsWithMade(cloneRepo({ source: fileUrl(gone), parent: h.tmpDir(), name: 'b' }), 'not-found');
+  await rejectsWithMade(cloneRepo({ source: fileUrl(gone), localFixtures: true, parent: h.tmpDir(), name: 'b' }), 'not-found');
 });
 
 test('auth: an HTTP remote that wants credentials (no prompt: GIT_TERMINAL_PROMPT=0)', async () => {
@@ -253,7 +259,7 @@ test('cancel during "Updating files": aborted, not checkout-failed, and the remo
   const ctrl = new AbortController();
   const phases = [];
   const p = cloneRepo({
-    source: fileUrl(bare), parent: h.tmpDir(), name: 'r', signal: ctrl.signal,
+    source: fileUrl(bare), localFixtures: true, parent: h.tmpDir(), name: 'r', signal: ctrl.signal,
     onProgress: (f) => { phases.push(f.phase); if (f.phase === 'Updating files') ctrl.abort(); },
   });
   await rejectsWithMade(p, 'aborted');
@@ -265,7 +271,7 @@ test('a cancel right after git exited 0 doesn\'t fail the clone: it resolves don
   const ctrl = new AbortController();
   testHooks.afterGit = () => ctrl.abort();
   t.after(() => { testHooks.afterGit = null; });
-  const res = await cloneRepo({ source: fileUrl(remote), parent: h.tmpDir(), name: 'r', signal: ctrl.signal });
+  const res = await cloneRepo({ source: fileUrl(remote), localFixtures: true, parent: h.tmpDir(), name: 'r', signal: ctrl.signal });
   assert.equal(res.status, 'done');
   assert.equal(res.empty, false, 'the post-steps ran without the aborted signal');
   assert.ok(fs.existsSync(path.join(res.root, 'README.md')));
@@ -276,7 +282,7 @@ test('redaction: the message is git\'s text lines with URL credentials masked an
   redact._internal.setHome(home);
   t.after(() => redact._internal.setHome());
   const gone = path.join(home, 'nope.git');
-  const err = await rejectsWithMade(cloneRepo({ source: gone, parent: h.tmpDir(), name: 'r' }), 'not-found');
+  const err = await rejectsWithMade(cloneRepo({ source: gone, localFixtures: true, parent: h.tmpDir(), name: 'r' }), 'not-found');
   assert.match(err.message, /'~[\\/]nope\.git'/);
   assert.ok(!err.message.includes(home));
   // Our own redaction of git's text lines (a server's remote: line, git's fatal: line).
@@ -306,7 +312,7 @@ test('the checkout-failed message leaves out "Cloning into" too', async () => {
   const blob = gitIn(bare, 'x\n', 'hash-object', '-w', '--stdin');
   const tree = gitIn(bare, `100644 blob ${blob}\t${'b'.repeat(300)}\n`, 'mktree');
   h.git(bare, 'update-ref', 'refs/heads/main', gitIn(bare, '', 'commit-tree', tree, '-m', 'long'));
-  const res = await cloneRepo({ source: fileUrl(bare), parent: h.tmpDir(), name: 'lf' });
+  const res = await cloneRepo({ source: fileUrl(bare), localFixtures: true, parent: h.tmpDir(), name: 'lf' });
   assert.equal(res.status, 'checkout-failed');
   assert.doesNotMatch(res.message, /Cloning into/);
 });
@@ -317,7 +323,7 @@ test('a parent inside another repository: its url.<x>.insteadOf is not applied',
   h.git(outer, 'config', `url.${fileUrl(path.join(h.tmpDir(), 'elsewhere.git'))}.insteadOf`, fileUrl(remote));
   const parent = path.join(outer, 'nested');
   fs.mkdirSync(parent);
-  const res = await cloneRepo({ source: fileUrl(remote), parent, name: 'r' });
+  const res = await cloneRepo({ source: fileUrl(remote), localFixtures: true, parent, name: 'r' });
   assert.equal(res.status, 'done');
   assert.equal(h.read(res.root, 'README.md'), 'hello\n');
 });
@@ -355,14 +361,53 @@ test('the git command record the log gets: no -c values, the source and target o
   logger.configure({ dir: logs, level: 'debug', mirror: false });
   t.after(() => logger.configure({ dir: null, level: 'info' }));
   const { remote } = h.repoWithRemote();
-  const res = await cloneRepo({ source: fileUrl(remote), parent: h.tmpDir(), name: 'r' });
+  const res = await cloneRepo({ source: fileUrl(remote), localFixtures: true, parent: h.tmpDir(), name: 'r' });
   assert.equal(res.status, 'done');
   await logger.flush();
   const recs = fs.readFileSync(path.join(logs, 'main.log'), 'utf8').trim().split('\n').map(JSON.parse).filter((r) => r.msg === 'git command' && r.argv[0] === 'clone');
   assert.equal(recs.length, 1);
   assert.deepEqual(recs[0].argv, ['clone', '--progress', '--no-recurse-submodules', '--', '<2 paths>'], 'the URL never reaches a log');
   assert.ok(!JSON.stringify(recs).includes(path.basename(remote)), 'neither the source nor the target');
-  // git sees the allowlist: protocol.file.allow stays 'user'.
+  // git sees the allowlist: the app's never allows the file transport.
   const out = await gitAt(res.root, [...CLONE_ARGS, 'config', '--get', 'protocol.file.allow'], { signal: null });
-  assert.equal(out.stdout.trim(), 'user');
+  assert.equal(out.stdout.trim(), 'never');
+});
+
+// ---------------------------------------------------------------- local folders posing as remotes
+
+test('the app\'s clone never reads a local repository: a file:// URL and a local path are refused by the transport allowlist', async () => {
+  const { remote } = h.repoWithRemote();
+  for (const source of [remote, fileUrl(remote)]) {
+    const err = await rejectsWithMade(cloneRepo({ source, parent: h.tmpDir(), name: 'r' }), 'unsupported');
+    assert.match(err.message, /transport 'file' not allowed/);
+  }
+});
+
+test('an scp-like URL naming a folder in the parent ("host:path") never clones that folder: git runs in the new target, not the parent', { skip: process.platform === 'win32' && 'a folder name with ":" can\'t exist on Windows' }, async (t) => {
+  // The reviewer's scenario: <parent>/evilhost:repo.git is a repository (an earlier clone could
+  // have made it while ':' was allowed in names), and the page asks for evilhost:repo.git.
+  const { remote } = h.repoWithRemote();
+  const parent = h.tmpDir();
+  h.git(parent, 'clone', '-q', '--bare', remote, 'evilhost:repo.git');
+  // ssh is faked (it says so and fails): nothing leaves the machine.
+  const saved = process.env.GIT_SSH_COMMAND;
+  process.env.GIT_SSH_COMMAND = 'echo pl-test-ssh-was-used >&2; exit 1 #';
+  t.after(() => { if (saved === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved; });
+  const err = await cloneRepo({ source: 'evilhost:repo.git', parent, name: 'r' }).then(() => null, (e) => e);
+  assert.ok(err && err.made, 'the clone failed');
+  assert.match(err.message, /pl-test-ssh-was-used/, 'git went to ssh, never to the local folder');
+  assert.equal(fs.existsSync(path.join(parent, 'r', 'README.md')), false);
+  await cleanupOf().remove(err.made);
+  // Even with the file transport allowed (as for the tests' fixtures), the cwd keeps it remote.
+  const fixture = await cloneRepo({ source: 'evilhost:repo.git', parent, name: 'r3', localFixtures: true }).then(() => null, (e) => e);
+  assert.match(fixture.message, /pl-test-ssh-was-used/);
+  await cleanupOf().remove(fixture.made);
+});
+
+test('names the app refuses before git: a leading dot (~/.config would become the global git config) and ":"', async () => {
+  const parent = h.tmpDir();
+  for (const name of ['.config', '.ssh', '..x', 'host:path']) {
+    await assert.rejects(cloneRepo({ source: 'https://h/r', parent, name, platform: 'darwin' }), { kind: 'invalid-args' }, name);
+  }
+  assert.deepEqual(fs.readdirSync(parent), []);
 });

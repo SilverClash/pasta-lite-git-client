@@ -6,8 +6,10 @@
 //
 // The folder comes first and is ours: fs.promises.mkdir (not recursive) refuses whatever is there
 // already, so a clone never writes into, and its cleanup never deletes, a folder we didn't make.
-// Its identity (dev + ino) is reported at once (onMade). git then runs in the parent with a
-// transport allowlist on its command line (CLONE_ARGS), the source always after '--', no
+// Its identity (dev, inode and, where the file system keeps one, birth time) is reported at once
+// (onMade). git then runs in that new, empty folder (never the parent: git takes an scp-like
+// "host:path" that exists as a folder relative to its cwd for a local path), with a transport
+// allowlist on its command line (CLONE_ARGS: no file transport), the source always after '--', no
 // submodules, no timeout (a large clone takes an hour; a credential manager may wait for the
 // user) and a 16 MiB output cap. A cancel wins over anything git printed; "Clone succeeded, but
 // checkout failed" is a result, not an error. Only the progress parser's text lines (never the
@@ -22,29 +24,31 @@ const gitErrors = require('./git-errors');
 const { redactString } = require('./redact');
 const { homeShort } = require('./fs-paths');
 const { logger } = require('./log');
-const { _internal: { bornOf } } = require('./clone-cleanup');
+const { bornOf } = require('./clone-cleanup');
 
 const log = logger.child('clone');
 
 // The transports a clone may use, on the command line so they beat every config file (a user's
 // url.<x>.insteadOf rewriting to a helper is refused too: kind 'unsupported'). fd:: (which would
 // hang reading fd 3) and every other <helper>:: transport are refused; ext:: already is
-// (GLOBAL_ARGS). file stays at git's default 'user': these values reach child gits through
-// GIT_CONFIG_PARAMETERS, and 'always' would undo git's hardening of submodule clones
-// (CVE-2022-39253), which run with GIT_PROTOCOL_FROM_USER=0. The app never passes a local source
-// (parseCloneUrl refuses one); the tests clone their local fixtures through it.
+// (GLOBAL_ARGS). file is never allowed: the app clones remotes only (parseCloneUrl refuses a
+// local source), and git would otherwise take an scp-like URL whose "host:path" exists as a local
+// folder for that folder. These values also reach child gits (GIT_CONFIG_PARAMETERS). The tests,
+// which clone local fixtures, pass localFixtures to cloneRepo (FIXTURE_ARGS: file at git's
+// default 'user'); nothing in the app can.
 const CLONE_ARGS = Object.freeze([
   '-c', 'protocol.allow=never',
   '-c', 'protocol.https.allow=always',
   '-c', 'protocol.http.allow=always',
   '-c', 'protocol.ssh.allow=always',
   '-c', 'protocol.git.allow=always',
-  '-c', 'protocol.file.allow=user',
+  '-c', 'protocol.file.allow=never',
 ]);
+const FIXTURE_ARGS = Object.freeze([...CLONE_ARGS.slice(0, -2), '-c', 'protocol.file.allow=user']);
 
 const MAX_CLONE_OUTPUT = 16 * 1024 * 1024; // ~2 MiB for a ten-hour clone: stops endless remote: text only
-const PROGRESS_MS = 100;
-const MAX_MESSAGE = 2000; // what an error or checkout-failed message keeps of git's lines (20 of at most 500) // at most one progress frame per this, the latest wins
+const PROGRESS_MS = 100; // at most one progress frame per this, the latest wins
+const MAX_MESSAGE = 2000; // what an error or checkout-failed message keeps of git's lines (20 of at most 500)
 const WIN_LONG_TARGET = 200; // Git for Windows without core.longpaths can't check out paths over 260
 
 // The order rules are tried in after a cancel and a checkout failure (docs/plans §5.6).
@@ -122,10 +126,11 @@ const exists = (p) => fs.promises.lstat(p).then(() => true, () => false);
 /**
  * Clone `source` into a new folder `name` in `parent`.
  * @param {{source: string, parent: string, name: string, onProgress?: (p: object) => void,
- *   onMade?: (made: {abs: string, dev: string, ino: string}) => void, signal?: AbortSignal,
- *   platform?: string}} o
- *   source: a URL parseCloneUrl accepted (the app's only source; tests also pass local paths and
- *   file:// URLs of their fixtures, which the allowlist's protocol.file.allow=user lets through).
+ *   onMade?: (made: {abs: string, dev: string, ino: string, born?: string}) => void, signal?: AbortSignal,
+ *   platform?: string, localFixtures?: boolean}} o
+ *   source: a URL parseCloneUrl accepted (the app's only source).
+ *   localFixtures: tests only (local paths and file:// URLs of their fixtures; FIXTURE_ARGS). The
+ *   runner's check picks the fields it passes, so no request can set it.
  *   onProgress: CloneProgress frames (src/clone-progress.js), throttled.
  *   onMade: the folder we created ({abs, dev, ino}: dev and ino as decimal strings, so they survive
  *   JSON), as soon as it exists.
@@ -137,7 +142,7 @@ const exists = (p) => fs.promises.lstat(p).then(() => true, () => false);
  * no-access, no-space, path-too-long, auth, host-key, unreachable, unsupported, unsafe-repo,
  * aborted; none for a failure git explains in a way we don't classify.
  */
-async function cloneRepo({ source, parent, name, onProgress, onMade, signal, platform = process.platform } = {}) {
+async function cloneRepo({ source, parent, name, onProgress, onMade, signal, platform = process.platform, localFixtures = false } = {}) {
   const bad = nameError(name, { platform });
   if (bad) throw kindError('invalid-args', bad);
   if (typeof source !== 'string' || !source) throw kindError('invalid-args', 'No repository to clone');
@@ -172,12 +177,14 @@ async function cloneRepo({ source, parent, name, onProgress, onMade, signal, pla
   const progress = throttle(onProgress);
   const onStderr = (chunk) => { for (const p of parser.feed(chunk)) progress.offer(p); };
   try {
-    await gitAt(parent, [...CLONE_ARGS, 'clone', '--progress', '--no-recurse-submodules', '--', source, target], {
+    // cwd: the new, empty target (absolute in the argv too), never the parent.
+    await gitAt(target, [...(localFixtures ? FIXTURE_ARGS : CLONE_ARGS), 'clone', '--progress', '--no-recurse-submodules', '--', source, target], {
       signal, onStderr, maxBytes: MAX_CLONE_OUTPUT,
     });
     for (const p of parser.end()) progress.offer(p);
-  } catch (err) {
     progress.stop();
+  } catch (err) {
+    progress.stop(); // before anything awaited below: no held frame after the failure
     parser.end();
     // A cancel wins: spawnGit replaced git's text with "git was cancelled", and a cancelled git's
     // checkout error is no checkout failure.
@@ -189,8 +196,6 @@ async function cloneRepo({ source, parent, name, onProgress, onMade, signal, pla
       return { status: 'checkout-failed', root: target, name, ...(await postSteps(target)), empty: false, message: redactString(told(text), MAX_MESSAGE) };
     }
     throw withMade(classified(err, text), made);
-  } finally {
-    progress.stop();
   }
   if (testHooks.afterGit) await testHooks.afterGit();
   // The clone is complete: what follows runs without the signal, so a cancel landing now can't
@@ -237,5 +242,5 @@ function classified(err, text) {
 
 module.exports = {
   cloneRepo, CLONE_ARGS,
-  _internal: { testHooks, throttle, mkdirError, classified, RULE_ORDER, MAX_CLONE_OUTPUT }, // exported for unit tests only
+  _internal: { testHooks, throttle, mkdirError, classified, RULE_ORDER, MAX_CLONE_OUTPUT, FIXTURE_ARGS }, // exported for unit tests only
 };

@@ -56,9 +56,18 @@ async function gitHttpServer(dir) {
       },
       stdio: ['pipe', 'pipe', 'ignore'],
     });
-    req.pipe(cgi.stdin);
     let head = Buffer.alloc(0);
     let sent = false;
+    // A broken pipe or a failed spawn answers 502: git then fails, and so does the run's check.
+    const fail = () => {
+      if (!sent) {
+        sent = true;
+        res.writeHead(502);
+      }
+      res.end();
+    };
+    for (const stream of [req, cgi, cgi.stdin]) stream.on('error', fail);
+    req.pipe(cgi.stdin);
     cgi.stdout.on('data', (d) => {
       if (sent) { res.write(d); return; }
       head = Buffer.concat([head, d]);

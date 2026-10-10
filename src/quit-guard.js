@@ -180,7 +180,7 @@ const hasClone = (names) => String(names).split(', ').includes('clone');
  * backup record restore files; a clone is a git that ignored its kill.
  */
 const UNSAFE_DETAIL = Object.freeze({
-  clone: 'Git is still stopping. Quitting now leaves a partial folder, which is removed the next time Pasta Lite starts.',
+  clone: 'Git is still stopping. Quitting now may leave a partial folder: the next start removes it if its download hadn\'t finished, and otherwise leaves it for you to check.',
   default: 'It is restoring files and will finish on its own. Quitting now could leave the worktree half-restored.',
 });
 

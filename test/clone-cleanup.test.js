@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const h = require('./helpers');
-const { createCleanup, _internal: { identity, bornOf, RM_OPTIONS } } = require('../src/clone-cleanup');
+const { createCleanup, bornOf, keepListed, _internal: { identity, fetched, RM_OPTIONS } } = require('../src/clone-cleanup');
 const { createCloneService } = require('../src/clone-service');
 const http = require('node:http');
 const { createClonePrefs } = require('../src/recent');
@@ -50,7 +50,7 @@ test('remove: persisted to clone.json first, removed, then dropped from pendingC
   assert.deepEqual(cleanup.running(), [made]);
   assert.equal(cleanup.remove(made), p, 'a second remove joins the first');
   assert.equal(await p, 'removed');
-  assert.deepEqual(pendingDuringRm, [made], 'written before the removal started');
+  assert.deepEqual(pendingDuringRm, [{ ...made, state: 'failed' }], 'marked failed before the removal started');
   assert.equal(fs.existsSync(made.abs), false);
   assert.deepEqual(await prefs.pendingCleanup(), []);
   assert.deepEqual(cleanup.running(), []);
@@ -102,7 +102,7 @@ test('a failed removal stays pending (logged without the path) and the next laun
   const failing = createCleanup({ prefs, log: { info() {}, warn: (m, f) => warned.push([m, f]) }, rm: async () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }); } });
   assert.equal(await failing.remove(made), 'failed');
   assert.deepEqual(warned.map(([, f]) => f), [{ error: 'EBUSY' }]);
-  assert.deepEqual(await prefs.pendingCleanup(), [made]);
+  assert.deepEqual(await prefs.pendingCleanup(), [{ ...made, state: 'failed' }], 'marked: the evidence the next launch needs');
   // "Next launch": fresh prefs on the same file, a real rm.
   const next = createCleanup({ prefs: createClonePrefs(file), log: quiet });
   await next.resume();
@@ -154,14 +154,14 @@ test('a removal outlasting the quit bound: the clone\'s own runner has nothing l
   drop.close();
   assert.ok(err && err.made, `failed with a folder made (${err && err.kind})`);
   await cleanup.persisted(); // deterministic: every clone.json write so far has landed
-  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [err.made]);
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [{ ...err.made, state: 'failed' }]);
   assert.deepEqual(runner.running(), [], 'the clone settled: the removal is no runner op');
   const asked = [];
   const guard = createQuitGuard({ runner, killChildren: () => 0, confirm: async (kind) => { asked.push(kind); return true; }, boundMs: 50, graceMs: 10 });
   assert.equal(guard.needsConfirm(), false);
   assert.equal(await guard.run(), 'quit');
   assert.deepEqual(asked, [], `no ${DIALOG_KINDS.UNSAFE} question`);
-  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [err.made], 'still in clone.json when the process would exit');
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [{ ...err.made, state: 'failed' }], 'still in clone.json when the process would exit');
   await createCleanup({ prefs: createClonePrefs(file), log: quiet }).resume(); // the next launch
   assert.equal(fs.existsSync(err.made.abs), false);
   release();
@@ -234,9 +234,9 @@ test('identity: an inode reused for a later folder at the same path is not ours 
     assert.equal(await identity({ ...made, born: String(BigInt(made.born) + 1n) }), 'other', 'same dev and inode, another birth');
   }
   assert.equal(await identity({ ...made, born: undefined }), 'same', 'an entry without a birth time (none kept): dev and inode decide');
-  // No birth time to compare: none kept, or the ctime reported in its place.
+  // Recorded whenever the stat has one, even a fresh folder's (birth == ctime); none for 0.
   assert.equal(bornOf({ birthtimeNs: 0n, ctimeNs: 5n }), null);
-  assert.equal(bornOf({ birthtimeNs: 5n, ctimeNs: 5n }), null);
+  assert.equal(bornOf({ birthtimeNs: 5n, ctimeNs: 5n }), '5');
   assert.equal(bornOf({ birthtimeNs: 4n, ctimeNs: 5n }), '4');
 });
 
@@ -292,4 +292,187 @@ test('a read-only file in the folder (as Windows\' pack files are) is removed to
   fs.chmodSync(pack, 0o444);
   assert.equal(await createCleanup({ prefs, log: quiet }).remove(made), 'removed');
   assert.equal(fs.existsSync(made.abs), false);
+});
+
+// ---------------------------------------------------------------- resume needs evidence of failure
+
+/** A real, successful clone of a local fixture, journalled as the service does (onMade). */
+async function clonedWith(cleanup) {
+  const { remote } = h.repoWithRemote();
+  let made = null;
+  const res = await cloneRepo({ source: remote, parent: h.tmpDir(), name: 'r', localFixtures: true, onMade: (m) => { made = m; cleanup.journal(m); } });
+  assert.equal(res.status, 'done');
+  await cleanup.persisted();
+  return { made, root: res.root };
+}
+
+test('a successful clone whose forget never lands (clone.json unwritable) is kept at the next launch', { skip: (process.platform === 'win32' || process.getuid() === 0) && 'POSIX permissions (and not as root)' }, async (t) => {
+  const ud = h.tmpDir();
+  const file = path.join(ud, 'clone.json');
+  const prefs = createClonePrefs(file, { log: quiet, retryDelays: [1, 1], wait: async () => {} });
+  const cleanup = createCleanup({ prefs, log: quiet });
+  const { made, root } = await clonedWith(cleanup);
+  fs.chmodSync(ud, 0o555); // the rename into userData now fails, every retry too
+  t.after(() => fs.chmodSync(ud, 0o755));
+  await cleanup.forget(made);
+  fs.chmodSync(ud, 0o755);
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [made], 'the entry outlived the clone, unmarked');
+  await createCleanup({ prefs: createClonePrefs(file), log: quiet }).resume();
+  assert.ok(fs.existsSync(path.join(root, 'README.md')), 'the clone is untouched');
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [], 'its entry is settled');
+});
+
+test('a crash right after a successful clone (its entry still there, unmarked): kept; a marked entry: removed', async () => {
+  const { prefs, file } = prefsAt();
+  const cleanup = createCleanup({ prefs, log: quiet });
+  const ok = await clonedWith(cleanup); // never forgotten: the crash
+  const failed = await clonedWith(cleanup);
+  await prefs.markFailed(failed.made);
+  await createCleanup({ prefs: createClonePrefs(file), log: quiet }).resume();
+  assert.ok(fs.existsSync(path.join(ok.root, 'README.md')), 'outcome unknown, the fetch finished: left as it is');
+  assert.equal(fs.existsSync(failed.root), false, 'marked failed: removed');
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), []);
+});
+
+test('an unmarked entry whose clone never finished fetching (a crash mid-fetch) is removed', async () => {
+  const { prefs, file } = prefsAt();
+  const empty = partial(); // a .git without HEAD
+  const noRef = partial(h.tmpDir());
+  fs.writeFileSync(path.join(noRef.abs, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  const bare = madeOf(h.tmpDir()); // not even a .git
+  for (const m of [empty, noRef, bare]) await prefs.addPendingCleanup(m);
+  await createCleanup({ prefs: createClonePrefs(file), log: quiet }).resume();
+  for (const m of [empty, noRef, bare]) assert.equal(fs.existsSync(m.abs), false, m.abs);
+});
+
+test('fetched: a HEAD whose ref exists (loose or packed) or a detached id; unreadable counts as fetched', async () => {
+  const dir = h.tmpDir();
+  const g = path.join(dir, '.git');
+  assert.equal(await fetched(dir), false, 'no .git');
+  fs.mkdirSync(path.join(g, 'refs', 'heads'), { recursive: true });
+  assert.equal(await fetched(dir), false, 'no HEAD');
+  fs.writeFileSync(path.join(g, 'HEAD'), 'ref: refs/heads/main\n');
+  assert.equal(await fetched(dir), false, 'no ref behind it');
+  fs.writeFileSync(path.join(g, 'packed-refs'), `# pack-refs with: peeled\n${'a'.repeat(40)} refs/heads/main\n`);
+  assert.equal(await fetched(dir), true, 'packed');
+  fs.writeFileSync(path.join(g, 'packed-refs'), `# pack-refs\r\n${'a'.repeat(40)} refs/heads/main\r\n`);
+  assert.equal(await fetched(dir), true, 'packed, with CRLF');
+  fs.rmSync(path.join(g, 'packed-refs'));
+  fs.writeFileSync(path.join(g, 'refs', 'heads', 'main'), `${'a'.repeat(40)}\n`);
+  assert.equal(await fetched(dir), true, 'loose');
+  fs.writeFileSync(path.join(g, 'HEAD'), `${'b'.repeat(40)}\n`);
+  assert.equal(await fetched(dir), true, 'detached');
+  fs.writeFileSync(path.join(g, 'HEAD'), 'ref: refs/../../x\n');
+  assert.equal(await fetched(dir), true, 'odd: kept');
+});
+
+test('a folder the recent list or a saved tab names is never removed, even marked failed', async () => {
+  const { prefs, file } = prefsAt();
+  const listed = partial();
+  const inside = partial();
+  fs.mkdirSync(path.join(inside.abs, 'wt'));
+  for (const m of [listed, inside]) {
+    await prefs.addPendingCleanup(m);
+    await prefs.markFailed(m);
+  }
+  const keep = keepListed(async () => [fs.realpathSync(listed.abs), path.join(inside.abs, 'wt'), null]);
+  await createCleanup({ prefs: createClonePrefs(file), log: quiet, keep }).resume();
+  assert.ok(fs.existsSync(listed.abs));
+  assert.ok(fs.existsSync(inside.abs), 'a root inside it');
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), []);
+  assert.equal(await keepListed(async () => [])(listed.abs), false);
+});
+
+test('resume re-reads the list for each entry: one a new clone replaced since is skipped, never re-added or dropped', async () => {
+  const { prefs, file } = prefsAt();
+  const old = partial();
+  await prefs.addPendingCleanup(old);
+  await prefs.markFailed(old);
+  fs.rmSync(old.abs, { recursive: true });
+  fs.mkdirSync(old.abs); // a new clone made a folder there, and journalled it ...
+  const fresh = madeOf(old.abs);
+  let first = true;
+  const racing = {
+    ...createClonePrefs(file),
+    // ... between resume's first read and its work on that entry.
+    async pendingCleanup() {
+      const list = await prefs.pendingCleanup();
+      if (first) {
+        first = false;
+        await prefs.addPendingCleanup(fresh);
+      }
+      return list;
+    },
+  };
+  await createCleanup({ prefs: racing, log: quiet }).resume();
+  assert.ok(fs.existsSync(fresh.abs), 'the new clone\'s folder is untouched');
+  assert.deepEqual(await createClonePrefs(file).pendingCleanup(), [fresh], 'its entry is still there, as written');
+});
+
+test('a forget that failed is applied by every later write of the same run', async () => {
+  const ud = h.tmpDir();
+  const file = path.join(ud, 'clone.json');
+  const prefs = createClonePrefs(file, { log: quiet, retryDelays: [], wait: async () => {} });
+  const a = madeOf(h.tmpDir());
+  const b = madeOf(h.tmpDir());
+  await prefs.addPendingCleanup(a);
+  // The forget's only write fails: a folder in the way of the rename.
+  fs.renameSync(file, `${file}.saved`);
+  fs.mkdirSync(file);
+  await prefs.dropPendingCleanup(a);
+  fs.rmdirSync(file);
+  fs.renameSync(`${file}.saved`, file);
+  assert.deepEqual((JSON.parse(fs.readFileSync(file, 'utf8')).pendingCleanup || []).map((m) => m.abs), [a.abs], 'not written');
+  assert.deepEqual(await prefs.pendingCleanup(), [], 'but forgotten in this run');
+  await prefs.addPendingCleanup(b); // a later clone's journal
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).pendingCleanup.map((m) => m.abs), [b.abs], 'and dropped by the next write');
+});
+
+test('a forget retries with backoff until a write lands', async () => {
+  const ud = h.tmpDir();
+  const file = path.join(ud, 'clone.json');
+  const waited = [];
+  let blocker = false;
+  const prefs = createClonePrefs(file, {
+    log: quiet, retryDelays: [5, 10, 20],
+    wait: async (ms) => {
+      waited.push(ms);
+      if (waited.length === 2 && blocker) { fs.rmdirSync(`${file}`); fs.renameSync(`${file}.saved`, file); blocker = false; }
+    },
+  });
+  const a = madeOf(h.tmpDir());
+  await prefs.addPendingCleanup(a);
+  fs.renameSync(file, `${file}.saved`);
+  fs.mkdirSync(file);
+  blocker = true;
+  await prefs.dropPendingCleanup(a);
+  assert.deepEqual(waited, [5, 10], 'tried again after each delay until it landed');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).pendingCleanup, []);
+});
+
+test('markFailed: marks the entry for that folder; while resuming (add: false) never adds one', async () => {
+  const { prefs } = prefsAt();
+  const a = madeOf(h.tmpDir());
+  assert.equal(await prefs.markFailed(a, { add: false }), false);
+  assert.deepEqual(await prefs.pendingCleanup(), []);
+  assert.equal(await prefs.markFailed(a), true);
+  assert.deepEqual(await prefs.pendingCleanup(), [{ ...a, state: 'failed' }]);
+});
+
+test('identity with the stat injected: same dev and inode but another birth time is another folder, whatever the ctime', async () => {
+  const st = (o) => ({ isDirectory: () => true, isSymbolicLink: () => false, dev: 1n, ino: 2n, birthtimeNs: 100n, ctimeNs: 100n, ...o });
+  const made = { abs: '/x/r', dev: '1', ino: '2', born: '100' };
+  const lstatOf = (o) => async () => st(o);
+  assert.equal(await identity(made, { lstat: lstatOf({}) }), 'same');
+  assert.equal(await identity(made, { lstat: lstatOf({ ctimeNs: 900n }) }), 'same', 'git wrote into it: the ctime moved, the birth time didn\'t');
+  // ext4 reusing the inode for a fresh folder: its birth time equals its ctime, and is not ours.
+  assert.equal(await identity(made, { lstat: lstatOf({ birthtimeNs: 500n, ctimeNs: 500n }) }), 'other');
+  assert.equal(await identity(made, { lstat: lstatOf({ birthtimeNs: 0n }) }), 'other', 'a recorded birth time and none now: not ours');
+  assert.equal(await identity({ ...made, born: undefined }, { lstat: lstatOf({ birthtimeNs: 500n }) }), 'same', 'none recorded: dev and inode decide');
+  // And the cleanup with that stat keeps the folder (no rm).
+  const { prefs } = prefsAt();
+  let removed = false;
+  const cleanup = createCleanup({ prefs, log: quiet, lstat: lstatOf({ birthtimeNs: 500n, ctimeNs: 500n }), rm: async () => { removed = true; } });
+  assert.equal(await cleanup.remove(made), 'kept');
+  assert.equal(removed, false);
 });

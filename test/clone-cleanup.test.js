@@ -272,7 +272,7 @@ test('a real clone cancelled after its first frame on Windows: taskkill /F leave
   process.env.GIT_CONFIG_GLOBAL = cfg;
   try {
     const ctrl = new AbortController();
-    const err = await cloneRepo({ source: pathToFileURL(bare).href, parent: h.tmpDir(), name: 'r', signal: ctrl.signal, onProgress: () => ctrl.abort() })
+    const err = await cloneRepo({ source: pathToFileURL(bare).href, localFixtures: true, parent: h.tmpDir(), name: 'r', signal: ctrl.signal, onProgress: () => ctrl.abort() })
       .then(() => null, (e) => e);
     assert.ok(err, 'cancelled');
     assert.equal(err.kind, 'aborted');

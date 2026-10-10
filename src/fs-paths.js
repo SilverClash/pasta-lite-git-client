@@ -90,6 +90,9 @@ async function realPathOf(p, { timeout = REALPATH_TIMEOUT_MS } = {}) {
   }
 }
 
+/** True when `p` is a directory now (fs.promises: off the main thread); false for anything else or an error. */
+const isDir = (p) => fs.promises.stat(p).then((st) => st.isDirectory(), () => false);
+
 /** Forget the slow paths (tests). */
 function resetRealPathOf() {
   slowUntil.clear();
@@ -153,6 +156,6 @@ function nativePath(p, { platform = process.platform } = {}) {
 }
 
 module.exports = {
-  realPathSync, realPathOf, resetRealPathOf, isAtOrUnder, homeShort, samePath, nativePath,
+  realPathSync, realPathOf, resetRealPathOf, isAtOrUnder, homeShort, samePath, nativePath, isDir,
   _internal: { REALPATH_TIMEOUT_MS, MAX_PARALLEL, SLOW_FOR_MS }, // exported for unit tests only
 };

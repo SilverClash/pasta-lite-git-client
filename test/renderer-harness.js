@@ -30,19 +30,22 @@ function throwingStorage() {
 }
 
 /**
- * Fresh window.Graph / window.PLErrorKinds / window.PLImageFormat / window.Components / window.PLKeys / window.PLIcons /
+ * Fresh window.Graph / window.PLErrorKinds / window.PLImageFormat / window.PLDisplayText / window.PLPathNames /
+ * window.PLCloneUrl / window.Components / window.PLKeys / window.PLIcons /
  * window.PLOp / window.PLPolicy / window.PLHistory / window.PLRebase / window.PLImageCache / window.PLImage /
  * window.Store (module caches cleared; index.html order).
  */
 function loadRenderer() {
   const files = ['components.js', 'keys.js', 'icons.js', 'op-model.js', 'policy.js', 'history-model.js', 'components/rebase-model.js',
     'image-cache.js', 'components/image-model.js', 'store.js'];
-  const kinds = path.join(__dirname, '..', 'src', 'error-kinds.js');
-  const formats = path.join(__dirname, '..', 'src', 'image-format.js');
-  for (const f of [kinds, formats, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
+  const S = (f) => path.join(__dirname, '..', 'src', f);
+  const shared = ['error-kinds.js', 'image-format.js', 'display-text.js', 'path-names.js', 'clone-url.js'].map(S);
+  for (const f of [...shared, R('graph.js'), ...files.map(R)]) delete require.cache[require.resolve(f)];
   // index.html order: graph.js, ../src/error-kinds.js (window.PLErrorKinds), ../src/image-format.js
-  // (window.PLImageFormat), then components.js ...
-  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds: require(kinds), PLImageFormat: require(formats) };
+  // (window.PLImageFormat), ../src/display-text.js, ../src/path-names.js, ../src/clone-url.js
+  // (window.PLDisplayText, PLPathNames, PLCloneUrl), then components.js ...
+  const [PLErrorKinds, PLImageFormat, PLDisplayText, PLPathNames, PLCloneUrl] = shared.map((f) => require(f));
+  globalThis.window = { Graph: require(R('graph.js')), PLErrorKinds, PLImageFormat, PLDisplayText, PLPathNames, PLCloneUrl };
   globalThis.document = globalThis.document || { createElement: (tag) => ({ tagName: String(tag).toUpperCase() }) };
   for (const f of files) require(R(f));
   return globalThis.window;
@@ -76,6 +79,19 @@ function loadFlows() {
     delete require.cache[require.resolve(R(f))];
     require(R(f));
   }
+  return win;
+}
+
+/**
+ * loadFlows() plus renderer/clone.js (window.PLClone, Clone Repository…; it reads PLCloneUrl, the
+ * dialogs and PLFlowKit.authMessage). Pass `dom` (from fakeDom()) first for working dialogs, and
+ * give window.api a clone member (test/clone-ui.test.js fakes one).
+ */
+function loadClone() {
+  const win = loadFlows();
+  const f = R('clone.js');
+  delete require.cache[require.resolve(f)];
+  require(f);
   return win;
 }
 
@@ -625,6 +641,6 @@ function scriptDialogs(win, answers = []) {
 
 module.exports = {
   errOf, scriptedApi, scriptDialogs,
-  loadRenderer, loadComponentHelpers, loadFlows, fakeDom, componentDom, makeApi, flush, setLocalStorage, memoryStorage, throwingStorage,
+  loadRenderer, loadComponentHelpers, loadFlows, loadClone, fakeDom, componentDom, makeApi, flush, setLocalStorage, memoryStorage, throwingStorage,
   commit, chain, status, conflict, realConflicts, rebaseState, refs, repoData, answerRefresh, isRefreshLog, loadedStore,
 };

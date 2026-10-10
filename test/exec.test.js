@@ -236,6 +236,46 @@ test('maxBytes: output beyond the cap kills git and rejects with kind too-large'
   assert.equal(x.MAX_OUTPUT_BYTES, 256 * 1024 * 1024);
 });
 
+test('onStderr: every stderr chunk in order as it arrives, the collected stderr unchanged; a throwing listener is ignored', async () => {
+  const { remote } = h.repoWithRemote();
+  const dir = h.tmpDir();
+  const url = require('node:url').pathToFileURL(remote).href;
+  const chunks = [];
+  const res = await x.run(dir, ['clone', '--progress', '--', url, 'a'], { onStderr: (c) => chunks.push(c) });
+  assert.ok(chunks.length > 0 && chunks.every((c) => Buffer.isBuffer(c)));
+  assert.equal(Buffer.concat(chunks).toString('utf8'), res.stderr, 'the same bytes, in order');
+  assert.match(res.stderr, /Receiving objects: 100%/);
+  const thrown = await x.run(dir, ['clone', '--progress', '--', url, 'b'], { onStderr: () => { throw new Error('listener bug'); } });
+  assert.match(thrown.stderr, /Receiving objects: 100%/, 'the command still ran and collected its stderr');
+  assert.ok(fs.existsSync(path.join(dir, 'b', 'README.md')));
+  const failed = await x.run(dir, ['clone', '--', url, 'a'], { onStderr: () => { throw new Error('listener bug'); } }).catch((e) => e);
+  assert.ok(failed instanceof x.GitError);
+  assert.match(failed.message, /already exists/);
+});
+
+test('onStderr: no chunk is passed on once the command was cancelled', async () => {
+  const dir = h.tmpDir();
+  const ctrl = new AbortController();
+  let calls = 0;
+  let late = 0;
+  let cancelled = false;
+  // A command that writes to stderr until it is killed.
+  const p = x.run(dir, ['-c', 'alias.spam=!sh -c "while :; do echo spam >&2; done"', 'spam'], {
+    signal: ctrl.signal,
+    onStderr: () => {
+      calls++;
+      if (cancelled) late++;
+      else if (calls === 3) {
+        ctrl.abort();
+        cancelled = true;
+      }
+    },
+  });
+  await assert.rejects(p, { kind: 'aborted' });
+  assert.ok(calls >= 3);
+  assert.equal(late, 0, 'nothing after the abort');
+});
+
 test('a failure while building the result rejects instead of hanging', async () => {
   const dir = h.initRepo();
   // An unknown encoding makes toString throw inside the close handler (as ERR_STRING_TOO_LONG would).

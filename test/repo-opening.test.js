@@ -122,6 +122,7 @@ function setup({ repos = {}, tabs: roots = [null], risky = [], trustAnswers = []
   const recentList = [];
   const store = {
     add: (root, o) => { calls.push(['recent.add', root, o.name]); recentList.unshift({ root, name: o.name }); },
+    addAsync: async (root, o) => { calls.push(['recent.addAsync', root, o.name]); recentList.unshift({ root, name: o.name }); },
     remove: (root) => { calls.push(['recent.remove', root]); },
     list: async () => recentList.slice(),
   };
@@ -303,5 +304,76 @@ describe('openBackgroundTab (restore, smoke extra tabs)', () => {
     assert.equal(await opening.openBackgroundTab('/r/a', { abort: () => true }), null);
     assert.equal(tabs.size, 1);
     assert.deepEqual(calls, []);
+  });
+});
+
+describe('openCloned (a folder main just cloned into) and rememberRecent', () => {
+  test('from a start-screen tab: the clone opens in that tab', async () => {
+    const { opening, tabs, calls } = setup({ repos: { '/c/new': info('/c/new') }, tabs: [null] });
+    const s = tabs.get(1);
+    const res = await opening.openCloned(s, '/c/new');
+    assert.equal(res.info.root, '/c/new');
+    assert.equal(res.session, s);
+    assert.equal(s.repo.root, '/c/new');
+    assert.deepEqual(calls, [['trust', '/c/new'], ['recent.add', '/c/new', 'new'], ['setRepo', 1, '/c/new'], ['menu'], ['activate', 1], ['front']]);
+  });
+
+  test('from a tab with a repo open: a new tab next to it', async () => {
+    const { opening, tabs, calls } = setup({ repos: { '/c/new': info('/c/new') }, tabs: ['/r/a', '/r/b'] });
+    const res = await opening.openCloned(tabs.get(1), '/c/new');
+    assert.equal(tabs.get(1).repo.root, '/r/a', 'the asking tab keeps its repo');
+    assert.equal(res.session.repo.root, '/c/new');
+    assert.deepEqual(tabs.list().map((t) => t.repo.root), ['/r/a', '/c/new', '/r/b'], 'next to it');
+    assert.ok(calls.some((c) => c[0] === 'addTab' && c[1] === 1));
+  });
+
+  test('a newer open landed in the tab meanwhile: stale (the tab is alive), and newTab: true opens it next to it', async () => {
+    const gate = deferred();
+    const { opening, tabs } = setup({ repos: { '/c/new': gate.promise.then(() => info('/c/new')), '/r/x': info('/r/x') }, tabs: [null] });
+    const s = tabs.get(1);
+    const p = opening.openCloned(s, '/c/new');
+    await opening.openShownRecent(s, '/r/x').catch(() => null); // not shown: refused, nothing lands
+    await opening.openExternal('/r/x'); // lands in the empty active tab
+    gate.resolve();
+    assert.deepEqual(await p, { info: null, reason: 'stale' });
+    const again = await opening.openCloned(s, '/c/new', { newTab: true });
+    assert.equal(again.info.root, '/c/new');
+    assert.notEqual(again.session, s);
+    assert.equal(s.repo.root, '/r/x');
+  });
+
+  test('the tab closed meanwhile: closed, no tab and no window; rememberRecent puts it in the recent list for the menu and the pages', async () => {
+    const gate = deferred();
+    const { opening, tabs, calls } = setup({ repos: { '/c/new': gate.promise.then(() => info('/c/new')) }, tabs: [null, '/r/a'] });
+    const s = tabs.get(1);
+    const p = opening.openCloned(s, '/c/new');
+    s.close();
+    gate.resolve();
+    assert.deepEqual(await p, { info: null, reason: 'closed' });
+    assert.deepEqual(calls, [], 'nothing asked, no tab added');
+    await opening.rememberRecent('/c/new');
+    assert.deepEqual(calls, [['recent.addAsync', '/c/new', undefined], ['recentChanged']], 'without blocking: the async add');
+    const failing = setup({});
+    failing.store.addAsync = async () => { throw new Error('disk full'); };
+    await failing.opening.rememberRecent('/c/x'); // never rejects
+    assert.deepEqual(failing.calls, [['recentChanged']]);
+  });
+
+  test('declined: Trust and Open is asked once, nothing opens', async () => {
+    const { opening, tabs, calls } = setup({ repos: { '/c/new': info('/c/new') }, risky: ['/c/new'], trustAnswers: [false] });
+    assert.deepEqual(await opening.openCloned(tabs.get(1), '/c/new'), { info: null, reason: 'declined' });
+    assert.deepEqual(calls, [['trust', '/c/new']]);
+    assert.equal(tabs.get(1).repo, null);
+  });
+
+  test('openRepo throws (dubious ownership): the error goes to the caller (the clone service reports openError)', async () => {
+    const { opening, tabs } = setup({ repos: { '/c/new': kindError('unsafe-repo', 'dubious ownership') } });
+    await assert.rejects(opening.openCloned(tabs.get(1), '/c/new'), { kind: 'unsafe-repo' });
+  });
+
+  test('the other use cases still resolve null for a missed open (open() wraps attempt())', async () => {
+    const { opening } = setup({ repos: { '/r/a': info('/r/a') }, risky: ['/r/a'], trustAnswers: [false] });
+    assert.equal(await opening.openExternal('/r/a'), null);
+    assert.equal(await opening.openBackgroundTab('/r/a', { abort: () => true }), null);
   });
 });

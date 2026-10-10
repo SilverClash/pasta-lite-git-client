@@ -72,6 +72,40 @@ const RULES = Object.freeze({
   },
   // Our rebase editor helper (src/rebase-editor.js) refused the todo or a message.
   helperRefused: { re: new RegExp(HELPER_REFUSED), from: 'both' },
+  // `git clone` (src/clone.js), tested against the progress parser's text lines only
+  // (src/clone-progress.js), anchored like auth. ssh ends every failure with "fatal: Could not read
+  // from remote repository.", so that line never decides: the one before it does.
+  // Not found: over http(s) and for a local path ("repository '<x>' not found / does not exist"),
+  // from GitHub / GitLab over ssh, and from a plain upload-pack (file://, ssh to a path that isn't
+  // a repository: "'<x>' does not appear to be a git repository").
+  remoteNotFound: {
+    re: [
+      /^fatal: repository '.*' (?:not found|does not exist)$/m,
+      /^fatal: '.*' does not appear to be a git repository$/m,
+      /^ERROR: Repository not found/m,
+      /^remote: Repository not found/m,
+    ],
+    from: 'stderr', kind: 'not-found',
+  },
+  hostKey: { re: [/^Host key verification failed/m, /^No .* host key is known for/m], from: 'stderr', kind: 'host-key' },
+  unreachable: {
+    re: [
+      // curl's connection-level failures: no answer, refused, timed out, TLS, a connection dropped.
+      /^fatal: unable to access '.*': (?:Could not resolve host|Failed to connect|Connection timed out|Couldn't connect|SSL|Recv failure|Send failure|Empty reply from server)/m,
+      /^ssh: Could not resolve hostname/m,
+      /^ssh: connect to host .* (?:Connection refused|Operation timed out|Connection timed out|Network is unreachable)/m,
+      // git:// (git daemon): the host doesn't resolve, or nothing answers.
+      /^fatal: unable to (?:look up|connect to) /m,
+    ],
+    from: 'stderr', kind: 'unreachable',
+  },
+  // protocol.allow=never on clone's command line (src/clone.js CLONE_ARGS): a URL the user's own
+  // url.<x>.insteadOf rewrote to a transport outside the five allowed.
+  transportNotAllowed: { re: /^fatal: transport '[^']+' not allowed/m, from: 'stderr', kind: 'unsupported' },
+  destinationExists: { re: /already exists and is not an empty directory/, from: 'stderr', kind: 'exists' },
+  noSpace: { re: /No space left on device/, from: 'stderr', kind: 'no-space' },
+  // Not an error kind: the clone is kept and offered as it is (src/clone.js, 'checkout-failed').
+  checkoutFailed: { re: /^warning: Clone succeeded, but checkout failed/m, from: 'stderr' },
   // Opening a folder.
   dubiousOwnership: { re: /dubious ownership/i, from: 'message', kind: 'unsafe-repo' },
   notARepo: { re: /not a git repository|bare repository|must be run in a work tree/i, from: 'message' },

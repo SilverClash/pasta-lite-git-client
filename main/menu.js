@@ -3,7 +3,8 @@
 // shortcuts: ⌘T / Ctrl+T New Tab, ⌘W / Ctrl+W Close Tab (macOS Close Window moves to ⌘⇧W),
 // ⌘1–⌘8 / Ctrl+1–8 a tab and ⌘9 / Ctrl+9 the last one, Next / Previous Tab ⌘⇧] / ⌘⇧[ on macOS
 // (plus Ctrl+Tab / Ctrl+Shift+Tab through the tabs controller's addTabKeys) and Ctrl+Tab /
-// Ctrl+Shift+Tab elsewhere. None of these keys is in the renderer's table (renderer/actions.js KEYS).
+// Ctrl+Shift+Tab elsewhere. Clone Repository… is ⇧⌘N / Ctrl+Shift+N (⌘N stays free for a later
+// New Repository…). None of these keys is in the renderer's table (renderer/actions.js KEYS).
 const { app, Menu } = require('electron');
 const { EVENTS, MENU_COMMANDS } = require('../src/ipc-contract');
 
@@ -53,6 +54,8 @@ function createAppMenu({ isMac, recentView, recent, recentChanged, controller, o
           { type: 'separator' },
           { label: 'Open Repository…', accelerator: 'CmdOrCtrl+Shift+O', click: () => openDialog() },
           { label: 'Open Repository in New Tab…', click: () => openDialog({ newTab: true }) },
+          // The page runs the dialog (renderer/clone.js): in the active tab, or a New Tab when there is none.
+          { label: 'Clone Repository…', accelerator: 'CmdOrCtrl+Shift+N', click: () => { controller.commandToActive(MENU_COMMANDS.CLONE).catch(report()); } },
           {
             label: 'Open Recent',
             submenu: [

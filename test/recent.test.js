@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const h = require('./helpers');
-const { createRecentStore, createTrustStore } = require('../src/recent');
+const { createRecentStore, createTrustStore, createClonePrefs } = require('../src/recent');
 
 const dirs = (n) => Array.from({ length: n }, () => h.tmpDir('pl-recent-'));
 const roots = (list) => list.map((e) => e.root);
@@ -233,4 +233,116 @@ test('sleepSync blocks for about the time asked', () => {
   sleepSync(20);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(ms >= 15 && ms < 1000, `${ms} ms`);
+});
+
+// ---------------------------------------------------------------- clone.json (createClonePrefs)
+
+const made = (abs, ino = '42') => ({ abs, dev: '7', ino });
+
+test('createClonePrefs: the last parent is kept while it is an absolute path to a directory', async () => {
+  const [a] = dirs(1);
+  const file = path.join(h.tmpDir(), 'sub', 'clone.json');
+  const prefs = createClonePrefs(file);
+  assert.equal(await prefs.lastParent(), null, 'missing file');
+  await prefs.setLastParent(a);
+  assert.equal(await prefs.lastParent(), a);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { lastParent: a });
+  fs.rmSync(a, { recursive: true });
+  assert.equal(await prefs.lastParent(), null, 'gone: no parent');
+  await prefs.setLastParent('relative/x');
+  assert.equal(await prefs.lastParent(), null);
+  const f2 = path.join(h.tmpDir(), 'f');
+  fs.writeFileSync(f2, '');
+  await prefs.setLastParent(f2);
+  assert.equal(await prefs.lastParent(), null, 'a file is no parent');
+  fs.writeFileSync(file, '{corrupt');
+  assert.equal(await prefs.lastParent(), null);
+  assert.deepEqual(await prefs.pendingCleanup(), []);
+});
+
+test('createClonePrefs: pending removals are added once, dropped by identity, and malformed entries ignored', async () => {
+  const dir = h.tmpDir();
+  const file = path.join(dir, 'clone.json');
+  const prefs = createClonePrefs(file);
+  const a = made(path.join(dir, 'a'));
+  const b = made(path.join(dir, 'b'), '43');
+  await Promise.all([prefs.setLastParent(dir), prefs.addPendingCleanup(a), prefs.addPendingCleanup(b), prefs.addPendingCleanup({ ...a, extra: 'x' })]);
+  assert.deepEqual(await prefs.pendingCleanup(), [b, a], 'edits run one after another on fresh reads; a re-add moves to the end');
+  assert.equal(await prefs.lastParent(), dir, 'other fields kept');
+  await prefs.dropPendingCleanup({ ...a, ino: '99' });
+  assert.equal((await prefs.pendingCleanup()).length, 2, 'another folder at the same path is not this entry');
+  await prefs.dropPendingCleanup(a);
+  assert.deepEqual(await prefs.pendingCleanup(), [b]);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  raw.pendingCleanup.push({ abs: 'rel', dev: '1', ino: '2' }, { abs: path.join(dir, 'c'), dev: 1, ino: '2' }, null, 'x');
+  fs.writeFileSync(file, JSON.stringify(raw));
+  assert.deepEqual(await prefs.pendingCleanup(), [b], 'malformed entries are skipped');
+});
+
+test('addAsync: the same list add() makes, without blocking; calls run one after another', async () => {
+  const [a, b, c] = dirs(3);
+  const file = path.join(h.tmpDir(), 'recent.json');
+  const store = createRecentStore(file, { max: 2 });
+  store.add(a);
+  await Promise.all([store.addAsync(b, { name: 'bee' }), store.addAsync(a)]);
+  assert.deepEqual((await store.list()).map((e) => [e.root, e.name]), [[a, path.basename(a)], [b, 'bee']], 'deduplicated by real path, newest first');
+  await store.addAsync(c);
+  assert.deepEqual(roots(await store.list()), [c, a], 'capped at max');
+  fs.mkdirSync(path.join(path.dirname(file), 'blocker.json'));
+  await assert.rejects(createRecentStore(path.join(path.dirname(file), 'blocker.json')).addAsync(a), 'a failed write rejects (the caller logs it)');
+});
+
+test('createClonePrefs: a folder\'s entry replaces every older one for the same path; the birth time is kept', async () => {
+  const dir = h.tmpDir();
+  const prefs = createClonePrefs(path.join(dir, 'clone.json'));
+  const abs = path.join(dir, 'r');
+  await prefs.addPendingCleanup(made(abs, '1'));
+  await prefs.addPendingCleanup({ ...made(abs, '1'), born: '123' });
+  assert.deepEqual(await prefs.pendingCleanup(), [{ abs, dev: '7', ino: '1', born: '123' }]);
+  await prefs.dropPendingCleanup(made(abs, '1'));
+  assert.equal((await prefs.pendingCleanup()).length, 1, 'another birth time: another folder');
+  await prefs.addPendingCleanup({ ...made(abs, '1'), born: 'x' });
+  assert.deepEqual(await prefs.pendingCleanup(), [], 'a malformed birth time is no entry');
+});
+
+test('createClonePrefs: a write that fails is logged without the path, never thrown', async () => {
+  const dir = h.tmpDir();
+  const file = path.join(dir, 'clone.json');
+  fs.mkdirSync(file); // a folder where the file goes: every rename fails
+  const warned = [];
+  const prefs = createClonePrefs(file, { log: { warn: (msg, fields) => warned.push([msg, fields]) } });
+  await prefs.setLastParent(dir);
+  await prefs.addPendingCleanup(made(path.join(dir, 'a')));
+  assert.equal(warned.length, 2);
+  assert.ok(warned.every(([, fields]) => !JSON.stringify(fields).includes(dir)));
+  assert.equal(await prefs.lastParent(), null);
+  assert.deepEqual(fs.readdirSync(dir), ['clone.json'], 'no tmp file left');
+});
+
+test('writeJsonAsync / readJsonAsync: atomic, and on Windows a held rename is tried again with timers', async () => {
+  const { writeJsonAsync, readJsonAsync, _internal: { RENAME_DELAYS_MS } } = require('../src/json-file');
+  const dir = h.tmpDir('pl-json-');
+  const file = path.join(dir, 'sub', 'clone.json');
+  assert.equal(await readJsonAsync(file), null);
+  await writeJsonAsync(file, { v: 1 });
+  assert.deepEqual(await readJsonAsync(file), { v: 1 });
+  const err = (code) => Object.assign(new Error(code), { code });
+  let fails = ['EPERM', 'EBUSY'];
+  const waited = [];
+  const rename = async (from, to) => {
+    if (fails.length) throw err(fails.shift());
+    await fs.promises.rename(from, to);
+  };
+  const win = { platform: 'win32', rename, wait: async (ms) => { waited.push(ms); } };
+  await writeJsonAsync(file, { v: 2 }, win);
+  assert.deepEqual(await readJsonAsync(file), { v: 2 });
+  assert.deepEqual(waited, RENAME_DELAYS_MS.slice(0, 2));
+  fails = Array(100).fill('EACCES');
+  await assert.rejects(writeJsonAsync(file, { v: 3 }, win), { code: 'EACCES' });
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['clone.json'], 'the tmp file is removed');
+  fails = ['EPERM'];
+  waited.length = 0;
+  await assert.rejects(writeJsonAsync(file, { v: 4 }, { ...win, platform: 'darwin' }), { code: 'EPERM' });
+  assert.deepEqual(waited, [], 'not retried off Windows');
+  assert.deepEqual(await readJsonAsync(file), { v: 2 });
 });

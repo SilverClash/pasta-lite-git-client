@@ -94,15 +94,10 @@
     return s.toUpperCase();
   }
 
-  // Bidi controls (can reorder text: "rtl\u202Egnp.js" would show as "rtlsj.png"), zero-width
-  // joiners aside, and C0/C1 control characters (newlines, tabs, escape) are made visible.
-  const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
-  /** Text safe to show as a name/path: dangerous or invisible characters become visible escapes. */
-  const displayName = (s) => String(s == null ? '' : s).replace(INVISIBLE, (c) => {
-    if (c === '\n') return '\u21b5'; // ↵
-    if (c === '\t') return '\u21e5'; // ⇥
-    return `\\u{${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`;
-  });
+  // displayName (bidi and control characters made visible) comes from src/display-text.js
+  // (window.PLDisplayText; index.html loads it before this script), shared with main's clone
+  // parsers. load() is a function declaration below, so it is already defined here.
+  const { displayName } = load('PLDisplayText', '../src/display-text.js');
 
   /**
    * Folder tree from items by '/'-separated path:

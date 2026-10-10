@@ -11,6 +11,7 @@
 // - main/diagnostics-ui.js  Help → Show Logs / Show Crash Reports / Copy Diagnostics, the crash prompt
 // - main/smoke.js           the --smoke harness (dev only; never loaded in a packaged build)
 // - src/repo-opening.js     every open of a repository; src/repo-trust.js the Trust and Open policy
+// - src/clone-service.js    Clone Repository… (src/clone.js, src/clone-cleanup.js; clone.json)
 //
 // Security boundary: the renderer never passes a repo path. Main holds each tab's repo and
 // injects it into every operation (main/ipc.js), so a compromised renderer can only run the
@@ -23,7 +24,9 @@ const { pathToFileURL } = require('node:url');
 const ops = require('./src/ops');
 const git = require('./src/git');
 const { findGit, describeGitFailure } = require('./src/gitcheck');
-const { createRecentStore, createTrustStore } = require('./src/recent');
+const { createRecentStore, createTrustStore, createClonePrefs } = require('./src/recent');
+const { createCleanup, keepListed } = require('./src/clone-cleanup');
+const { createCloneService } = require('./src/clone-service');
 const { setGitBinary, killChildren } = require('./src/exec');
 const { parseArgs: parseArgv } = require('./src/cli-args');
 const { createTabsStore } = require('./src/tabs-store');
@@ -60,6 +63,7 @@ const quitLog = logger.child('quit');
 const crashLog = logger.child('crash');
 const watchLog = logger.child('watcher');
 const tabLog = logger.child('tabs');
+const cloneLog = logger.child('clone');
 
 // ---------------------------------------------------------------- command line
 
@@ -79,6 +83,8 @@ let gitPath = null; // the git binary every spawn uses (gitcheck.findGit → exe
 let recent = null; // store; created when app is ready (needs userData). Also the "started" flag
 let trustedRepos = null; // repos opened despite config that runs commands (trusted.json)
 let tabsStore = null; // the open tabs (tabs.json), restored at launch
+let cloneService = null; // Clone Repository… (src/clone-service.js), over clone.json
+let cloneCleanup = null; // its pending removals (src/clone-cleanup.js); before-quit waits for its writes
 let pendingOpen = args.repo; // repo to open once the window exists (CLI, early open-file)
 const gitInfo = () => ({ gitVersion, gitPath });
 // The image preview's HEIC, TIFF and PSD sides go through the OS thumbnailer (src/os-thumbnail.js;
@@ -170,6 +176,11 @@ const quitGuard = createQuitGuard({
 // with the reads, they end when the OS answers), at most this long.
 const THUMBNAILS_QUIT_MS = 2000;
 let thumbnailsWaited = false;
+// A clone's folder is written to clone.json as soon as it exists (src/clone-cleanup.js journal);
+// a quit approved meanwhile waits for that write, at most this long, so the next launch can
+// remove what a cancelled clone left (even one whose git outlived its kill).
+const CLONE_JOURNAL_QUIT_MS = 2000;
+let cloneJournalWaited = false;
 
 // One decision at a time; once it says quit, before-quit and the window close let it through.
 const quitFlow = createQuitFlow({
@@ -232,6 +243,9 @@ controller = createTabsController({
   store: () => tabsStore,
   report,
   log: tabLog,
+  // App ops (clone): their runner events name the target's absolute path, which no page gets.
+  privateOps: ops.APP_OPS,
+  onTabClosed: (s) => { if (cloneService) cloneService.sessionClosed(s); },
 });
 
 /** The recent list changed outside an open (cleared, an entry dropped): the menu and every page. */
@@ -244,6 +258,16 @@ async function recentChanged() {
 // Opening a repo whose own config or hooks run commands asks first (src/repo-trust.js).
 // Without a UI (smoke) it never asks: it refuses with kind 'untrusted'.
 const repoTrust = createRepoTrust({ git, store: () => trustedRepos, ui, log });
+
+/**
+ * The clone dialog's "Choose where to clone" (src/clone-service.js), from the current parent: the
+ * chosen folder, or null. The smoke harness answers it from its environment instead.
+ */
+async function pickCloneFolder({ defaultPath }) {
+  const opts = { title: 'Choose where to clone', properties: ['openDirectory', 'createDirectory'], ...(defaultPath ? { defaultPath } : {}) };
+  const res = await windowHost.showOpenDialog(opts);
+  return res.canceled || !res.filePaths.length ? null : res.filePaths[0];
+}
 
 /** The folder dialog (File > Open Repository…): the chosen folder, or null. */
 async function pickFolder({ newTab = false } = {}) {
@@ -293,6 +317,7 @@ function registerIpc() {
     handlers: {
       ...createHandlers({
         runner, controller, opening: () => opening, recentView, rendererLog, openTerminal, summary: ops.summary, shouldForgetRecent, git: gitInfo, log, clipboard, listWorktrees: git.worktrees, shell,
+        clone: cloneService,
       }),
       ...(harness ? harness.handlers : {}),
     },
@@ -492,6 +517,25 @@ async function start() {
   trustedRepos = createTrustStore(path.join(app.getPath('userData'), 'trusted.json'));
   tabsStore = createTabsStore(path.join(app.getPath('userData'), 'tabs.json'));
   recent = createRecentStore(path.join(app.getPath('userData'), 'recent.json'));
+  // Clone: the last parent folder and the removals a quit or a crash interrupted (clone.json);
+  // those are finished now, in the background (src/clone-cleanup.js checks each folder first).
+  const clonePrefs = createClonePrefs(path.join(app.getPath('userData'), 'clone.json'), { log: cloneLog });
+  cloneCleanup = createCleanup({
+    prefs: clonePrefs,
+    log: cloneLog,
+    // Never removed, whatever clone.json says: a folder the recent list or a saved tab names.
+    keep: keepListed(async () => [...(await recent.list()).map((e) => e.root), ...tabsStore.load().roots]),
+  });
+  cloneCleanup.resume().catch((err) => cloneLog.warn('could not finish the pending removals', { err }));
+  cloneService = createCloneService({
+    runner,
+    opening,
+    prefs: clonePrefs,
+    cleanup: cloneCleanup,
+    // No default parent: the user picks one (a smoke run: main/smoke.js seeds clone.json).
+    pickFolder: harness ? harness.clone.pickFolder : pickCloneFolder,
+    log: cloneLog,
+  });
   registerIpc();
   await recentView.refresh();
   menu.build();
@@ -537,6 +581,13 @@ app.on('before-quit', (e) => {
   }
   quitGuard.quitNow(); // cancel running reads (a no-op after an approved quit)
   controller.closeWatchers();
+  if (cloneCleanup && cloneCleanup.writing() && !cloneJournalWaited) {
+    cloneJournalWaited = true;
+    e.preventDefault(); // quit again once clone.json holds every clone folder made so far
+    quitLog.info('waiting for clone.json');
+    Promise.race([cloneCleanup.persisted(), new Promise((r) => { setTimeout(r, CLONE_JOURNAL_QUIT_MS); })]).finally(() => app.quit());
+    return;
+  }
   if (thumbnailer && thumbnailer.busy() && !thumbnailsWaited) {
     thumbnailsWaited = true;
     e.preventDefault(); // quit again once the thumbnailer's temp folders are gone (or the wait is over)

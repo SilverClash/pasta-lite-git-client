@@ -37,7 +37,8 @@ function fakeContents() {
     id: nextId++, destroyed: false, sent: [],
     send: (ch, p) => wc.sent.push([ch, p]),
     isDestroyed: () => wc.destroyed,
-    once: () => {}, on: () => {},
+    // The page "loads" at once (session.loaded resolves).
+    once: (ev, cb) => { if (ev === 'did-finish-load') queueMicrotask(cb); }, on: () => {},
     loadURL: () => Promise.resolve(),
     close: () => { wc.destroyed = true; },
     focus: () => {},
@@ -51,7 +52,7 @@ class FakeView {
   setBounds() {}
 }
 
-function setup({ saved = { roots: [], active: 0 } } = {}) {
+function setup({ saved = { roots: [], active: 0 }, runner = { running: () => [], on() {} }, extra = {} } = {}) {
   const calls = { created: 0, saves: [], titles: [], strip: [] };
   let win = null;
   const makeWin = () => ({
@@ -76,7 +77,7 @@ function setup({ saved = { roots: [], active: 0 } } = {}) {
   const logs = [];
   const controller = createTabsController({
     windowHost,
-    runner: { running: () => [], on() {} },
+    runner,
     rendererLog: { forget() {} },
     ui: { interactive: true, confirm: async () => true, focus() {} },
     isMac: false,
@@ -89,6 +90,7 @@ function setup({ saved = { roots: [], active: 0 } } = {}) {
     log: { info: (m, f) => logs.push([m, f]), warn: (m, f) => logs.push([m, f]) },
     View: FakeView,
     menu: { buildFromTemplate: () => ({ popup() {} }) },
+    ...extra,
   });
   /** A fake openBackgroundTab: a new tab with `root` open (as src/repo-opening.js does it). */
   const open = (hook = () => {}) => async (root, { abort } = {}) => {
@@ -189,5 +191,70 @@ describe('titles', () => {
     assert.equal(calls.titles.at(-1), 'monorepo — Pasta Lite Git client', 'the main worktree\'s tab keeps its title');
     const pages = b.webContents.sent.filter(([ch]) => ch === 'tabs-changed');
     assert.deepEqual(pages.at(-1)[1].tabs.map((t) => t.linked), [false, true], 'the pages get the flag too');
+  });
+});
+
+describe('commandToActive (File > Clone Repository…)', () => {
+  test('sent to the active tab\'s page once it has loaded', async () => {
+    const { controller } = setup();
+    const a = controller.addTab();
+    controller.addTab({ activate: false });
+    const s = await controller.commandToActive('clone');
+    assert.equal(s, a);
+    assert.deepEqual(a.webContents.sent.filter(([ch]) => ch === 'menu-command'), [['menu-command', { id: 'clone' }]]);
+  });
+
+  test('no tab (macOS, no window): a New Tab, and its window, take it', async () => {
+    const { controller, windowHost, calls } = setup();
+    windowHost.close();
+    assert.equal(controller.tabs.size, 0);
+    const s = await controller.commandToActive('clone');
+    assert.equal(calls.created, 1, 'the window the user just asked for');
+    assert.equal(controller.tabs.size, 1);
+    assert.deepEqual(s.webContents.sent.filter(([ch]) => ch === 'menu-command'), [['menu-command', { id: 'clone' }]]);
+  });
+
+  test('a tab closed before its page loaded gets nothing', async () => {
+    const { controller } = setup();
+    const a = controller.addTab();
+    const p = controller.commandToActive('clone');
+    a.close();
+    await p;
+    assert.deepEqual(a.webContents.sent.filter(([ch]) => ch === 'menu-command'), []);
+  });
+});
+
+describe('runner events and closing tabs (the clone app op)', () => {
+  const { EventEmitter } = require('node:events');
+
+  test('a private op\'s busy / changed events never reach a page (their repo is a path main keeps); others do, and the strip still updates', async () => {
+    const runner = Object.assign(new EventEmitter(), { running: () => [] });
+    const { controller, calls } = setup({ runner, extra: { privateOps: new Set(['clone']) } });
+    const s = controller.addTab();
+    controller.forwardRunnerEvents();
+    const busied = [];
+    s.watch.busy = (e) => busied.push(e.op);
+    const strip = calls.strip.length;
+    runner.emit('busy', { repo: '/Users/ada/code/secret-target', op: 'clone', running: true });
+    runner.emit('changed', { repo: '/Users/ada/code/secret-target', op: 'clone', ok: true });
+    runner.emit('busy', { repo: '/r', op: 'push', running: true });
+    const sent = s.webContents.sent.filter(([ch]) => ch === 'busy' || ch === 'changed');
+    assert.deepEqual(sent.map(([ch, p]) => [ch, p.op]), [['busy', 'push']]);
+    assert.ok(!JSON.stringify(s.webContents.sent).includes('secret-target'));
+    assert.deepEqual(busied, ['clone', 'push'], 'the watchers still hear both (they ignore a repo they don\'t hold)');
+    await new Promise((r) => setTimeout(r, 5));
+    assert.ok(calls.strip.length > strip, 'the strip still updates its busy state');
+  });
+
+  test('onTabClosed hears every closed tab, and a listener that throws doesn\'t stop the close', async () => {
+    const closed = [];
+    const runner = { running: () => [], on() {}, cancelAll: () => 0 };
+    const { controller } = setup({ runner, extra: { onTabClosed: (s) => { closed.push(s.id); throw new Error('listener bug'); } } });
+    const a = controller.addTab();
+    controller.addTab();
+    assert.equal(await controller.closeTab(a.id), true);
+    assert.deepEqual(closed, [a.id]);
+    controller.destroyAll();
+    assert.equal(closed.length, 2);
   });
 });

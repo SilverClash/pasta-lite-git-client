@@ -168,16 +168,34 @@ function createQuitFlow({ guard, quit, log = { info() {}, error() {} }, running 
  */
 const confirmWith = (ask) => (kind, names) => ask(dialogOptions(kind, names));
 
+// A cancelled clone's partial folder is removed by src/clone-cleanup.js, which no guard waits for:
+// what a quit cuts short is finished at the next launch.
+const CLONE_NOTE = 'A clone that is cancelled leaves no folder behind: its partial folder is removed, at the next start if needed.';
+
+/** True when `names` (opNames: "push, clone") lists a clone. */
+const hasClone = (names) => String(names).split(', ').includes('clone');
+
+/**
+ * The UNSAFE question's detail, by what outlived the bound: undo's reversal and a discard's
+ * backup record restore files; a clone is a git that ignored its kill.
+ */
+const UNSAFE_DETAIL = Object.freeze({
+  clone: 'Git is still stopping. Quitting now may leave a partial folder: the next start removes it if its download hadn\'t finished, and otherwise leaves it for you to check.',
+  default: 'It is restoring files and will finish on its own. Quitting now could leave the worktree half-restored.',
+});
+
 /**
  * The native dialogs' wording for confirm(kind, names): {message, detail, buttons, defaultId, cancelId}.
  * kind: 'running' / 'unsafe' (quitting, createQuitGuard) or 'close' (closing a tab, createCloseGuard).
+ * A clone among `names` adds what happens to its folder (RUNNING / CLOSE), or is the UNSAFE detail.
  */
 function dialogOptions(kind, names) {
+  const note = hasClone(names) ? ` ${CLONE_NOTE}` : '';
   if (kind === DIALOG_KINDS.CLOSE) {
     return {
       type: 'warning',
       message: `A git operation is still running in this tab (${names})`,
-      detail: 'Closing the tab cancels it. Keep it running to let it finish first.',
+      detail: `Closing the tab cancels it. Keep it running to let it finish first.${note}`,
       buttons: ['Cancel and Close', 'Keep Running'],
       defaultId: 1,
       cancelId: 1,
@@ -188,7 +206,7 @@ function dialogOptions(kind, names) {
     return {
       type: 'warning',
       message: `A git operation is still running (${names})`,
-      detail: 'Quitting cancels it. Keep it running to let it finish first.',
+      detail: `Quitting cancels it. Keep it running to let it finish first.${note}`,
       buttons: ['Cancel and Quit', 'Keep Running'],
       defaultId: 1,
       cancelId: 1,
@@ -198,7 +216,9 @@ function dialogOptions(kind, names) {
   return {
     type: 'warning',
     message: `A git operation can't be cancelled right now (${names})`,
-    detail: 'It is restoring files and will finish on its own. Quitting now could leave the worktree half-restored.',
+    // Only a clone (names lists what outlived the bound): its own detail; with undo or a discard
+    // among them, theirs (restoring files is the graver risk).
+    detail: names === 'clone' ? UNSAFE_DETAIL.clone : UNSAFE_DETAIL.default,
     buttons: ['Quit', 'Wait'],
     defaultId: 1,
     cancelId: 1,

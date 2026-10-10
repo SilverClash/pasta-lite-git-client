@@ -24,12 +24,15 @@ const { APP_NAME, STRIP_H, BG } = require('./window');
  *   store: () => ({save(state: object): boolean, load(): {roots: (string|null)[], active: number}} | null),
  *   report: (title?: string) => (err: unknown) => void,
  *   log: {info: Function, warn: Function},
+ *   privateOps?: Set<string>, onTabClosed?: (session: object) => void,
  *   View?: typeof WebContentsView, menu?: typeof Menu,
- * }} o  store: tabs.json (created at start). View / menu: Electron's (tests pass fakes).
+ * }} o  store: tabs.json (created at start). privateOps: ops whose runner events no page gets (the
+ *   app ops: their `repo` is a folder main keeps from the pages). onTabClosed: a tab's session
+ *   closed (the clone service forgets it). View / menu: Electron's (tests pass fakes).
  */
 function createTabsController({
   windowHost, runner, rendererLog, ui, isMac, indexUrl, viewPrefs, createWatcher, logWatch, store, report, log,
-  View = WebContentsView, menu = Menu,
+  privateOps = new Set(), onTabClosed = () => {}, View = WebContentsView, menu = Menu,
 }) {
   const tabs = tabsLib.createTabRegistry(); // one session per tab, in strip order
   const win = () => windowHost.get();
@@ -198,6 +201,11 @@ function createTabsController({
     const wasActive = tabs.activeId === s.id;
     const next = tabs.remove(s.id);
     s.close();
+    try {
+      onTabClosed(s);
+    } catch (err) {
+      log.warn('a tab-closed listener failed', { err });
+    }
     if (alive()) win().contentView.removeChildView(s.view);
     rendererLog.forget(s.id); // reports what its rate limit dropped
     if (!s.webContents.isDestroyed()) s.webContents.close();
@@ -258,6 +266,18 @@ function createTabsController({
     return true;
   }
 
+  /**
+   * A menu command for the active tab's page ('menu-command' {id}): a New Tab when there is none
+   * (macOS with no window: addTab creates the window, which the user just asked for), sent once
+   * its page has loaded. Resolves the tab it went to.
+   */
+  async function commandToActive(id) {
+    const s = tabs.active() || addTab();
+    await s.loaded;
+    if (!s.closed) s.send(EVENTS.MENU_COMMAND, { id });
+    return s;
+  }
+
   /** Bring the window forward after an open (ui.focus: never in smoke runs, whose window stays hidden). */
   function bringToFront() {
     if (!alive()) return;
@@ -316,7 +336,9 @@ function createTabsController({
    * 'busy' is emitted).
    */
   function forwardRunnerEvents() {
-    for (const channel of [EVENTS.CHANGED, EVENTS.BUSY]) runner.on(channel, (e) => broadcast(channel, e));
+    // Not the private ops' (clone): their `repo` is the target's absolute path, and no page needs
+    // it (the watchers below ignore a repo they don't hold; the strip asks runner.running()).
+    for (const channel of [EVENTS.CHANGED, EVENTS.BUSY]) runner.on(channel, (e) => { if (!privateOps.has(e.op)) broadcast(channel, e); });
     runner.on(EVENTS.BUSY, (e) => {
       for (const s of tabs.list()) s.watch.busy(e);
       setTimeout(updateStrip, 0);
@@ -342,6 +364,7 @@ function createTabsController({
     destroyAll,
     showTabMenu,
     bringToFront,
+    commandToActive,
     restoreTabs,
     suppressPersist,
     forwardRunnerEvents,

@@ -25,6 +25,8 @@
 //                              ⌘P calls toggle() (false: no toolbar mounted)
 //   mountStart(container, opts) -> {focus(), dispose()}      the start screen
 //   openRepo(root, {newTab}) / openFolder({newTab}) / tabsAvailable()
+//   cloneRepo({onError})       Clone Repository… (window.PLClone, renderer/clone.js, which loads
+//                              after this script); the start screen and the popover's footer offer it
 //   _internal: {CAP, rank, segments, subsequence, otherTabs}, the pure parts, for unit tests only
 //
 // Keyboard (the search field keeps focus; the list is a listbox driven by aria-activedescendant):
@@ -44,6 +46,19 @@
 
   /** Recent entries shown before "View all repositories" (main keeps 10, src/recent.js). */
   const CAP = 6;
+
+  /**
+   * File > Clone Repository…'s key, ⇧⌘N / Ctrl+Shift+N: main's menu accelerator, so not in KEYS
+   * (keys.js), only shown here.
+   */
+  const CLONE_KEY = { key: 'n', shift: true };
+
+  /** Clone Repository… (renderer/clone.js loads after this script: looked up when used). */
+  function cloneRepo({ onError } = {}) {
+    const report = onError || ((x) => util.log.error(x));
+    if (window.PLClone) window.PLClone.open({ onError: report });
+    else report(new Error('Cloning is not available'));
+  }
 
   // ---------------------------------------------------------------- pure
 
@@ -236,6 +251,7 @@
     const on = (node, type, fn) => node.addEventListener(type, fn, { signal: ac.signal });
 
     let openBtn = null;
+    let cloneBtn = null;
     let allBtn = null;
     if (opts.footer) {
       const foot = el('div', 'rp-footer');
@@ -245,11 +261,19 @@
       const hint = keyHint('open');
       if (hint) openBtn.append(el('span', 'rp-key', hint));
       openBtn.title = openTitle();
+      cloneBtn = el('button', 'rp-foot-btn rp-clone', 'Clone…');
+      cloneBtn.type = 'button';
+      cloneBtn.title = `Clone a repository from a URL (${keyHint(CLONE_KEY)})`;
       allBtn = el('button', 'rp-foot-btn rp-all', 'View all repositories');
       allBtn.type = 'button';
-      foot.append(openBtn, allBtn);
+      foot.append(openBtn, cloneBtn, allBtn);
       root.append(foot);
       on(openBtn, 'click', (e) => folder({ newTab: modKey(e) }));
+      // The popover closes first (onClone), then the dialog opens.
+      on(cloneBtn, 'click', () => {
+        if (opts.onClone) opts.onClone();
+        cloneRepo({ onError });
+      });
       on(allBtn, 'click', () => {
         showAll = true;
         render();
@@ -383,6 +407,7 @@
       root,
       input,
       openBtn,
+      cloneBtn,
       allBtn,
       render,
       move,
@@ -434,10 +459,11 @@
       onError: opts.onError,
       onChoose: () => finish(false),
       onFolder: () => finish(false),
+      onClone: () => finish(false),
     });
     pop.append(list.root);
 
-    const focusables = () => [list.input, list.openBtn, list.allBtn].filter((b) => b && !b.hidden);
+    const focusables = () => [list.input, list.openBtn, list.cloneBtn, list.allBtn].filter((b) => b && !b.hidden);
     pop.addEventListener('keydown', (e) => {
       const k = e.key;
       const mod = modKey(e) && !e.altKey && !e.shiftKey;
@@ -515,7 +541,7 @@
     const title = el('h1', 'start-title');
     title.append(el('span', 'brand-mark'), el('span', null, 'Open a repository'));
     title.firstChild.setAttribute('aria-hidden', 'true');
-    const sub = el('p', 'muted start-sub', 'Pick a recently opened repository, or open a folder.');
+    const sub = el('p', 'muted start-sub', 'Pick a recently opened repository, open a folder, or clone one.');
     const list = createList({
       source: opts.source,
       cap: null,
@@ -536,7 +562,15 @@
     if (hint) openBtn.append(el('span', 'start-key', hint));
     openBtn.title = openTitle();
     openBtn.addEventListener('click', (e) => { openFolder({ newTab: modKey(e) }).catch(opts.onError || ((x) => util.log.error(x))); }, { signal: ac.signal });
-    actions.append(openBtn);
+    const cloneBtn = el('button', 'btn start-clone');
+    cloneBtn.type = 'button';
+    cloneBtn.id = 'clone-btn';
+    cloneBtn.append(el('span', null, 'Clone…'));
+    const cloneHint = keyHint(CLONE_KEY);
+    if (cloneHint) cloneBtn.append(el('span', 'start-key', cloneHint));
+    cloneBtn.title = `Clone a repository from a URL (${keyHint(CLONE_KEY)})`;
+    cloneBtn.addEventListener('click', () => cloneRepo({ onError: opts.onError }), { signal: ac.signal });
+    actions.append(openBtn, cloneBtn);
     const tabHint = el('p', 'hint start-hint');
     tabHint.append(el('kbd', null, keyHint({ key: 't' })), document.createTextNode(' opens another tab'));
     tabHint.hidden = !tabsAvailable();
@@ -549,7 +583,7 @@
   }
 
   const api = {
-    shownPath, source, tabsAvailable, openRepo, openFolder, choose,
+    shownPath, source, tabsAvailable, openRepo, openFolder, choose, cloneRepo,
     createList, open, close, isOpen: () => !!current, setToggle, toggle, mountStart,
     _internal: { CAP, rank, segments, subsequence, otherTabs }, // exported for unit tests only
   };

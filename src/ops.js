@@ -20,6 +20,12 @@
 // that string, so the renderer can never point git at an arbitrary folder. A worktree is not
 // deleted while a rebase or merge is stopped in it, while another worktree is inside it, or while
 // any tab's write runs there, and no write starts there while it is deleted (worktree-busy).
+//
+// App ops (APP: clone) need no tab repository and are not in OPS, so the IPC 'op' channel can't
+// reach them (src/ipc-contract.js opRequest); main's clone service runs them through the same
+// runner, which gives them the write queue, the busy events, the quit and close guards and
+// cancellation by opId.
+const path = require('node:path');
 const git = require('./git');
 const hunks = require('./hunks');
 const undo = require('./undo');
@@ -39,6 +45,9 @@ const blobRevisions = require('./blob-revisions');
 const imagePreview = require('./image-preview');
 const { bareGate } = require('./bare-gate');
 const { serializeError } = require('./ipc-errors');
+const { cloneRepo } = require('./clone');
+const { parseCloneUrl, nameError } = require('./clone-url');
+const { samePath } = require('./fs-paths');
 const runner = require('./runner');
 
 const { kindError } = exec;
@@ -737,6 +746,42 @@ const WRITE = {
   }, (repo, p) => git.unlockWorktree(repo, p)), { bare: true }),
 };
 
+// ---------------------------------------------------------------- app ops
+
+/**
+ * clone's check (target, req, hooks): main's clone service built the request, and this checks it
+ * again (the runner's `repo` is the target, the folder the op creates). req {source, parent, name}:
+ * the target is exactly <parent>/<name>, the name one segment (nameError), the source a network
+ * URL parseCloneUrl accepts (never a local path or file://).
+ * hooks {onProgress, onMade}: main's own functions, never a page's (onMade: the clone service
+ * journals the folder for its cleanup). Picks the fields explicitly.
+ */
+function cloneCheck(target, req, hooks) {
+  const r = isObj(req) ? req : {};
+  const h = isObj(hooks) ? hooks : {};
+  if (typeof r.parent !== 'string' || !path.isAbsolute(r.parent)) throw invalid('clone: the parent must be an absolute path');
+  const bad = nameError(r.name);
+  if (bad) throw invalid(bad);
+  if (typeof target !== 'string' || !samePath(path.join(r.parent, r.name), target)) throw invalid('clone: the target is not <parent>/<name>');
+  const u = parseCloneUrl(r.source);
+  if (!u.ok) throw invalid(u.reason);
+  const fn = (v) => (typeof v === 'function' ? v : undefined);
+  return [{ source: u.url, parent: r.parent, name: r.name }, { onProgress: fn(h.onProgress), onMade: fn(h.onMade) }];
+}
+
+// App-level ops: no tab repository (the IPC 'op' channel can't reach them: ops.OPS doesn't list
+// them). The runner's `repo` key is the op's own folder (clone: the target), for the write queue
+// and the log record; act gets it first, as every op's act does. bare: true, so the gate never
+// asks isBare of a folder that doesn't exist yet.
+const APP = {
+  clone: write(op(cloneCheck, (target, req, hooks, signal) => cloneRepo({ ...req, ...hooks, signal })), { bare: true }),
+};
+const APP_DESCRIPTORS = Object.freeze({ ...APP });
+const APP_RUN = Object.freeze(Object.fromEntries(Object.entries(APP).map(([n, d]) => [n, d.run])));
+const APP_WRITE_OPS = Object.keys(APP).filter((n) => APP[n].write);
+/** The app ops' names: their runner events name a folder no page holds (main keeps them from the pages). */
+const APP_OPS = Object.freeze(new Set(Object.keys(APP)));
+
 /** Every op's descriptor, by name (see describe). */
 const DESCRIPTORS = Object.freeze({ ...READ, ...WRITE });
 const names = (keep) => Object.keys(DESCRIPTORS).filter((n) => keep(DESCRIPTORS[n]));
@@ -761,18 +806,18 @@ const WORKTREE_OPS = Object.freeze(new Set(names((d) => !d.bare)));
 const BARE_OK = Object.freeze(new Set(names((d) => d.bare)));
 
 /**
- * The runner (src/runner.js) for this registry, with the bare-repository gate and the
- * worktree-busy vet (worktreeVet). `thumbnailer`: the OS thumbnailer the image preview reads use
+ * The runner (src/runner.js) for this registry and the app ops (APP: clone), with the
+ * bare-repository gate and the worktree-busy vet (worktreeVet). `thumbnailer`: the OS thumbnailer the image preview reads use
  * for HEIC, TIFF and PSD (src/os-thumbnail.js; main.js passes it, null: none). `o` overrides for
  * tests: {ops, writeOps, log, now} (an op missing from the registry is gated like a working-tree op).
  */
 function createRunner({ thumbnailer = null, ...o } = {}) {
   const state = { running: () => r.running(), deleting: new Map() };
-  const withImages = (d) => Object.freeze({ ...OPS, ...Object.fromEntries(Object.entries(d).map(([n, x]) => [n, x.run])) });
+  const withImages = (d) => ({ ...OPS, ...Object.fromEntries(Object.entries(d).map(([n, x]) => [n, x.run])) });
   const r = runner.createRunner({
-    ops: thumbnailer ? withImages(imageOps(thumbnailer)) : OPS,
-    writeOps: WRITE_OPS,
-    gate: (repo, name, args) => bareGate(repo, name, args, DESCRIPTORS[name]),
+    ops: Object.freeze({ ...(thumbnailer ? withImages(imageOps(thumbnailer)) : OPS), ...APP_RUN }),
+    writeOps: new Set([...WRITE_OPS, ...APP_WRITE_OPS]),
+    gate: (repo, name, args) => bareGate(repo, name, args, DESCRIPTORS[name] || APP_DESCRIPTORS[name]),
     vet: (repo, name, checked, info) => worktreeVet(state, repo, name, checked, info),
     ...o,
   });
@@ -780,7 +825,7 @@ function createRunner({ thumbnailer = null, ...o } = {}) {
 }
 
 module.exports = {
-  OPS, WRITE_OPS, WORKTREE_OPS, BARE_OK, DESCRIPTORS, createRunner, serializeError, relPath,
+  OPS, WRITE_OPS, WORKTREE_OPS, BARE_OK, DESCRIPTORS, APP_OPS, createRunner, serializeError, relPath,
   // src/repo-open.js, part of the facade main.js uses.
   openRepo, summary, repoName,
 };

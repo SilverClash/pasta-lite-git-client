@@ -89,7 +89,7 @@
   padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
 }
 .start .rp-list { max-height: 330px; }
-.start-actions { display: flex; justify-content: center; margin-top: 18px; }
-.start-open { display: flex; align-items: center; gap: 10px; }
+.start-actions { display: flex; justify-content: center; gap: 10px; margin-top: 18px; }
+.start-open, .start-clone { display: flex; align-items: center; gap: 10px; }
 .start-key { font-weight: 500; opacity: 0.75; }
 .start-hint { text-align: center; margin: 12px 0 0; }

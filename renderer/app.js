@@ -200,9 +200,11 @@
       }, toast);
     }
   });
-  // App menu commands handled here: View > Reset Column Widths (the graph's PLColumns preference).
+  // App menu commands handled here: View > Reset Column Widths (the graph's PLColumns preference),
+  // File > Clone Repository… (renderer/clone.js; not while a dialog or menu is open, like the keys).
   api.on('menu-command', ({ id } = {}) => {
     if (id === 'resetColumnWidths' && window.PLColumns) window.PLColumns.prefs.reset();
+    if (id === 'clone' && window.PLClone) window.PLClone.fromMenu({ onError: toast });
   });
   api.on('busy', ({ repo, running }) => {
     const n = (state.busy.get(repo) || 0) + (running ? 1 : -1);
@@ -219,6 +221,8 @@
     if (s.tabs && s.tabs.id != null) picker.source.set({ tabId: s.tabs.id });
     if (s.repo) showRepo(s.repo);
     else showWelcome();
+    // A clone this tab started before a reload still runs: show its progress again.
+    if (window.PLClone && api.clone) window.PLClone.resume({ onError: toast });
   }, (e) => {
     showWelcome();
     toast(e);

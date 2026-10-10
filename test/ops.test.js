@@ -1780,3 +1780,92 @@ test('worktree ops: lock (reason trimmed; the current one may be locked), unlock
   assert.equal(await entry(wts.gone), undefined);
   assert.deepEqual(events, ['lockWorktree', 'unlockWorktree', 'lockWorktree', 'unlockWorktree', 'lockWorktree', 'unlockWorktree', 'removeWorktree', 'removeWorktree', 'pruneWorktrees']);
 });
+
+// ---------------------------------------------------------------- the clone app op
+
+test.describe('clone: an app op in the shared runner', () => {
+  const { pathToFileURL } = require('node:url');
+  const { CHANNELS } = require('../src/ipc-contract');
+
+  test('not in OPS (the op channel refuses it by name), but the runner runs it as a write: busy / changed events, its log record', async () => {
+    assert.equal(Object.hasOwn(ops.OPS, 'clone'), false);
+    assert.equal(ops.WRITE_OPS.has('clone'), false);
+    assert.throws(() => CHANNELS.op.args[0]({ op: 'clone', args: [] }), { kind: 'unknown-op' });
+    assert.equal(ops.APP_DESCRIPTORS, undefined, 'app ops are the runner\'s only: nothing else reads their descriptors');
+    const { remote } = h.repoWithRemote();
+    const parent = h.tmpDir();
+    const target = path.join(parent, 'r');
+    const records = [];
+    const runner = ops.createRunner({ log: { log: (level, msg, f) => records.push([level, msg, f]) } });
+    const events = [];
+    runner.on('busy', (e) => events.push(['busy', e.repo, e.running]));
+    runner.on('changed', (e) => events.push(['changed', e.repo, e.ok]));
+    // Remotes only: a local path or a file:// URL is refused before anything runs.
+    for (const source of [remote, pathToFileURL(remote).href]) {
+      await assert.rejects(runner.run(target, 'clone', [{ source, parent, name: 'r' }, {}]), { kind: 'invalid-args', message: /Enter a remote URL/ });
+    }
+    assert.deepEqual(events, [], 'refused by its check: no events');
+    records.length = 0;
+    // A network URL runs (a local server that drops the connection: the clone fails, as a write does).
+    const net = require('node:net');
+    const server = net.createServer((sock) => sock.destroy());
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://u@127.0.0.1:${server.address().port}/secret-repo.git`;
+    try {
+      const err = await runner.run(target, 'clone', [{ source: url, parent, name: 'r' }, { onProgress: () => {} }], { opId: 't1:c', owner: 1 }).then(() => null, (e) => e);
+      assert.equal(err.kind, 'unreachable');
+      assert.ok(err.made);
+    } finally {
+      server.close();
+    }
+    assert.deepEqual(events, [['busy', target, true], ['busy', target, false], ['changed', target, false]]);
+    assert.deepEqual(records.map(([level, msg, f]) => [level, msg, f.op, f.write, f.kind]), [['warn', 'op failed', 'clone', true, 'unreachable']]);
+    assert.ok(!JSON.stringify(records).includes('secret-repo'), 'the source is never in the record');
+  });
+
+  test('its check: the target is <parent>/<name>, the name one segment, a typed source a network URL; nothing is created on a refusal', async () => {
+    const parent = h.tmpDir();
+    const runner = ops.createRunner({ log: { log() {} } });
+    const t = (name) => path.join(parent, name);
+    const bad = [
+      [t('r'), { source: 'https://h/r', parent, name: '../r' }],
+      [t('x'), { source: 'https://h/r', parent, name: 'r' }],
+      [t('r'), { source: 'https://h/r', parent: 'relative', name: 'r' }],
+      [t('r'), { source: '/srv/secret.git', parent, name: 'r' }],
+      [t('r'), { source: 'ext::sh -c x', parent, name: 'r' }],
+      [t('r'), { source: 'relative/path', parent, name: 'r' }],
+      [t('r'), { source: pathToFileURL(parent).href, parent, name: 'r' }],
+      [t('r'), 'not an object'],
+    ];
+    for (const [target, req] of bad) {
+      await assert.rejects(runner.run(target, 'clone', [req, {}]), { kind: 'invalid-args' }, JSON.stringify(req));
+    }
+    assert.deepEqual(fs.readdirSync(parent), []);
+  });
+
+  test('cancel by opId while queued or running gives aborted', async () => {
+    const parent = h.tmpDir();
+    const runner = ops.createRunner({ log: { log() {} } });
+    // A write on the same target queues behind the first; cancelled there, it never starts.
+    const http = require('node:http');
+    const server = http.createServer(() => {});
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const url = `http://127.0.0.1:${server.address().port}/r.git`;
+      const target = path.join(parent, 'b');
+      const first = runner.run(target, 'clone', [{ source: url, parent, name: 'b' }, {}], { opId: 'one', owner: 1 });
+      const second = runner.run(target, 'clone', [{ source: url, parent, name: 'b' }, {}], { opId: 'two', owner: 1 });
+      await new Promise((r) => server.once('connection', r));
+      assert.deepEqual(runner.running({ owner: 1 }).map((e) => [e.op, e.write, e.started]), [['clone', true, true], ['clone', true, false]]);
+      assert.equal(runner.cancel('two'), true);
+      assert.equal(runner.cancel('one'), true);
+      const e1 = await first.then(() => null, (e) => e);
+      assert.equal(e1.kind, 'aborted');
+      assert.ok(e1.made, 'what the first made is handed back for removal');
+      await assert.rejects(second, { kind: 'aborted' });
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});

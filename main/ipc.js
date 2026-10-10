@@ -13,11 +13,15 @@
 // Every call resolves {ok: true, value} | {ok: false, error} (ops.serializeError): nothing throws
 // across IPC. Arguments are coerced by the table's coercers and needsRepo is checked before the
 // handler runs; those refusals are logged here. Handler failures are logged too, except for
-// 'op', whose runner logs every op it runs.
+// the QUIET channels ('op', 'app:clone'), whose runner logs every op it runs ({name, kind, code,
+// exitCode} only: git's text may name paths, and a clone's error may carry its URL).
 const ops = require('../src/ops');
 const { kindError } = require('../src/exec');
 const { freshWorktreeEntry } = require('../src/repo-opening');
 const { CHANNELS, SMOKE_ONLY_CHANNELS, routeSender, isIndexUrl, ownedOpId } = require('../src/ipc-contract');
+
+/** Channels whose handler failures the runner (or the clone service) has logged already. */
+const QUIET = new Set(['op', 'app:clone']);
 
 /**
  * Who sent `event` on `channel`: {kind: 'view', session} (a tab's page), {kind: 'strip', session:
@@ -87,7 +91,7 @@ function registerChannels({ ipcMain, senderContext, handlers, hasTab, log, smoke
       try {
         return { ok: true, value: await fn(ctx, ...args) };
       } catch (err) {
-        if (channel !== 'op') log.warn('call failed', { channel, kind: (err && err.kind) || null, err });
+        if (!QUIET.has(channel)) log.warn('call failed', { channel, kind: (err && err.kind) || null, err });
         return { ok: false, error: ops.serializeError(err) };
       }
     });
@@ -104,9 +108,11 @@ function registerChannels({ ipcMain, senderContext, handlers, hasTab, log, smoke
  *   clipboard: {writeText: (text: string) => void},
  *   listWorktrees: (root: string) => Promise<{path: string, prunable: boolean}[]>,
  *   shell: {showItemInFolder: (fullPath: string) => void},
- * }} d  clipboard, shell: Electron's (tests pass fakes). listWorktrees: git.worktrees.
+ *   clone: ReturnType<typeof import('../src/clone-service').createCloneService>,
+ * }} d  clipboard, shell: Electron's (tests pass fakes). listWorktrees: git.worktrees. clone: the
+ *   clone use cases (created at start, after clone.json).
  */
-function createHandlers({ runner, controller, opening, recentView, rendererLog, openTerminal, summary, shouldForgetRecent, git, log, clipboard, listWorktrees, shell }) {
+function createHandlers({ runner, controller, opening, recentView, rendererLog, openTerminal, summary, shouldForgetRecent, git, log, clipboard, listWorktrees, shell, clone }) {
   const { tabs } = controller;
   return {
     // The tab's opId, namespaced: tabs can't collide, and app:cancel reaches only its own ops.
@@ -145,7 +151,8 @@ function createHandlers({ runner, controller, opening, recentView, rendererLog, 
       shell.showItemInFolder(entry.path);
       return true;
     },
-    'app:cancel': ({ session: s }, opId) => runner.cancel(ownedOpId(s.id, opId)),
+    // A clone still in its checks isn't the runner's yet: the service holds that cancel for it.
+    'app:cancel': ({ session: s }, opId) => (clone && clone.cancelPending(s, opId)) || runner.cancel(ownedOpId(s.id, opId)),
     // A terminal window in the tab's repo root (never a renderer-supplied path).
     'app:openTerminal': ({ session: s }) => openTerminal(s.repo.root),
     // Renderer log records (fire and forget): level, size and rate are checked in
@@ -165,7 +172,13 @@ function createHandlers({ runner, controller, opening, recentView, rendererLog, 
       return tabs.indexOf(id);
     },
     'tabs:menu': (_ctx, id) => controller.showTabMenu(id),
+    // Clone Repository… (src/clone-service.js): the page sends no path; the opId is namespaced by
+    // the service (app:cancel reaches it as any op of the tab).
+    'app:cloneDefaults': ({ session: s }) => clone.defaults(s),
+    'app:pickCloneParent': ({ session: s }) => clone.pickParent(s),
+    'app:clone': ({ session: s }, req, opId) => clone.clone(s, req, opId),
+    'app:openCloned': ({ session: s }, opId) => clone.openCloned(s, opId),
   };
 }
 
-module.exports = { createSenderContext, registerChannels, createHandlers };
+module.exports = { createSenderContext, registerChannels, createHandlers, QUIET };

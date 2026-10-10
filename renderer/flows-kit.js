@@ -47,7 +47,7 @@
 //   shortcutFor(keydown, state, ctx), shortcutBlocked(keydown, state, ctx)   PLPolicy's (the global shortcuts)
 // Kit (window.PLFlowKit): C, flow, settle, report, dialog, dn, short, Op, status, currentBranch,
 // localBranches, upstreamOf, keptStashTitle, keptStashText, stashNote, reportOutcome, authAlert,
-// tagConflictsAlert, register; flows-sync.js adds forcePush, flows-branch.js checkoutInner and
+// authMessage (also the clone dialog's, renderer/clone.js), tagConflictsAlert, register; flows-sync.js adds forcePush, flows-branch.js checkoutInner and
 // syntaxError, flows-op.js its start helpers.
 // All git-derived text reaches the DOM through the dialogs / toasts (textContent only).
 (function () {
@@ -302,7 +302,7 @@
   // What the other flow files build on (they add their flows to PLFlows, and their shared helpers here).
   window.PLFlowKit = {
     C, flow, settle, report, dialog, dn, short, Op, status, currentBranch, localBranches, upstreamOf,
-    keptStashTitle, keptStashText, stashNote, reportOutcome, authAlert, tagConflictsAlert,
+    keptStashTitle, keptStashText, stashNote, reportOutcome, authAlert, authMessage, tagConflictsAlert,
     /** Add flows to window.PLFlows: {name: body} (bodies as for flow(); PLPolicy.FREE_FLOWS skip the guard). */
     register(bodies) {
       for (const [name, body] of Object.entries(bodies)) window.PLFlows[name] = flow(name, body);

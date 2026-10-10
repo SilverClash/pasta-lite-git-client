@@ -198,7 +198,7 @@ git <GLOBAL_ARGS>                                      # src/git-process.js:71-1
   progress format and error patterns are stable), `GIT_TERMINAL_PROMPT=0`, the `GIT_*` allowlist
   (`GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, proxies and `GIT_SSL_*` pass through), and
   `GIT_EDITOR=true`. On Windows, `PASTA_LITE_GIT_ID` too. Nothing is added for clone (but see §9.3
-  for a possible `core.sshCommand` on Windows).
+  for the Windows ssh results: no `core.sshCommand` is added).
 - **Detached and hidden**: POSIX: `detached: true`, so no controlling tty and ssh can't prompt.
   Windows: `windowsHide`, a hidden console (`src/git-process.js:498-506`). See §9.3.
 - **No timeout**: `spawnGit` sets a timer only when `timeout` is given (`:533`). The fetch timeout
@@ -1093,17 +1093,23 @@ passphrase or a host-key answer. On Windows, git and ssh share a **hidden consol
 decides to prompt may wait on a console nobody can see. Fetch is bounded by its 120 s timeout;
 clone isn't. Until we know, the safeguards are the "Waiting…" notice with the auth hint, and Cancel.
 
-**Decided (§13 Q5).** QA row 6 checks whether Git for Windows' bundled OpenSSH (or Windows' own)
-prompts on the hidden console or fails. **If it hangs**, BatchMode is applied to **all** remote
-ops on Windows (fetch, pull's fetch, push, clone), not only clone:
-- git gets `-c core.sshCommand="ssh -o BatchMode=yes"` (in `src/remote.js`'s `remoteOpts` and in
-  `CLONE_ARGS`'s Windows variant)
-- only when `GIT_SSH`, `GIT_SSH_COMMAND` and `core.sshCommand` are all unset: the env from
-  `process.env`, and the config from `git config --get core.sshCommand`, read in the repo for
-  fetch / push, and with `--global` for clone
-- the user's own ssh setup always wins
+**Decided (§13 Q5): no BatchMode.** QA row 6 ran on Windows 11 (Git for Windows
+2.52.0.windows.1, Node 22.23.3; `cloneRepo` → `spawnGit` with `windowsHide` and
+`GIT_TERMINAL_PROMPT=0`; a throwaway passphrase-protected key with no `.pub`, against github.com):
+- **Git for Windows' bundled ssh** (OpenSSH_10.2p1, the default) **fails fast**. A key that needs
+  its passphrase: about 0.9 s, exit 128, "git@github.com: Permission denied (publickey).", kind
+  `auth`. An unknown host key: about 0.6 s, "Host key verification failed.", kind `host-key`.
+  ssh can't open `/dev/tty`, so it skips the prompt; no askpass or GUI appears. `-o
+  BatchMode=yes` gives byte-identical output.
+- **Windows' own OpenSSH** (System32, 9.5p2; used only when the user sets `core.sshCommand` or
+  `GIT_SSH_COMMAND` to it) **hangs** in both cases, with or without BatchMode: it prints its
+  error, then never exits while its stderr is a pipe (reproduced outside the app too). Cancel
+  always worked: the op settled about 120 ms after the abort, with no git or ssh left.
 
-The setting goes away once P3a's askpass lands.
+So BatchMode is not applied: it would only apply when no ssh command is set, where the default ssh
+already fails fast, and it doesn't help Windows' OpenSSH. The safeguards for that setup stay the
+"Waiting…" notice with the auth hint, and Cancel. What would help it goes to a separate PR (§15,
+Follow-up).
 
 ---
 
@@ -1273,7 +1279,7 @@ macOS (M) and Windows 11 (W). Each item is run on both unless marked otherwise.
 | 3 | Private repo over HTTPS with the credential helper (osxkeychain / GCM) | works; on W, GCM's sign-in window appears and the clone goes on after sign-in |
 | 4 | Private repo over HTTPS with no helper | "Authentication failed" with the platform's helper hint; no folder left |
 | 5 | SSH with the key in the agent | works |
-| 6 | SSH with a passphrase-protected key **not** in the agent | M: auth error quickly. W: record whether it fails or hangs (§9.3). With a hang, "Waiting…" appears after 30 s, Cancel works, and §9.3's BatchMode change is made for all remote ops |
+| 6 | SSH with a passphrase-protected key **not** in the agent | M: auth error quickly. **W: done** (§9.3): Git for Windows' ssh fails in about 1 s (`auth`), an unknown host in about 0.6 s (`host-key`); Windows' own OpenSSH (set as `core.sshCommand`) hangs until Cancel, which works. Still to check on the desktop: the default setup with a passphrase key gives the auth error in about 1 s; a never-seen host gives the host-key error; Windows' OpenSSH with ssh-agent finishes a successful clone and fetch |
 | 7 | SSH to a host not in known_hosts | the `host-key` message |
 | 8 | A typo in the host | `unreachable` |
 | 9 | A non-existent repo on GitHub | `not-found` with the private-repo hint |
@@ -1301,7 +1307,7 @@ macOS (M) and Windows 11 (W). Each item is run on both unless marked otherwise.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| SSH waiting on a hidden console on Windows (§9.3) | a clone that sits until cancelled | "Waiting…" + Cancel; QA row 6; BatchMode for all remote ops if it hangs (§13 Q5) |
+| SSH waiting on a hidden console on Windows (§9.3) | a clone that sits until cancelled | "Waiting…" + Cancel. QA row 6: the default ssh fails fast; only Windows' own OpenSSH (when the user sets it) hangs, and Cancel ends it; no BatchMode (§13 Q5). Follow-up in a separate PR (§15) |
 | Progress format changes across git versions | a stuck or wrong bar (the clone itself still works) | a closed phase set; unknown frames ignored; fixtures captured with 2.51.2; the minimum git is pinned (`src/gitcheck.js:14`) |
 | Removal failing on Windows after a hard kill (locked or read-only files) | a partial folder left | `maxRetries`; the identity check; pending entries retried at the next launch; `leftover` told to the user; the Windows CI test |
 | Very large clones (tens of GB) | long runs; long removals | no timeout; the quit guard asks and kills; removal is async and resumable |
@@ -1327,9 +1333,11 @@ macOS (M) and Windows 11 (W). Each item is run on both unless marked otherwise.
    while other tools on the machine can't handle long paths causes its own trouble. `checkout-failed`
    with "Filename too long" says what happened; offering the setting there is a possible follow-up
    (S).
-5. **SSH BatchMode on Windows: only if QA row 6 shows the hang, and then for all remote ops** (fetch,
-   pull, push, clone), via `-c core.sshCommand="ssh -o BatchMode=yes"`, only when `GIT_SSH`,
-   `GIT_SSH_COMMAND` and `core.sshCommand` are all unset (§9.3).
+5. **SSH BatchMode on Windows: not applied** (decided after QA row 6, §9.3). The plan was
+   `-c core.sshCommand="ssh -o BatchMode=yes"` for all remote ops when no ssh command is set. But
+   there Git for Windows' default ssh already fails fast (auth in about 0.9 s, host key in about
+   0.6 s, the same output with BatchMode), and the setup that hangs, Windows' own OpenSSH set as
+   `core.sshCommand`, hangs with BatchMode too. Cancel ends it.
 6. **`http://` and `git://` are allowed, with a "not encrypted" note.** Self-hosted and LAN servers
    still use them, and git allows them.
 7. **User names in URLs: allowed only if they match `^[A-Za-z0-9._-]{1,39}$` and aren't
@@ -1515,6 +1523,23 @@ and nothing in the app is relaxed for smoke runs.
 - The runner's busy / changed events for app ops (`ops.APP_OPS`: clone) aren't sent to the pages
   (their `repo` is the target's absolute path); the watchers and the strip still get them.
 
+**QA row 6 on Windows: no BatchMode (§9.3, §13 Q5).** Git for Windows' bundled ssh (the default)
+fails fast on a passphrase-protected key (`auth`, about 0.9 s) and on an unknown host (`host-key`,
+about 0.6 s), with or without BatchMode. Windows' own OpenSSH, which runs only when the user sets
+it as `core.sshCommand` / `GIT_SSH_COMMAND`, prints its error and then never exits while its
+stderr is a pipe, BatchMode or not; Cancel ends it (settled about 120 ms after the abort, nothing
+left running). BatchMode would help neither, so it is not applied.
+
+**Follow-up (a separate PR after #9).**
+- Classify `hostKey` on fetch and push too (`src/remote.js` around line 85, `classifyPush` in
+  `src/git-errors.js`), so they say "unknown host key" as clone does.
+- On Windows, end git when its stderr already shows an auth or host-key line and git hasn't exited
+  a few seconds later (Windows' OpenSSH hanging on a pipe), and keep the stderr seen so far on a
+  cancel or a timeout, so the user still gets the reason.
+- Optionally `SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=force` (with P3a's askpass helper) to ask for
+  a passphrase instead of failing.
+- Clearer host-key and auth messages (which key, which host, the command to run).
+
 **Not done in this build.**
-- The manual QA of §11.3 (macOS and Windows 11), including row 6, which decides §13 Q5's BatchMode
-  change for Windows; the Windows-only cleanup test runs in CI's Windows job.
+- The manual QA of §11.3 (macOS and Windows 11). Row 6 ran on Windows (§9.3; §13 Q5 decided: no
+  BatchMode); its desktop checks remain. The Windows-only cleanup test runs in CI's Windows job.

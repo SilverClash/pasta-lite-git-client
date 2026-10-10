@@ -79,6 +79,11 @@ environment variables. `PL_SMOKE_JS` runs a script in the page, for example, whi
 real controls through DOM events to check a flow end to end. `node scripts/smoke-image-preview.js
 [out.png]` does that for the image preview: it builds the demo repository and a conflicted merge
 in a temporary folder and checks every image of the demo's `images/` folder in the real app.
+`node scripts/smoke-clone.js [out.png]` does it for Clone Repository…: it serves two fixtures over a
+local smart-HTTP server (`git http-backend` on 127.0.0.1), types their URL in the dialog, and checks a
+folder that exists, a clone that opens in the tab, and a clone cancelled during its checkout. In a
+smoke run main's folder dialog answers from `PL_SMOKE_CLONE_PARENT` (`main/smoke.js`), never with
+the real home folder.
 
 ## Lint
 
@@ -285,6 +290,17 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
   bytes go into a blob: URL cache (`renderer/image-cache.js`) and never into state, and
   `renderer/components/image-preview.js` shows them in place of the binary message or the rows
   (rules, zoom and comparison modes in `components/image-model.js`).
+- **Clone** ([docs/plans/clone-repository.md](docs/plans/clone-repository.md)) runs as an *app op*
+  in the shared runner (`src/ops.js` `APP`: not in `ops.OPS`, so the `op` channel can't reach
+  it), which gives it the write queue, the busy indicator, cancellation and the quit and close
+  guards. `src/clone-service.js` holds the use cases behind the four clone channels: the page
+  never sends a path (the parent folder comes from main's folder dialog; the source is a typed
+  network URL, `src/clone-url.js`, shared with the page: remotes only), `src/clone.js` creates
+  the target folder and runs `git clone` with a transport allowlist, and `src/clone-cleanup.js`
+  removes a failed clone's folder, only that one (its dev, inode and birth time checked again).
+  The folder is written to `clone.json` as soon as it exists and dropped once the clone succeeds,
+  so a quit, a crash or a git that outlives its kill can't abandon it: `before-quit` waits for
+  that write, and the next launch finishes the removal. The page's side is `renderer/clone.js`.
 - **`test/`** has one `node:test` file per area. Git-layer tests run against throwaway repos
   (`test/helpers.js`); renderer tests load the scripts with a fake `window` and DOM
   (`test/renderer-harness.js`).

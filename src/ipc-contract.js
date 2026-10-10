@@ -10,6 +10,7 @@
 const { fileURLToPath } = require('node:url');
 const { kindError } = require('./exec');
 const ops = require('./ops');
+const { MAX_URL } = require('./clone-url');
 
 // ---------------------------------------------------------------- argument coercers
 
@@ -61,6 +62,29 @@ function clipboardText(v) {
   return v;
 }
 
+/** The longest name (UTF-16 units) and parent display (the page echoes main's) of a clone request. */
+const CLONE_NAME_MAX = 255;
+const CLONE_DISPLAY_MAX = 4096;
+
+/**
+ * app:clone's request {url, name, parent}: url the typed URL (at most MAX_URL), name a string of
+ * at most CLONE_NAME_MAX, parent the display the page showed (at most CLONE_DISPLAY_MAX). Strings
+ * without NUL. Only these three fields are picked; anything else is dropped. The refusals never quote a value: main/ipc.js logs them,
+ * and a URL must not reach the log. main's clone service checks the URL and the name themselves.
+ */
+function cloneRequest(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw invalid('the clone request must be an object');
+  const text = (x, what, max) => {
+    if (typeof x !== 'string' || x.length > max || x.includes('\0')) throw invalid(`${what} must be a string of at most ${max} characters`);
+    return x;
+  };
+  return {
+    url: text(v.url, 'url', MAX_URL),
+    name: text(v.name, 'name', CLONE_NAME_MAX),
+    parent: text(v.parent, 'parent', CLONE_DISPLAY_MAX),
+  };
+}
+
 /** The 'op' request {op, args, opId}: an op of ops.OPS (else 'unknown-op'), args a list. */
 function opRequest(req) {
   const { op, args = [], opId: id } = req && typeof req === 'object' ? req : {};
@@ -101,6 +125,13 @@ const CHANNELS = Object.freeze({
   'tabs:menu': { from: ['strip'], args: [tabId] },
   // The rendered state of any tab's page (main/smoke.js PROBE); registered by the smoke harness.
   'tabs:probe': { from: ['smoke'], args: [tabId] },
+  // Clone Repository… (src/clone-service.js): no repo needed, so a start-screen tab can clone. The
+  // page never sends a path: the parent comes from main's folder dialog and the page echoes its
+  // display; the source is a typed network URL, the name one segment.
+  'app:cloneDefaults': { from: ['view'] },
+  'app:pickCloneParent': { from: ['view'] },
+  'app:clone': { from: ['view'], args: [cloneRequest, opId] },
+  'app:openCloned': { from: ['view'], args: [opId] },
 });
 
 const channelsFrom = (who, except = null) => new Set(Object.keys(CHANNELS)
@@ -127,10 +158,14 @@ const EVENTS = Object.freeze({
   RECENT_CHANGED: 'recent-changed', // {recent}
   MENU_COMMAND: 'menu-command', // {id: one of MENU_COMMANDS}
   TABS_CHANGED: 'tabs-changed', // pages: {tabs}; the strip: {tabs, fullscreen}
+  // A clone of this tab (src/clone-service.js): {opId, phase, percent, current, total, bytes, rate,
+  // done, remote} (a progress frame, src/clone-progress.js), or {opId, cleanup: 'failed', leftover}
+  // (its partial folder could not be removed; leftover: the folder as shown).
+  CLONE_PROGRESS: 'clone-progress',
 });
 
 /** The ids of 'menu-command' (renderer/app.js acts on them). */
-const MENU_COMMANDS = Object.freeze({ RESET_COLUMN_WIDTHS: 'resetColumnWidths' });
+const MENU_COMMANDS = Object.freeze({ RESET_COLUMN_WIDTHS: 'resetColumnWidths', CLONE: 'clone' });
 
 // ---------------------------------------------------------------- routing
 
@@ -184,5 +219,5 @@ const ownedOpId = (owner, id) => `t${owner}:${id}`;
 
 module.exports = {
   CHANNELS, VIEW_CHANNELS, SMOKE_VIEW_CHANNELS, STRIP_CHANNELS, SMOKE_ONLY_CHANNELS, EVENTS, MENU_COMMANDS,
-  routeSender, ownedOpId, isIndexUrl, CLIPBOARD_MAX,
+  routeSender, ownedOpId, isIndexUrl, CLIPBOARD_MAX, cloneRequest,
 };

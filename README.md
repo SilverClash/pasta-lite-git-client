@@ -63,6 +63,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 - A Worktrees section in the sidebar lists linked worktrees with their branch, locked and dirty state. Open one, reveal it in the file manager, copy its path, lock or unlock it, delete it (with a force confirmation if it has changes), or prune stale ones after a preview.
 
 **Tabs and repositories**
+- Clone a repository (File > Clone Repository…, ⇧⌘N, or Clone… on the start screen) from an HTTPS, SSH or git URL, with progress and Cancel. The clone opens in the tab, or in a new tab next to the one you started it from.
 - One repository per tab, with reorderable tabs and tabs restored on the next launch.
 - A repository picker (⌘P) that searches your recent repositories, plus File > Open Recent.
 - Open the repository in your terminal.
@@ -129,6 +130,7 @@ To open a repository, you can:
 - pass its path on the command line: `npm start -- /path/to/repo`
 - use the repository picker on the start screen or in the toolbar (⌘P), or File > Open Recent
 - use File > Open Repository… (⇧⌘O), or ⌘O to open a folder in the current tab
+- clone one with File > Clone Repository… (⇧⌘N) or Clone… on the start screen
 
 On Windows and Linux, use Ctrl in place of ⌘.
 
@@ -146,7 +148,8 @@ It also creates `/tmp/pasta-demo.origin.git` next to it. The screenshots above w
 
 ## Known limitations
 
-- No clone or init. Open a repository that already exists.
+- No init: create a new repository from a terminal (`git init`), then open it.
+- Clone makes a plain full clone of the default branch: no shallow, partial or single-branch clones, and no submodules (it says when the repository has some). Clone is for remotes only: a local path or `file://` URL isn't accepted (copy or clone such a repository from a terminal, then open it).
 - No credential or passphrase prompts. Git runs with `GIT_TERMINAL_PROMPT=0`, so use a credential helper or ssh-agent for remotes that need authentication.
 - No cherry-pick, revert or reset.
 - Tags are shown, but there's no UI for creating or deleting them.

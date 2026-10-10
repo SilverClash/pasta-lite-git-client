@@ -1,6 +1,9 @@
 'use strict';
-// Small JSON files in userData (recent.json, trusted.json, tabs.json): read tolerantly, written
-// atomically. (src/gitfiles.js has its own readJson for files inside a git dir.)
+// Small JSON files in userData (recent.json, trusted.json, tabs.json, clone.json): read tolerantly,
+// written atomically. readJson / writeJson block; readJsonAsync / writeJsonAsync are the same off
+// the main thread (fs.promises, retries waited for with timers), for stores main uses while git
+// runs (src/recent.js createClonePrefs). (src/gitfiles.js has its own readJson for files inside a
+// git dir.)
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -59,7 +62,45 @@ function writeJson(file, data, o = {}) {
   }
 }
 
+/** readJson without blocking: the parsed JSON of `file`, or null when it is missing or corrupt. */
+async function readJsonAsync(file) {
+  try {
+    return JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * writeJson without blocking: tmp + fs.promises.rename, on Windows (`platform`) tried again after
+ * each of `delays` (ms) while it fails with one of RENAME_RETRY_CODES. The tmp file is removed
+ * when it fails. `rename` / `wait` for tests.
+ */
+async function writeJsonAsync(file, data, {
+  platform = process.platform, rename = fs.promises.rename, wait = delay, delays = RENAME_DELAYS_MS,
+} = {}) {
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    await fs.promises.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`);
+    for (let i = 0; ; i++) {
+      try {
+        await rename(tmp, file);
+        return;
+      } catch (e) {
+        if (platform !== 'win32' || i >= delays.length || !RENAME_RETRY_CODES.has(e && e.code)) throw e;
+        await wait(delays[i]);
+      }
+    }
+  } catch (e) {
+    await fs.promises.rm(tmp, { force: true });
+    throw e;
+  }
+}
+
 module.exports = {
-  readJson, writeJson,
+  readJson, writeJson, readJsonAsync, writeJsonAsync,
   _internal: { sleepSync, RENAME_DELAYS_MS }, // exported for unit tests only
 };

@@ -112,3 +112,55 @@ test('worktree remove / lock / unlock: the four rules match git\'s own messages 
   assert.equal(ge.kindFor(gitErr("fatal: '.' is a main working tree", 'contains modified or untracked files'), ...names), 'main-worktree', 'stdout is not read');
   assert.equal(ge.kindFor(gitErr("fatal: invalid reference: x"), ...names), null);
 });
+
+test('clone rules: each matches git\'s own lines (as the progress parser keeps them), in the order clone tries them', () => {
+  const { RULE_ORDER } = require('../src/clone')._internal;
+  const cases = [
+    ["fatal: repository 'http://127.0.0.1:5/x.git/' not found", 'not-found'],
+    ["fatal: repository '/tmp/nope' does not exist", 'not-found'],
+    ["fatal: '/tmp/nope.git' does not appear to be a git repository\nfatal: Could not read from remote repository.", 'not-found'],
+    ['ERROR: Repository not found.\nfatal: Could not read from remote repository.', 'not-found'],
+    ['remote: Repository not found.\nfatal: repository \'https://github.com/o/x.git/\' not found', 'not-found'],
+    ['Host key verification failed.\nfatal: Could not read from remote repository.', 'host-key'],
+    ['No ED25519 host key is known for example.com and you have requested strict checking.\nHost key verification failed.', 'host-key'],
+    ["fatal: unable to access 'https://nohost.invalid/r.git/': Could not resolve host: nohost.invalid", 'unreachable'],
+    ["fatal: unable to access 'https://127.0.0.1:9/r.git/': Failed to connect to 127.0.0.1 port 9 after 0 ms: Couldn't connect to server", 'unreachable'],
+    ["fatal: unable to access 'https://h/r.git/': SSL certificate problem: self-signed certificate", 'unreachable'],
+    ["fatal: unable to access 'http://127.0.0.1:5/r.git/': Recv failure: Connection reset by peer", 'unreachable'],
+    ["fatal: unable to access 'http://h/r.git/': Empty reply from server", 'unreachable'],
+    ["fatal: unable to access 'http://h/r.git/': Send failure: Broken pipe", 'unreachable'],
+    ['ssh: Could not resolve hostname nohost: nodename nor servname provided, or not known\nfatal: Could not read from remote repository.', 'unreachable'],
+    ['ssh: connect to host h port 22: Connection refused\nfatal: Could not read from remote repository.', 'unreachable'],
+    ['ssh: connect to host h port 22: Operation timed out', 'unreachable'],
+    ['fatal: unable to look up nohost (port 9418) (nodename nor servname provided, or not known)', 'unreachable'],
+    ["fatal: transport 'fd' not allowed", 'unsupported'],
+    ["fatal: destination path '/tmp/x' already exists and is not an empty directory.", 'exists'],
+    ['error: unable to write file x: No space left on device\nfatal: cannot store pack file', 'no-space'],
+    ['fatal: could not read Username for \'http://127.0.0.1:5\': terminal prompts disabled', 'auth'],
+    ["fatal: detected dubious ownership in repository at '/mnt/x'", 'unsafe-repo'],
+  ];
+  for (const [text, kind] of cases) {
+    const e = gitErr(text);
+    e.message = text; // clone sets the message to these lines too (dubiousOwnership reads it)
+    assert.equal(ge.kindFor(e, ...RULE_ORDER), kind, text);
+  }
+  assert.equal(ge.kindFor(gitErr('fatal: Could not read from remote repository.'), ...RULE_ORDER), null, 'ssh\'s closing line alone decides nothing');
+  assert.equal(ge.matches(gitErr('warning: Clone succeeded, but checkout failed.\nYou can inspect what was checked out'), 'checkoutFailed'), true);
+  assert.equal(ge.RULES.checkoutFailed.kind, undefined, 'a result, not an error kind');
+});
+
+test('clone rules are anchored: ref names, hook output and stdout don\'t match', () => {
+  const { RULE_ORDER } = require('../src/clone')._internal;
+  for (const text of [
+    "remote: hint: branch 'fatal: repository x not found' exists",
+    'hook says: Host key verification failed',
+    'echo ssh: Could not resolve hostname',
+    "note: fatal: transport 'fd' not allowed",
+    'x warning: Clone succeeded, but checkout failed',
+  ]) {
+    assert.equal(ge.kindFor(gitErr(text), ...RULE_ORDER.filter((r) => r !== 'noSpace' && r !== 'destinationExists')), null, text);
+  }
+  assert.equal(ge.matches(gitErr('x warning: Clone succeeded, but checkout failed'), 'checkoutFailed'), false);
+  // stdout is never read by these rules.
+  assert.equal(ge.kindFor(gitErr('', 'Host key verification failed.\nfatal: transport \'x\' not allowed\nNo space left on device'), ...RULE_ORDER), null);
+});

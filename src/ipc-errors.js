@@ -28,6 +28,9 @@ const EXTRA_FIELDS = [
   // Linked worktrees: `submodules` of a 'worktree-dirty' remove (`reason`, above, is a
   // 'worktree-locked' one's lock reason, `state` a 'worktree-busy' one's stopped operation).
   'submodules',
+  // Clone (docs/plans/clone-repository.md): `leftover`, the folder (as shown: '~/code/x') whose
+  // removal is still running when an 'in-progress' refusal names it.
+  'leftover',
 ];
 // Nested errors, sent as their message string only.
 const NESTED_ERRORS = ['resetError', 'reapplyError'];

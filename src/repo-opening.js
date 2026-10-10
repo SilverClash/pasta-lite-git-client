@@ -4,9 +4,10 @@
 // are ports passed in, so the flow is unit-tested with fakes.
 //
 // Security boundary: the pages never give a path to open. Every use case below takes either a
-// path from outside the pages (CLI, dock, the folder dialog, main's own menu, tabs.json) or a
-// path matched against a list main holds: the recent list it last showed (findShownRecent) or
-// `git worktree list` of the tab's repo, read just now (listedEntry, freshWorktreeEntry).
+// path from outside the pages (CLI, dock, the folder dialog, main's own menu, tabs.json, a folder
+// main itself just cloned into: src/clone-service.js) or a path matched against a list main
+// holds: the recent list it last showed (findShownRecent) or `git worktree list` of the tab's
+// repo, read just now (listedEntry, freshWorktreeEntry).
 const { pickOpenTarget } = require('./tabs');
 const { kindError } = require('./exec');
 const { EVENTS } = require('./ipc-contract');
@@ -58,7 +59,8 @@ async function freshWorktreeEntry(listWorktrees, session, wtPath, { allowBare = 
  *   openRepo: (dir: string) => Promise<{root: string, name: string, bare: boolean}>,
  *   listWorktrees: (root: string) => Promise<{path: string, bare: boolean, prunable: boolean, missing: boolean}[]>,
  *   trust: {confirm(root: string): Promise<boolean>},
- *   recent: () => ({add(root: string, o: {name: string}): void, remove(root: string): void} | null),
+ *   recent: () => ({add(root: string, o: {name: string}): void, addAsync(root: string, o: object): Promise<void>,
+ *     remove(root: string): void} | null),
  *   recentView: {refresh(): Promise<object[]>, readonly shown: object[]},
  *   place: {addTab(o: {index?: number, activate: boolean}): object, activate(id: number): void,
  *     front(): void, setRepo(session: object, info: object): void},
@@ -96,13 +98,18 @@ function createRepoOpening({
    * one. background: the tab is added without being shown or the window brought forward
    * (restoring). abort(): stop before anything changes (the restore's window went away).
    * Rejects with ops.openRepo's error (kind 'not-a-repo' / 'not-found' also drop `dir` from
-   * recent; others such as 'unsafe-repo' keep it). Resolves {info, session}, or null when a newer
-   * open in the same tab started or landed meanwhile (that one wins), the asking tab was closed,
-   * abort() said so, or the user declined to trust the repo's config.
+   * recent; others such as 'unsafe-repo' keep it). Resolves {info, session}, or {info: null,
+   * reason} when it didn't land: 'stale' (a newer open in the same tab started or landed
+   * meanwhile: that one wins), 'closed' (the asking tab was closed), 'aborted' (abort() said so)
+   * or 'declined' (the user declined to trust the repo's config).
    */
-  async function open(dir, { from = null, newTab = false, preferExisting = false, background = false, abort = () => false } = {}) {
+  async function attempt(dir, { from = null, newTab = false, preferExisting = false, background = false, abort = () => false } = {}) {
     const token = from ? from.beginOpen() : null;
-    const stale = () => (!!token && token.stale()) || abort();
+    const why = () => {
+      if (token && token.stale()) return from.closed ? 'closed' : 'stale';
+      return abort() ? 'aborted' : null;
+    };
+    const missed = (reason) => ({ info: null, reason });
     let info;
     try {
       info = await openRepo(dir);
@@ -110,7 +117,7 @@ function createRepoOpening({
       forgetRecentIfGone(dir, err);
       throw err;
     }
-    if (stale()) return null;
+    if (why()) return missed(why());
     const pick = () => pickOpenTarget(tabs, { root: info.root, fromId: from ? from.id : null, newTab, preferExisting });
     const focusOpen = (id) => {
       tabLog.info('repo already open in a tab: showing it', { repo: info.root, tab: id });
@@ -120,14 +127,15 @@ function createRepoOpening({
     };
     const first = pick();
     if (first.action === 'focus') return focusOpen(first.id);
-    if (!(await trust.confirm(info.root)) || stale()) return null;
+    if (!(await trust.confirm(info.root))) return missed(why() || 'declined');
+    if (why()) return missed(why());
     try {
       recent().add(info.root, { name: info.name }); // best effort: an unwritable userData must not block opening
     } catch (err) {
       log.warn('could not update the recent list', { err });
     }
     const shown = await recentView.refresh();
-    if (stale()) return null;
+    if (why()) return missed(why());
     // Nothing fallible from here on: the tab, the menu and the pages change together. Picked again:
     // tabs may have opened, closed or changed while the user was asked.
     const target = pick();
@@ -147,6 +155,12 @@ function createRepoOpening({
     }
     return { info, session: s };
   }
+
+  /** attempt(), with a missed open as null (what every use case but openCloned resolves). */
+  const open = async (dir, o) => {
+    const res = await attempt(dir, o);
+    return res.info ? res : null;
+  };
 
   const infoOf = (res) => (res ? res.info : null);
 
@@ -190,6 +204,27 @@ function createRepoOpening({
     },
     /** A new tab in the background (restoring tabs.json, smoke extra tabs). Resolves {info, session} or null. */
     openBackgroundTab: (root, { abort } = {}) => open(root, { newTab: true, background: true, abort }),
+    /**
+     * A repository main just cloned for tab `session` (`dir` is main's own target path, never a
+     * page's): in that tab when it shows the start screen, else in a new tab next to it (`newTab`:
+     * the clone service's second try after 'stale'). Resolves attempt()'s {info, session} or
+     * {info: null, reason} (src/clone-service.js decides what a reason means).
+     */
+    openCloned: (session, dir, { newTab = !!session.repo } = {}) => attempt(dir, { from: session, newTab }),
+    /**
+     * A clone that finished after its tab closed: not opened (a window would pop up minutes after
+     * the user closed it), but one click away in the recent list, the menu and the other tabs.
+     * Without blocking (git may still be running for other tabs: recent.addAsync). Best effort;
+     * never rejects.
+     */
+    async rememberRecent(dir) {
+      try {
+        await recent().addAsync(dir, {}); // named by its folder, as an open names it without a summary
+      } catch (err) {
+        log.warn('could not update the recent list', { err });
+      }
+      await onRecentChanged().catch((e) => log.error('error', { err: e }));
+    },
   };
 }
 

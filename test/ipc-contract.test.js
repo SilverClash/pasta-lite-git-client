@@ -284,6 +284,92 @@ describe('registerChannels (main/ipc.js)', () => {
   });
 });
 
+// ---------------------------------------------------------------- clone
+
+describe('the clone channels', () => {
+  const CLONE = ['app:cloneDefaults', 'app:pickCloneParent', 'app:clone', 'app:openCloned'];
+
+  test('a tab\'s page only (never the strip), and no repo needed: a start-screen tab can clone', () => {
+    for (const ch of CLONE) {
+      assert.deepEqual(c.CHANNELS[ch].from, ['view'], ch);
+      assert.ok(!c.CHANNELS[ch].needsRepo && !c.CHANNELS[ch].send, ch);
+      assert.equal(c.routeSender({ senderId: 1, mainFrame: true, url: 'file:///x/tabs.html' }, ch, {
+        stripId: 1, isView: () => false, isPage: () => true,
+      }), null, `${ch}: a strip sender is refused`);
+    }
+    assert.equal(c.CHANNELS['app:pickCloneSource'], undefined, 'no local source: remotes only');
+    assert.deepEqual(Object.keys(c.CHANNELS).filter((ch) => /clone/i.test(ch)).sort(), [...CLONE].sort(), 'four clone channels');
+    assert.equal(c.EVENTS.CLONE_PROGRESS, 'clone-progress');
+    assert.equal(c.MENU_COMMANDS.CLONE, 'clone');
+  });
+
+  test('cloneRequest: three fields picked, extra ones dropped; the URL, the name and the parent display bounded; refusals quote no value', () => {
+    const ok = c.cloneRequest({ source: 'picked', url: 'https://h/r.git', name: 'r', parent: '~/code', path: '/etc', extra: 1 });
+    assert.deepEqual(ok, { url: 'https://h/r.git', name: 'r', parent: '~/code' }, 'no source kind: a URL is the only one');
+    const secret = 'https://u:hunter2@h/r';
+    const bad = [
+      null, 'x', ['url'], {}, { url: `${secret}${'x'.repeat(2048)}`, name: 'r', parent: '~' },
+      { url: 42, name: 'r', parent: '~' },
+      { url: secret, name: 'r' },
+      { url: `${secret}${'x'.repeat(2048)}`, name: 'r', parent: '~' },
+      { url: secret, name: 'x'.repeat(256), parent: '~' },
+      { url: secret, name: 'a\0b', parent: '~' },
+      { url: secret, name: 'r', parent: 'p'.repeat(4097) },
+      { url: `${secret}\0`, name: 'r', parent: '~' },
+      { url: secret, name: { toString: () => 'r' }, parent: '~' },
+    ];
+    for (const v of bad) {
+      const err = (() => { try { c.cloneRequest(v); return null; } catch (e) { return e; } })();
+      assert.ok(err, JSON.stringify(v));
+      assert.equal(err.kind, 'invalid-args');
+      assert.ok(!err.message.includes('hunter2') && !err.message.includes('xxxx'), err.message);
+    }
+    assert.equal(c.cloneRequest({ url: 'u'.repeat(2048), name: 'r', parent: 'p'.repeat(4096) }).parent.length, 4096, 'a parent display may be a long path');
+  });
+
+  test('registered: the request and the opId are coerced, a refusal is logged without the URL, and a clone failure is QUIET', async () => {
+    const seen = [];
+    const handlers = allHandlers();
+    handlers['app:clone'] = (ctx, req, opId) => { seen.push([req, opId]); throw Object.assign(new Error("fatal: repository 'https://u:hunter2@h/r/' not found"), { kind: 'not-found' }); };
+    const { ipc, log } = register({ handlers, ctx: { kind: 'view', session: { id: 5, repo: null }, senderId: 5 } });
+    const res = await ipc.call('app:clone', {}, { url: 'https://h/r', name: 'r', parent: '~', more: 1 }, 'op-1', 'extra');
+    assert.equal(res.error.kind, 'not-found');
+    assert.deepEqual(seen, [[{ url: 'https://h/r', name: 'r', parent: '~' }, 'op-1']]);
+    assert.deepEqual(log.recs, [], 'app:clone failures are logged by the runner / the clone service only');
+    assert.equal((await ipc.call('app:clone', {}, { url: 'https://u:hunter2@h/r', name: 'r', parent: '~' })).error.kind, 'invalid-args', 'the opId is required');
+    assert.equal((await ipc.call('app:clone', {}, { url: 'https://u:hunter2@h/r', name: 7, parent: '~' }, 'op-2')).error.kind, 'invalid-args');
+    assert.ok(log.recs.length > 0);
+    assert.ok(!JSON.stringify(log.recs).includes('hunter2'), 'refusal records never carry the URL');
+    assert.ok(require('../main/ipc').QUIET.has('app:clone'));
+  });
+
+  test('main\'s handlers pass the tab\'s session to the clone service, never a path', async () => {
+    const calls = [];
+    const clone = new Proxy({}, { get: (_, name) => (...a) => { calls.push([name, ...a]); return name; } });
+    const h = createHandlers({ controller: { tabs: {} }, clone });
+    const session = { id: 5 };
+    const ctx = { session };
+    assert.equal(await h['app:cloneDefaults'](ctx), 'defaults');
+    await h['app:pickCloneParent'](ctx);
+    await h['app:clone'](ctx, { url: 'https://h/r' }, 'op-1');
+    await h['app:openCloned'](ctx, 'op-1');
+    assert.deepEqual(calls, [['defaults', session], ['pickParent', session], ['clone', session, { url: 'https://h/r' }, 'op-1'], ['openCloned', session, 'op-1']]);
+  });
+
+  test('app:cancel: a clone still in its checks is cancelled by the service; anything else by the runner, by owned opId', async () => {
+    const cancelled = [];
+    let pending = true;
+    const clone = { cancelPending: (s, opId) => { cancelled.push(['service', s.id, opId]); return pending; } };
+    const runner = { cancel: (id) => { cancelled.push(['runner', id]); return true; } };
+    const h = createHandlers({ controller: { tabs: {} }, clone, runner });
+    const ctx = { session: { id: 5 } };
+    assert.equal(h['app:cancel'](ctx, 'op-1'), true);
+    pending = false;
+    assert.equal(h['app:cancel'](ctx, 'op-2'), true);
+    assert.deepEqual(cancelled, [['service', 5, 'op-1'], ['service', 5, 'op-2'], ['runner', 't5:op-2']]);
+  });
+});
+
 // ---------------------------------------------------------------- routing
 
 // The page URLs below spell POSIX paths; on Windows they are on the current drive (a file URL

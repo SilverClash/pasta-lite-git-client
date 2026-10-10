@@ -8,9 +8,10 @@ const globals = require('globals');
 
 // The renderer's plain scripts share these through window (each file sets one of them).
 const RENDERER_GLOBALS = Object.fromEntries([
-  'Components', 'Graph', 'PL', 'PLColumns', 'PLComposer', 'PLDiff', 'PLDiffStaging', 'PLErrorKinds',
-  'PLFileList', 'PLFlowKit', 'PLFlows', 'PLHistory', 'PLIcons', 'PLImage', 'PLImageCache', 'PLImageFormat',
-  'PLImagePreview', 'PLKeys', 'PLMenus', 'PLOp', 'PLPolicy', 'PLRebase', 'PLRepoPicker', 'PLWip', 'Store',
+  'Components', 'Graph', 'PL', 'PLClone', 'PLCloneUrl', 'PLColumns', 'PLComposer', 'PLDiff', 'PLDiffStaging',
+  'PLDisplayText', 'PLErrorKinds', 'PLFileList', 'PLFlowKit', 'PLFlows', 'PLHistory', 'PLIcons', 'PLImage',
+  'PLImageCache', 'PLImageFormat', 'PLImagePreview', 'PLKeys', 'PLMenus', 'PLOp', 'PLPathNames', 'PLPolicy',
+  'PLRebase', 'PLRepoPicker', 'PLWip', 'Store',
 ].map((name) => [name, 'readonly']));
 
 module.exports = [
@@ -44,9 +45,10 @@ module.exports = [
   {
     // Renderer: plain scripts loaded by <script> tags (no modules, no bundler). Most of them
     // also export through module.exports when a test requires them under Node.
-    // src/error-kinds.js and src/image-format.js (the image preview's format catalogue) are loaded
-    // by index.html too.
-    files: ['renderer/**/*.js', 'src/error-kinds.js', 'src/image-format.js'],
+    // src/error-kinds.js, src/image-format.js (the image preview's format catalogue) and the clone
+    // dialog's rules (src/display-text.js, src/path-names.js, src/clone-url.js) are loaded by
+    // index.html too.
+    files: ['renderer/**/*.js', 'src/error-kinds.js', 'src/image-format.js', 'src/display-text.js', 'src/path-names.js', 'src/clone-url.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'script',

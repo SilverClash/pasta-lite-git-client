@@ -17,10 +17,11 @@ const { gitAt, GitError, argvChunks, LITERAL_ENV } = proc;
  * @param {string[]} args
  * @param {{input?: string|Buffer, env?: object, okCodes?: number[], diff?: boolean,
  *          encoding?: 'utf8'|'latin1'|'buffer', timeout?: number, signal?: AbortSignal,
- *          maxBytes?: number}} [opts]
+ *          maxBytes?: number, onStderr?: (chunk: Buffer) => void}} [opts]
  *   encoding 'latin1' round-trips arbitrary bytes 1:1 through a JS string; 'buffer' returns a Buffer.
  *   maxBytes caps stdout + stderr (default MAX_OUTPUT_BYTES); beyond it git is killed and the
- *   call rejects with kind 'too-large'.
+ *   call rejects with kind 'too-large'. onStderr gets each stderr chunk as it arrives
+ *   (git-process.spawnGit).
  * @returns {Promise<{stdout: string|Buffer, stderr: string, code: number}>}
  */
 async function run(cwd, args, opts = {}) {

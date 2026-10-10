@@ -256,3 +256,28 @@ test('confirmWith: asks with the dialog wording of the kind; true = the first bu
   assert.equal(await confirm('running', 'push'), false);
   assert.deepEqual(asked, [dialogOptions('close', 'push'), dialogOptions('running', 'push')]);
 });
+
+test('clone wording: quitting or closing a tab says what happens to the folder; an unkilled clone gets its own UNSAFE detail', () => {
+  for (const names of ['clone', 'push, clone']) {
+    assert.match(dialogOptions('running', names).detail, /^Quitting cancels it\. .* A clone that is cancelled leaves no folder behind: its partial folder is removed, at the next start if needed\.$/, names);
+    assert.match(dialogOptions('close', names).detail, /Closing the tab cancels it\. .* partial folder is removed/, names);
+  }
+  for (const names of ['push', 'cloneX', 'fetch, pull']) {
+    assert.doesNotMatch(dialogOptions('running', names).detail, /clone/, names);
+    assert.doesNotMatch(dialogOptions('close', names).detail, /clone/, names);
+  }
+  const unsafe = dialogOptions('unsafe', 'clone');
+  assert.match(unsafe.message, /\(clone\)/);
+  assert.equal(unsafe.detail, 'Git is still stopping. Quitting now leaves a partial folder, which is removed the next time Pasta Lite starts.');
+  assert.deepEqual(unsafe.buttons, ['Quit', 'Wait']);
+  assert.match(dialogOptions('unsafe', 'undo').detail, /half-restored/, 'undo / discard keep their text');
+  assert.match(dialogOptions('unsafe', 'undo, clone').detail, /half-restored/, 'restoring files is the graver risk');
+});
+
+test('the quit guard names a running clone with the clone wording (confirm gets its op name)', async () => {
+  const asked = [];
+  const runner = { running: () => [{ op: 'clone', write: true, started: true }], cancelAll: () => 1, settled: async () => {} };
+  const guard = createQuitGuard({ runner, killChildren: () => 0, confirm: async (kind, names) => { asked.push(dialogOptions(kind, names)); return false; } });
+  assert.equal(await guard.run(), 'stay');
+  assert.match(asked[0].detail, /partial folder is removed/);
+});

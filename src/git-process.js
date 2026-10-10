@@ -482,8 +482,13 @@ function killChildren({ all = false, signal: sig = 'SIGKILL', sync = false } = {
 /** Default cap on stdout + stderr of one command; beyond it the command fails with kind 'too-large'. */
 const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 
+/**
+ * Run git (see run / gitAt for the options). `onStderr(chunk)`: each stderr chunk (a Buffer), in
+ * order, as it arrives and before it is collected (clone's progress, src/clone.js); not after git
+ * was killed. A listener that throws is ignored: it never breaks the command.
+ */
 function spawnGit(cwd, args, {
-  input, env, okCodes = [0], encoding = 'utf8', timeout, signal = signalContext.getStore(), maxBytes = MAX_OUTPUT_BYTES,
+  input, env, okCodes = [0], encoding = 'utf8', timeout, signal = signalContext.getStore(), maxBytes = MAX_OUTPUT_BYTES, onStderr,
 }) {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) {
@@ -546,7 +551,15 @@ function spawnGit(cwd, args, {
       else list.push(d);
     };
     child.stdout.on('data', collect(out));
-    child.stderr.on('data', collect(err));
+    const collectErr = collect(err);
+    child.stderr.on('data', (d) => {
+      if (onStderr && !killedBy) {
+        try {
+          onStderr(d);
+        } catch { /* a listener's bug never breaks the command */ }
+      }
+      collectErr(d);
+    });
     child.on('error', (e) => {
       done();
       record({ spawnError: e.code || e.message });

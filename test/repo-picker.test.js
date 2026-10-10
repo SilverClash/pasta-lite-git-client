@@ -397,22 +397,25 @@ test('popover: an outside press closes it; a press on the anchor closes it and s
   assert.equal(t.dom.doc.__l.filter((l) => l.type === 'mousedown').length, 0);
 });
 
-test('popover: Tab / ⇧Tab cycle between the search, Open… and View all; other keys stay inside', (tc) => {
+test('popover: Tab / ⇧Tab cycle between the search, Open…, Clone… and View all; other keys stay inside', (tc) => {
   const t = setup(tc);
   const p = popover(t);
   const open = p.pop.querySelector('.rp-open');
+  const clone = p.pop.querySelector('.rp-clone');
   const all = p.pop.querySelector('.rp-all');
   t.dom.key('Tab', {}, p.list.input);
   assert.equal(t.dom.doc.activeElement, open);
   t.dom.key('Tab', {}, open);
+  assert.equal(t.dom.doc.activeElement, clone);
+  t.dom.key('Tab', {}, clone);
   assert.equal(t.dom.doc.activeElement, all);
   t.dom.key('Tab', {}, all);
   assert.equal(t.dom.doc.activeElement, p.list.input, 'wraps');
   t.dom.key('Tab', { shiftKey: true }, p.list.input);
   assert.equal(t.dom.doc.activeElement, all);
-  all.click(); // View all: its button goes away, the cycle is search <-> Open…
+  all.click(); // View all: its button goes away, the cycle is search <-> Open… <-> Clone…
   t.dom.key('Tab', { shiftKey: true }, p.list.input);
-  assert.equal(t.dom.doc.activeElement, open);
+  assert.equal(t.dom.doc.activeElement, clone);
   let reached = 0;
   t.dom.doc.addEventListener('keydown', () => { reached++; });
   t.dom.key('j', {}, p.list.input);
@@ -538,4 +541,55 @@ test('toolbar: a failed open from the picker is toasted; without PLRepoPicker th
   await H.flush();
   assert.deepEqual(u.calls, [['openDialog']]);
   assert.match(u.stack.title, /Switch or open a repository \((⌘O|Ctrl\+O)\)$/);
+});
+
+// ------------------------------------------------------------------ Clone… (renderer/clone.js)
+
+/** A fake window.PLClone recording open() calls. */
+function fakeClone(t) {
+  const opened = [];
+  t.win.PLClone = { open: (o) => { opened.push(o); return Promise.resolve(); } };
+  return opened;
+}
+
+test('start screen: Clone… next to Open…, with the ⇧⌘N hint, opens the clone dialog; the subtitle says so', (tc) => {
+  const t = setup(tc);
+  const opened = fakeClone(t);
+  const s = start(t);
+  const actions = s.box.querySelector('.start-actions');
+  assert.deepEqual(actions.children.map((b) => b.className), ['btn btn-primary start-open', 'btn start-clone']);
+  const clone = s.box.querySelector('.start-clone');
+  assert.match(clone.textContent, t.IS_MAC ? /^Clone…⇧⌘N$/ : /^Clone…Ctrl\+Shift\+N$/);
+  assert.equal(s.box.querySelector('.start-sub').textContent, 'Pick a recently opened repository, open a folder, or clone one.');
+  clone.click();
+  assert.equal(opened.length, 1);
+  opened[0].onError(new Error('x'));
+  assert.equal(s.errors.length, 1, 'its errors go to the start screen\'s onError');
+  assert.deepEqual(t.calls, [], 'no folder dialog');
+  s.dispose();
+});
+
+test('popover: Clone… in the footer closes the picker first, then opens the clone dialog', (tc) => {
+  const t = setup(tc);
+  const opened = fakeClone(t);
+  const p = popover(t);
+  const clone = p.pop.querySelector('.rp-clone');
+  assert.equal(clone.textContent, 'Clone…');
+  assert.match(clone.title, t.IS_MAC ? /⇧⌘N/ : /Ctrl\+Shift\+N/);
+  let openWhenCalled = null;
+  t.win.PLClone.open = (o) => { openWhenCalled = t.P.isOpen(); opened.push(o); };
+  clone.click();
+  assert.equal(t.P.isOpen(), false);
+  assert.equal(openWhenCalled, false, 'closed before the dialog opens');
+  assert.equal(opened.length, 1);
+});
+
+test('Clone… without renderer/clone.js loaded reports it instead of failing silently', (tc) => {
+  const t = setup(tc);
+  delete t.win.PLClone;
+  const s = start(t);
+  s.box.querySelector('.start-clone').click();
+  assert.equal(s.errors.length, 1);
+  assert.match(s.errors[0].message, /not available/);
+  s.dispose();
 });

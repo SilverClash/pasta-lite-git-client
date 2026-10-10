@@ -10,6 +10,19 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- **Clone Repository…** (File menu, ⇧⌘N / Ctrl+Shift+N, or Clone… on the start screen and in the
+  repository picker): clone from an `https://`, `http://`, `ssh://`, scp-like (`git@host:path`)
+  or `git://` URL (remotes only: a local path or `file://` URL isn't cloned), into a folder you
+  pick (remembered for next time) under a name derived from the URL. The dialog shows git's
+  progress by phase with Cancel, and explains a failure by its cause (authentication, an unknown
+  ssh host key, a repository that isn't there, a server that can't be reached, a folder that
+  exists, no access, a full disk), with Back to fix it. The clone opens in the tab, or in a new tab
+  next to a tab that has a repository open. A cancelled or failed clone leaves no folder behind: the
+  folder is recorded as soon as it is created, so a removal that quitting (or a crash) cuts short
+  finishes at the next start, and only for that folder. A clone whose files couldn't all be checked
+  out (a path too long for Windows, say) can still be opened. Quitting or closing the tab
+  during a clone asks first. URLs with a password, an access token as the user name, or a query
+  string are refused before git runs, so no secret is saved in the repository's settings.
 - Image preview in the diff view: PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files show before and
   after side by side, with dimensions, file size and the size change, on a checkerboard for
   transparency. Large images load on request; formats that can't be shown say so.

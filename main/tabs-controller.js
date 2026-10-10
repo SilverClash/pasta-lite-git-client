@@ -258,6 +258,18 @@ function createTabsController({
     return true;
   }
 
+  /**
+   * A menu command for the active tab's page ('menu-command' {id}): a New Tab when there is none
+   * (macOS with no window: addTab creates the window, which the user just asked for), sent once
+   * its page has loaded. Resolves the tab it went to.
+   */
+  async function commandToActive(id) {
+    const s = tabs.active() || addTab();
+    await s.loaded;
+    if (!s.closed) s.send(EVENTS.MENU_COMMAND, { id });
+    return s;
+  }
+
   /** Bring the window forward after an open (ui.focus: never in smoke runs, whose window stays hidden). */
   function bringToFront() {
     if (!alive()) return;
@@ -342,6 +354,7 @@ function createTabsController({
     destroyAll,
     showTabMenu,
     bringToFront,
+    commandToActive,
     restoreTabs,
     suppressPersist,
     forwardRunnerEvents,

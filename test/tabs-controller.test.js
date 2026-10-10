@@ -37,7 +37,8 @@ function fakeContents() {
     id: nextId++, destroyed: false, sent: [],
     send: (ch, p) => wc.sent.push([ch, p]),
     isDestroyed: () => wc.destroyed,
-    once: () => {}, on: () => {},
+    // The page "loads" at once (session.loaded resolves).
+    once: (ev, cb) => { if (ev === 'did-finish-load') queueMicrotask(cb); }, on: () => {},
     loadURL: () => Promise.resolve(),
     close: () => { wc.destroyed = true; },
     focus: () => {},
@@ -189,5 +190,35 @@ describe('titles', () => {
     assert.equal(calls.titles.at(-1), 'monorepo — Pasta Lite Git client', 'the main worktree\'s tab keeps its title');
     const pages = b.webContents.sent.filter(([ch]) => ch === 'tabs-changed');
     assert.deepEqual(pages.at(-1)[1].tabs.map((t) => t.linked), [false, true], 'the pages get the flag too');
+  });
+});
+
+describe('commandToActive (File > Clone Repository…)', () => {
+  test('sent to the active tab\'s page once it has loaded', async () => {
+    const { controller } = setup();
+    const a = controller.addTab();
+    controller.addTab({ activate: false });
+    const s = await controller.commandToActive('clone');
+    assert.equal(s, a);
+    assert.deepEqual(a.webContents.sent.filter(([ch]) => ch === 'menu-command'), [['menu-command', { id: 'clone' }]]);
+  });
+
+  test('no tab (macOS, no window): a New Tab, and its window, take it', async () => {
+    const { controller, windowHost, calls } = setup();
+    windowHost.close();
+    assert.equal(controller.tabs.size, 0);
+    const s = await controller.commandToActive('clone');
+    assert.equal(calls.created, 1, 'the window the user just asked for');
+    assert.equal(controller.tabs.size, 1);
+    assert.deepEqual(s.webContents.sent.filter(([ch]) => ch === 'menu-command'), [['menu-command', { id: 'clone' }]]);
+  });
+
+  test('a tab closed before its page loaded gets nothing', async () => {
+    const { controller } = setup();
+    const a = controller.addTab();
+    const p = controller.commandToActive('clone');
+    a.close();
+    await p;
+    assert.deepEqual(a.webContents.sent.filter(([ch]) => ch === 'menu-command'), []);
   });
 });

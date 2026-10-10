@@ -17,9 +17,12 @@
 //     is shown under the fields; lines starting with # get an inline warning (they are removed when rebasing).
 //   await Components.dialog.confirmDiscard(entries, { all }) -> boolean   (file-level discards)
 //   Components.dialog.isOpen() -> boolean
+//   Components.dialog.modal({...}) -> {promise, buttons}: the shared builder, for a dialog with its
+//     own fields and buttons (renderer/clone.js); see modal below.
 // Enter confirms (in a danger dialog only while the confirm button has focus; a danger choice is
-// never focused by default), Esc / backdrop click cancels; focus is trapped in the dialog and
-// restored after. One dialog at a time: opening another cancels the first.
+// never focused by default), Esc / backdrop click cancels (unless the modal's onDismiss says no);
+// focus is trapped in the dialog and restored after. One dialog at a time: opening another cancels
+// the first, whatever onDismiss says.
 (function () {
   const { el, util } = window.Components;
   const Keys = () => window.PLKeys; // keys.js loads before this script
@@ -38,10 +41,12 @@
    * undefined = not handled (Enter on a button then presses it).
    * onButton(button): {value} closes with value, null keeps the dialog open (default: its value).
    * focus(buttonEls): the element to focus first (default: the last button).
+   * onDismiss(): asked on Esc and on a backdrop press; false keeps the dialog open (a clone's
+   * progress: only its Cancel button cancels). Another dialog opening still closes it.
    * Returns {promise, buttons: [button elements]}; the promise resolves with the chosen value
    * (cancelValue on Esc / backdrop / another dialog opening).
    */
-  function modal({ title, message = '', detail = '', danger = false, wide = false, body = [], fields = [], buttons, onEnter = () => undefined, focus, cancelValue, onButton }) {
+  function modal({ title, message = '', detail = '', danger = false, wide = false, body = [], fields = [], buttons, onEnter = () => undefined, focus, cancelValue, onButton, onDismiss }) {
     if (open) open.cancel();
     const actions = el('div', 'dlg-actions');
     const btns = buttons.map((b) => {
@@ -75,12 +80,16 @@
         if (previous && typeof previous.focus === 'function' && document.contains(previous)) previous.focus();
         resolve(value);
       };
+      const dismiss = () => {
+        if (onDismiss && onDismiss() === false) return;
+        finish(cancelValue);
+      };
       const press = (b) => {
         const r = onButton ? onButton(b) : { value: b.value };
         if (r) finish(r.value);
       };
       function onKey(e) {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(cancelValue); return; }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dismiss(); return; }
         if (e.key === 'Enter') {
           const r = onEnter(document.activeElement, e);
           if (r !== undefined) {
@@ -104,7 +113,7 @@
         e.stopPropagation(); // keep global shortcuts (graph j/k, diff n/p) away while modal
       }
       for (const b of btns) b.el.addEventListener('click', () => press(b));
-      backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) finish(cancelValue); });
+      backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) dismiss(); });
       document.addEventListener('keydown', onKey, true);
       document.body.append(backdrop);
       open = { box, cancel: () => finish(cancelValue) };
@@ -356,6 +365,6 @@
   const close = () => { if (open) open.cancel(); };
 
   // Callers (and tests) go through `api`, so confirm can be replaced in one place.
-  const api = { confirm, alert, prompt, choose, editMessage, confirmDiscard, discardOptions, pathListText, close, isOpen: () => !!open };
+  const api = { confirm, alert, prompt, choose, editMessage, confirmDiscard, discardOptions, pathListText, close, isOpen: () => !!open, modal };
   window.Components.dialog = api;
 })();

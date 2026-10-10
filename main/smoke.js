@@ -58,6 +58,14 @@ function removeWhenGone(dir) {
   }
 }
 
+/**
+ * Clone in a smoke run (scripts/smoke-clone.js): PL_SMOKE_CLONE_PARENT=<dir> is the parent folder
+ * (seeded as clone.json's last parent, and the answer to "Choose where to clone"). Without it the
+ * dialog answers nothing and there is no parent: a smoke run never clones into the real home
+ * folder. The source is typed like any URL (the script serves its fixtures over local HTTP).
+ */
+const smokeCloneParent = () => (process.env.PL_SMOKE_CLONE_PARENT ? path.resolve(process.env.PL_SMOKE_CLONE_PARENT) : null);
+
 /** PL_SMOKE_TABS=<repo>[:<repo>...] (path.delimiter-separated): extra tabs for the smoke run. */
 const smokeExtraTabs = () => (process.env.PL_SMOKE_TABS || '').split(path.delimiter).filter(Boolean).map((p) => path.resolve(p));
 
@@ -104,7 +112,12 @@ module.exports = function createSmoke(deps) {
     fs.mkdirSync(smokeUserData, { recursive: true });
     app.setPath('userData', smokeUserData);
     if (!keep) removeWhenGone(smokeUserData);
+    const parent = smokeCloneParent();
+    if (parent) fs.writeFileSync(path.join(smokeUserData, 'clone.json'), `${JSON.stringify({ lastParent: parent })}\n`);
   }
+
+  /** The clone service's "Choose where to clone", answered from PL_SMOKE_CLONE_PARENT. */
+  const clone = { pickFolder: async () => smokeCloneParent() };
 
   /** Logs and crash dumps under userData, so the real folders stay clean. */
   function setupLogPaths() {
@@ -292,5 +305,5 @@ module.exports = function createSmoke(deps) {
    */
   const probe = (_ctx, id) => deps.tabs.get(id).webContents.executeJavaScript(PROBE);
 
-  return { ui, setupUserData, setupLogPaths, exit, run, handlers: { 'tabs:probe': probe } };
+  return { ui, setupUserData, setupLogPaths, exit, run, clone, handlers: { 'tabs:probe': probe } };
 };

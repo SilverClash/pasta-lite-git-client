@@ -8,8 +8,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // 'tabs-changed' {tabs: [{id, title, root|null, active, linked}]}: the window's tabs, on every
-// change (opened, closed, moved, switched, a tab's repo changed).
-const EVENTS = new Set(['changed', 'busy', 'watch', 'repo-opened', 'recent-changed', 'menu-command', 'tabs-changed']);
+// change (opened, closed, moved, switched, a tab's repo changed). 'clone-progress' {opId, phase,
+// percent, ...} | {opId, cleanup: 'failed', leftover}: this tab's clone.
+const EVENTS = new Set(['changed', 'busy', 'watch', 'repo-opened', 'recent-changed', 'menu-command', 'tabs-changed', 'clone-progress']);
 
 async function call(channel, ...args) {
   const res = await ipcRenderer.invoke(channel, ...args);
@@ -99,6 +100,27 @@ contextBridge.exposeInMainWorld('api', {
     cancel: (opId) => call('app:cancel', String(opId)),
     /** Open a terminal window in the current repo's root. */
     openTerminal: () => call('app:openTerminal'),
+  },
+  /**
+   * Clone Repository… from a typed network URL. The page never sends a path: the parent folder
+   * comes from main's folder dialog, and the page echoes back the display main gave it. Cancel a
+   * running clone with app.cancel(opId).
+   */
+  clone: {
+    /**
+     * {parent: {display, chars} | null, running: {opId, target} | null, last: how this tab's last
+     * clone ended | null} (a reloaded page reattaches with these).
+     */
+    defaults: () => call('app:cloneDefaults'),
+    /** Main's folder dialog for where to clone: {display, chars}, or null when cancelled. */
+    pickParent: () => call('app:pickCloneParent'),
+    /**
+     * Clone {url, name, parent}: url the typed URL, parent the display shown. Resolves {status,
+     * target, name, submodules, empty, opened, reason?, openError?, message?}.
+     */
+    start: (opId, req) => call('app:clone', { url: String(req.url), name: String(req.name), parent: String(req.parent) }, String(opId)),
+    /** Open Anyway after a checkout failure of clone `opId`. */
+    openCloned: (opId) => call('app:openCloned', String(opId)),
   },
   tabs: {
     /**

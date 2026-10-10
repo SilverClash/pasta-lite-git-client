@@ -1,0 +1,33 @@
+/* Clone Repository… (renderer/clone.js): the form's field rows and the progress modal. */
+.clone-form .dlg-label { margin-top: 12px; }
+.clone-form .dlg-label:first-child { margin-top: 4px; }
+.clone-row { display: flex; gap: 8px; align-items: center; }
+.clone-row .dlg-input { flex: 1; min-width: 0; }
+.clone-row .btn { flex: none; }
+.clone-form .dlg-input[readonly] { color: var(--text-2); }
+.clone-note { margin: 6px 0 0; font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.clone-preview { unicode-bidi: isolate; }
+.clone-warn { color: var(--orange-text); }
+
+.clone-lead { word-break: break-all; unicode-bidi: isolate; }
+.clone-phase { margin: 0 0 8px; font: 12px/1.5 var(--mono); color: var(--text); min-height: 1.5em; }
+.clone-bar {
+  display: block; width: 100%; height: 6px; margin: 0 0 10px;
+  appearance: none; border: 0; border-radius: 3px; background: var(--panel-3); overflow: hidden;
+}
+.clone-bar::-webkit-progress-bar { background: var(--panel-3); border-radius: 3px; }
+.clone-bar::-webkit-progress-value { background: var(--accent); border-radius: 3px; transition: width 0.2s; }
+/* The screen reader's progress line (aria-live): read, not shown (the phase line above is). */
+.clone-live {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.clone-wait { margin-bottom: 8px; }
+/* No percent yet (connecting, a phase without one): a sweep instead of a bar. */
+.clone-bar.is-indeterminate {
+  background: linear-gradient(90deg, var(--panel-3) 0%, var(--accent) 50%, var(--panel-3) 100%);
+  background-size: 200% 100%; animation: clone-sweep 1.4s linear infinite;
+}
+.clone-bar.is-indeterminate::-webkit-progress-bar { background: transparent; }
+@keyframes clone-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .clone-bar.is-indeterminate { animation: none; } }

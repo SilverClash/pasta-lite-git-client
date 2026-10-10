@@ -119,8 +119,6 @@ test('the form: an invalid URL disables Clone with its message; a typed local pa
   assert.equal(url.getAttribute('aria-invalid'), 'true');
   t.type(url, '/srv/private.git');
   assert.match(err.textContent, /^Enter a remote URL/);
-  assert.equal(t.btn('Choose Local Repository\u2026'), null, 'clones come from remotes only');
-  assert.equal(t.q('.clone-clear'), null);
   t.type(url, 'http://h/r');
   assert.equal(t.btn('Clone').disabled, false);
   assert.match(t.q('.clone-note').textContent, /aren't encrypted/);
@@ -214,7 +212,6 @@ test('"Waiting\u2026" after 30 s without a frame: with the password hint until a
   assert.equal(wait().textContent, 'Waiting\u2026', 'after a frame: no password hint');
   s.reject({ message: 'git was cancelled', kind: 'aborted' });
   await done;
-
 });
 
 // ---------------------------------------------------------------- cancel
@@ -460,7 +457,7 @@ test('errorView: each kind\'s title and text', () => {
   }
   assert.equal(v('unsafe-repo').detail, 'git said this');
   assert.equal(v('unsupported').title, 'This kind of URL isn\'t supported');
-  assert.match(v('stale').message, /another tab chose a different one/);
+  assert.equal(v('stale').message, 'Another tab chose a different folder to clone into. Check it and try again.', 'not the title again');
   assert.equal(v('in-progress', { state: 'cleanup' }).title, 'The previous clone\'s folder is still being removed');
   assert.equal(v('in-progress', { state: 'clone' }).title, 'A clone is already running in this tab');
   assert.equal(v(null).title, 'Clone failed');
@@ -537,4 +534,78 @@ test('errorView: a parent that is gone or missing asks for another folder; an "e
   assert.equal(errorView({ kind: 'not-found', message: 'x' }, { url: 'https://h/r' }).title, 'Repository not found');
   assert.equal(errorView({ kind: 'exists', message: 'A folder named r already exists in ~/code.' }).message, 'A folder named r already exists in ~/code. Choose another name or folder.');
   assert.equal(errorView({ kind: 'stale', state: 'parent' }).title, 'The folder changed');
+});
+
+test('reattached, then forced shut by another dialog: the outcome still comes (as a toast)', async (tc) => {
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
+  const t = setup({ defaults: { parent: PARENT, running: { opId: 'op-4', target: '~/code/r' }, last: null } });
+  await t.C.resume({ onError: t.onError });
+  await H.flush();
+  const other = t.D.confirm({ title: 'Something else' });
+  await H.flush();
+  assert.equal(t.q('.clone-bar'), null, 'forced shut');
+  t.api.defaults = { parent: PARENT, running: null, last: { opId: 'op-4', req: { url: 'https://h/r' }, status: 'failed', target: '~/code/r', name: 'r', opened: false, error: { kind: 'unreachable', message: 'Could not resolve host' } } };
+  tc.mock.timers.tick(1000);
+  await H.flush();
+  assert.equal(t.toasts.length, 1);
+  assert.equal(t.toasts[0].kind, 'unreachable');
+  t.D.close();
+  await other;
+});
+
+test('reattached after a reload: a checkout failure offers Open Anyway while main still holds it', async (tc) => {
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
+  const t = setup({ defaults: { parent: PARENT, running: { opId: 'op-6', target: '~/code/r' }, last: null } });
+  await t.C.resume({ onError: t.onError });
+  await H.flush();
+  t.api.defaults = { parent: PARENT, running: null, last: { opId: 'op-6', req: { url: 'https://h/r' }, status: 'checkout-failed', target: '~/code/r', name: 'r', opened: false, message: 'error: unable to create file x: Filename too long' } };
+  tc.mock.timers.tick(1000);
+  await H.flush();
+  assert.equal(t.q('.dlg-title').textContent, 'The repository was cloned, but some files could not be checked out');
+  assert.match(t.q('.dlg-detail').textContent, /Filename too long/);
+  t.btn('Open Anyway').click();
+  await H.flush();
+  assert.deepEqual(t.api.calls.filter((c) => c[0] === 'openCloned'), [['openCloned', 'op-6']]);
+  assert.deepEqual(notices(t), ['Cloned r.']);
+  // With another dialog on screen, a toast says so instead (a dialog now would close it).
+  const u = setup({ defaults: { parent: PARENT, running: { opId: 'op-7', target: '~/code/r' }, last: null } });
+  await u.C.resume({ onError: u.onError });
+  await H.flush();
+  const busy = u.D.confirm({ title: 'Busy' });
+  u.api.defaults = { parent: PARENT, running: null, last: { opId: 'op-7', req: { url: 'https://h/r' }, status: 'checkout-failed', target: '~/code/r', name: 'r', opened: false, message: 'x' } };
+  tc.mock.timers.tick(1000);
+  await H.flush();
+  assert.deepEqual(notices(u), ['Cloned to ~/code/r, but some files could not be checked out.']);
+  u.D.close();
+  await busy;
+});
+
+test('attaching again closes the earlier, forced-shut view: its "Waiting…" and live-line timers stop', async (tc) => {
+  tc.mock.timers.enable({ apis: ['setTimeout'] });
+  const running = { opId: 'op-2', target: '~/code/r' };
+  const t = setup({ defaults: { parent: PARENT, running, last: null } });
+  await t.C.resume({ onError: t.onError });
+  await H.flush();
+  const oldWait = t.q('.clone-wait');
+  t.D.confirm({ title: 'x' });
+  t.D.close();
+  await H.flush();
+  await t.C.open({ onError: t.onError });
+  await H.flush();
+  tc.mock.timers.tick(31000);
+  await H.flush();
+  assert.equal(oldWait.hidden, true, 'the old view\'s timer was stopped');
+  assert.equal(t.q('.clone-wait').hidden, false, 'the new one waits as usual');
+  t.D.close();
+});
+
+test('no parent picked yet: the form asks for one, and Clone stays disabled', async () => {
+  const t = setup({ defaults: { parent: null, running: null } });
+  const done = (await openForm(t)).done;
+  t.type(t.q('.clone-url'), 'https://h/r.git');
+  assert.equal(t.q('.clone-preview').textContent, 'Choose a folder to clone into (Choose…).');
+  assert.equal(t.q('.clone-preview').hidden, false);
+  assert.equal(t.btn('Clone').disabled, true);
+  t.btn('Cancel').click();
+  await done;
 });

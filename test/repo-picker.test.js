@@ -560,6 +560,7 @@ test('start screen: Clone… next to Open…, with the ⇧⌘N hint, opens the c
   assert.deepEqual(actions.children.map((b) => b.className), ['btn btn-primary start-open', 'btn start-clone']);
   const clone = s.box.querySelector('.start-clone');
   assert.match(clone.textContent, t.IS_MAC ? /^Clone…⇧⌘N$/ : /^Clone…Ctrl\+Shift\+N$/);
+  assert.equal(clone.title, `Clone a repository from a URL (${t.IS_MAC ? '⇧⌘N' : 'Ctrl+Shift+N'})`, 'the same tooltip as the picker\'s footer button');
   assert.equal(s.box.querySelector('.start-sub').textContent, 'Pick a recently opened repository, open a folder, or clone one.');
   clone.click();
   assert.equal(opened.length, 1);
@@ -575,7 +576,7 @@ test('popover: Clone… in the footer closes the picker first, then opens the cl
   const p = popover(t);
   const clone = p.pop.querySelector('.rp-clone');
   assert.equal(clone.textContent, 'Clone…');
-  assert.match(clone.title, t.IS_MAC ? /⇧⌘N/ : /Ctrl\+Shift\+N/);
+  assert.equal(clone.title, `Clone a repository from a URL (${t.IS_MAC ? '⇧⌘N' : 'Ctrl+Shift+N'})`);
   let openWhenCalled = null;
   t.win.PLClone.open = (o) => { openWhenCalled = t.P.isOpen(); opened.push(o); };
   clone.click();

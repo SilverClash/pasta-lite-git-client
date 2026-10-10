@@ -16,8 +16,9 @@
 //
 // Clones come from remotes only: a typed https, http, ssh, scp-like or git URL. The page never
 // names a path: the parent comes from main's folder dialog and is shown (and sent back) as main's
-// display; the URL and the folder name are checked here as the user types (window.PLCloneUrl, the rules main enforces again). onError gets errors and notices
-// ({message, level: 'info'}), as app.js' toast takes both. Only the progress modal's Cancel button
+// display (there is none until the user picks one); the URL and the folder name are checked here
+// as the user types (window.PLCloneUrl, the rules main enforces again). onError gets errors and
+// notices ({message, level: 'info'}), as app.js' toast takes both. Only the progress modal's Cancel button
 // cancels (Esc and the backdrop do nothing there); another dialog forcing it shut leaves the clone
 // running, and its outcome then comes as a toast. All text goes through textContent.
 (function () {
@@ -130,7 +131,7 @@
           detail: text,
         };
       case 'stale':
-        return { title: 'The folder changed', message: 'The folder changed (another tab chose a different one). Check it and try again.' };
+        return { title: 'The folder changed', message: 'Another tab chose a different folder to clone into. Check it and try again.' };
       case 'in-progress':
         return err.state === 'cleanup'
           ? { title: 'The previous clone\'s folder is still being removed', message: 'Try again in a moment, or choose another name.' }
@@ -258,7 +259,9 @@
       show(parentError, parentText, e.parent, submitted);
       show(nameError, name, e.name, touched || submitted || !!name.value);
       const where = parent ? joinShown(parent.display, name.value, plat) : '';
-      preview.textContent = where && !e.name ? `Will create ${where}` : '';
+      // No parent yet (none is assumed, not even the home folder): ask for one.
+      if (!parent) preview.textContent = 'Choose a folder to clone into (Choose…).';
+      else preview.textContent = where && !e.name ? `Will create ${where}` : '';
       preview.hidden = !preview.textContent;
       const long = plat === 'win32' && parent && Number.isInteger(parent.chars) && parent.chars + 1 + name.value.length > WIN_LONG_PATH;
       longWarn.textContent = long ? 'This path is long: without core.longpaths, Git for Windows can\'t check out files whose full path is over 260 characters.' : '';
@@ -554,6 +557,12 @@
       return;
     }
     const req = out.req || {};
+    // A checkout failure still waits in main for Open Anyway (this tab's opId): offer it, unless
+    // another dialog has the screen (a dialog now would close it), then say so in a toast.
+    if (out.status === 'checkout-failed' && !util.modalOpen()) {
+      checkoutFailed(out, running.opId, onError);
+      return;
+    }
     if (out.status === 'failed') {
       background({ req, err: Object.assign(new Error((out.error && out.error.message) || 'The clone failed'), out.error || {}), onError });
       return;
@@ -565,12 +574,15 @@
    * Show the progress of clone `running` ({opId, target}: main's, for this tab). When this page
    * started it, run() still awaits it and reports the outcome. After a reload, main is asked once
    * a second until the clone no longer runs; how it ended is then main's record of this tab's last
-   * clone, never another tab's events. Idempotent: attaching again replaces the earlier loop.
+   * clone, never another tab's events, reported also when another dialog forced the progress
+   * shut (as a toast, as run() does). Idempotent: attaching again replaces the earlier view (its
+   * timers stopped) and loop.
    */
   function attach(running, onError) {
     const { opId } = running;
     const old = views.get(opId);
     if (old && old.isOpen()) return;
+    if (old) old.close(); // forced shut: its "Waiting…" and live-line timers stop too
     if (loops.has(opId)) loops.get(opId).stop();
     const view = progressView({ opId, lead: running.target ? `Cloning into ${dn(running.target)}` : 'Cloning…' });
     views.set(opId, view);
@@ -582,9 +594,8 @@
       loop.stop();
       if (loops.get(opId) === loop) loops.delete(opId);
       if (views.get(opId) === view) views.delete(opId);
-      const shown = view.isOpen();
       view.close();
-      if (shown) reportLast(d && d.last && d.last.opId === opId ? d.last : null, running, onError);
+      reportLast(d && d.last && d.last.opId === opId ? d.last : null, running, onError);
     };
     const poll = () => {
       if (stopped) return;

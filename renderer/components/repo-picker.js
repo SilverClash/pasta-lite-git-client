@@ -263,7 +263,7 @@
       openBtn.title = openTitle();
       cloneBtn = el('button', 'rp-foot-btn rp-clone', 'Clone…');
       cloneBtn.type = 'button';
-      cloneBtn.title = `Clone a repository (${keyHint(CLONE_KEY)})`;
+      cloneBtn.title = `Clone a repository from a URL (${keyHint(CLONE_KEY)})`;
       allBtn = el('button', 'rp-foot-btn rp-all', 'View all repositories');
       allBtn.type = 'button';
       foot.append(openBtn, cloneBtn, allBtn);
@@ -568,7 +568,7 @@
     cloneBtn.append(el('span', null, 'Clone…'));
     const cloneHint = keyHint(CLONE_KEY);
     if (cloneHint) cloneBtn.append(el('span', 'start-key', cloneHint));
-    cloneBtn.title = 'Clone a repository from a URL or another folder';
+    cloneBtn.title = `Clone a repository from a URL (${keyHint(CLONE_KEY)})`;
     cloneBtn.addEventListener('click', () => cloneRepo({ onError: opts.onError }), { signal: ac.signal });
     actions.append(openBtn, cloneBtn);
     const tabHint = el('p', 'hint start-hint');

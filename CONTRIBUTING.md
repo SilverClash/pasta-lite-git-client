@@ -297,7 +297,8 @@ Git runs in the Electron main process; the pages talk to it over IPC and never t
   never sends a path (the parent folder comes from main's folder dialog; the source is a typed
   network URL, `src/clone-url.js`, shared with the page: remotes only), `src/clone.js` creates
   the target folder and runs `git clone` with a transport allowlist, and `src/clone-cleanup.js`
-  removes a failed clone's folder, only that one (its dev, inode and birth time checked again).
+  removes a failed clone's folder, only that one (its dev, inode and birth time checked again)
+  and only with evidence that its clone failed (a `failed` mark, or a fetch that never finished).
   The folder is written to `clone.json` as soon as it exists and dropped once the clone succeeds,
   so a quit, a crash or a git that outlives its kill can't abandon it: `before-quit` waits for
   that write, and the next launch finishes the removal. The page's side is `renderer/clone.js`.

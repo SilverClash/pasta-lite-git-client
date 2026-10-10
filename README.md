@@ -63,7 +63,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 - A Worktrees section in the sidebar lists linked worktrees with their branch, locked and dirty state. Open one, reveal it in the file manager, copy its path, lock or unlock it, delete it (with a force confirmation if it has changes), or prune stale ones after a preview.
 
 **Tabs and repositories**
-- Clone a repository (File > Clone Repository…, ⇧⌘N, or Clone… on the start screen) from an HTTPS, SSH or git URL, with progress and Cancel. The clone opens in the tab, or in a new tab next to the one you started it from.
+- Clone a repository (File > Clone Repository…, ⇧⌘N, or Clone… on the start screen) from an HTTPS, HTTP, SSH or git URL into a folder you pick, with progress and Cancel. The clone opens in the tab, or in a new tab next to the one you started it from.
 - One repository per tab, with reorderable tabs and tabs restored on the next launch.
 - A repository picker (⌘P) that searches your recent repositories, plus File > Open Recent.
 - Open the repository in your terminal.

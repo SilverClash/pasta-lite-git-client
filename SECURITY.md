@@ -84,20 +84,25 @@ the renderer never passes a repository path. Examples of vulnerabilities in this
 
 **Cloning.** Clone Repository… accepts typed `https`, `http`, `ssh` (and scp-like `user@host:path`)
 and `git` URLs only. It never runs a transport helper (`ext::`, `fd::` or any `<helper>::` URL,
-and git's own `protocol.allow=never` with those five transports allowed on the command line, so a
+and git's own `protocol.allow=never` with those four transports allowed on the command line, so a
 `url.<x>.insteadOf` can't rewrite a URL into one), and it clones from remotes only: a local path,
 `file://` URL, UNC or device path is refused, so a page can't make the app clone, then open and
 read, a private repository on your machine, or make Windows send your credentials to a share it
-names. A host must be a plain host
-name or IP address, and a user name can't start with `-`, so nothing in a URL reaches ssh as an
-option or as shell syntax (such as a ProxyCommand's `%h`). URLs with a password, an access token
+names. A host must be a plain host name or IP address, and a user name can't start with `-`, so
+nothing in a URL reaches ssh as an option or as shell syntax (such as a ProxyCommand's `%h`). URLs with a password, an access token
 as the user name, or (for `https`) a query string are refused, because git would save them in
-the repository's settings. The page only chooses the folder name (one path segment)
-and echoes the parent folder main showed it. Two things are by design:
+the repository's settings. git's file transport is never allowed, and git runs in the new,
+empty target folder, so an scp-like `host:path` can't name a local folder either. The page only
+chooses the folder name (one path segment, never starting with a dot, never with ':') and echoes
+the parent folder main showed it; there is no default parent, so nothing lands in the home folder
+(say in `~/.config`, where a clone's `git/config` would become the global git config) unless the
+user picked it. The cleanup of a failed clone removes only the folder the app created, only with
+evidence that its clone failed, and never one the recent list or a tab names. Two things are by
+design:
 
 - a page can choose the network host a clone contacts (that is what cloning is). Everywhere else a
   page can only make git contact remotes already in a repository's config. This matters only once
-  a page is compromised, and the five transports above are all it can use.
+  a page is compromised, and the four transports above are all it can use.
 - Git LFS, when you installed it globally, follows a repository's committed `.lfsconfig`: its
   checkout can download, with the credentials your helper gives that host, from a server the
   repository names. A clone from a terminal does the same.

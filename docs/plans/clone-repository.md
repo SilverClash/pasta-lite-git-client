@@ -53,7 +53,8 @@ merged together (or the menu item moves to C4).
    security boundary (`main.js:15-18`, `main/ipc.js:6-11`, `src/repo-opening.js:6-9`), and clone
    keeps it in full:
    - The **parent folder** comes from main's native folder dialog or from main's remembered value
-     (last used, else home). The page sees only a display string (`~/code`).
+     (the folder last picked; there is no default, not even home, §15). The page sees only a
+     display string (`~/code`).
    - **Remotes only.** There is no local source: a typed local path, `file://` URL (any host), UNC
      path (`\\server\share`), Windows device path (`\\?\`, `\\.\`) or drive-relative path
      (`C:repo`) is refused by `parseCloneUrl`. A compromised page could otherwise clone any private
@@ -177,14 +178,14 @@ git <GLOBAL_ARGS>                                      # src/git-process.js:71-1
     -c protocol.allow=never
     -c protocol.https.allow=always -c protocol.http.allow=always
     -c protocol.ssh.allow=always   -c protocol.git.allow=always
-    -c protocol.file.allow=user
+    -c protocol.file.allow=never
     clone --progress --no-recurse-submodules -- <source> <target>
 ```
 
-- **`<source>`** is a validated network URL typed by the user, or the absolute path of the local
-  repository main's folder dialog returned (never a page string).
-- **cwd** is the parent folder, run with `gitAt(parent, …)` (`src/git-process.js:598-600`), not
-  `exec.run`. `exec.run` resolves the enclosing worktree root (`src/exec.js:26-28`), which is wrong
+- **`<source>`** is a typed network URL (remotes only), validated by `parseCloneUrl` in main.
+- **cwd** is the new, empty target folder, run with `gitAt(target, …)` (`src/git-process.js:598-600`),
+  not `exec.run`, and never the parent: git takes an scp-like `host:path` that exists as a folder
+  relative to its cwd for a local path (§15). Not `exec.run` either: `exec.run` resolves the enclosing worktree root (`src/exec.js:26-28`), which is wrong
   for a folder that isn't a repository yet. A parent inside another repository is fine: clone does
   not read the enclosing repository's local config. A `url.<x>.insteadOf` in an enclosing repo's
   `.git/config` was **not** applied **(verified)**.
@@ -278,7 +279,7 @@ existing layers like this:
 | **CloneUrl** | A validated, typed network URL (trimmed) | `{url, kind: 'https'\|'http'\|'ssh'\|'scp'\|'git', host, user \| null, path, display, notes: ['insecure'?, 'user-in-url'?]}` |
 | **display** | How a URL or path is shown: a URL as typed, minus nothing secret (there is nothing secret left after validation: the user name is shown plainly, consistently for https, `ssh://` and scp-like); a path as `homeShort` (`src/fs-paths.js:130-136`) | string |
 | **CloneName** | One path segment, the folder to create | string, see §4.3 |
-| **Parent** | The folder the clone goes into: main's last used parent, else home | main: `{abs, display}`; the page sees `display` |
+| **Parent** | The folder the clone goes into: the one the user last picked in main's dialog (none until then) | main: `{abs, display}`; the page sees `display` |
 | **Made** | What we created, so we know what we may delete | `{abs, dev, ino}` (decimal strings of BigInt stats, so they survive JSON in `clone.json`; compared like `fileIdentity` / `sameFile`, `src/git-process.js:385-391`) |
 | **CloneProgress** | One parsed frame | `{phase, percent \| null, current \| null, total \| null, bytes \| null, rate \| null, done: boolean, remote: boolean}` |
 | **CloneResult** | What the op resolves | `{status: 'done' \| 'checkout-failed', root, name, submodules: boolean, empty: boolean, message?}` |
@@ -297,7 +298,7 @@ existing layers like this:
 - The name is one segment with no separator, not `.` / `..`, no `.git` alias, and (on Windows) no
   reserved device name, trailing dot or space, or `<>:"|?*`.
 - The parent is an absolute, existing directory that main got from its own folder dialog, its
-  stored preference or the home folder.
+  stored preference (never a default: §15).
 - Main does no synchronous filesystem work for clone (the rule of `src/fs-paths.js:2-15`):
   `fs.promises` throughout `cloneRepo`, the cleanup, the service and `createClonePrefs`.
 
@@ -411,7 +412,8 @@ this plan.)
 /**
  * @param {{source: string, parent: string, name: string, onProgress?: (p: CloneProgress) => void,
  *   onMade?: (made: Made) => void, signal?: AbortSignal, platform?: string}} o
- *   source: a URL parseCloneUrl accepted, or a local path main's dialog returned (never a page string).
+ *   source: a URL parseCloneUrl accepted (the app's only source; the tests pass local fixtures, with
+ *   localFixtures: true, which lets the file transport through for them only).
  *   platform: default process.platform (tests pass 'win32' / 'darwin').
  * @returns {Promise<CloneResult>}
  * Rejects with err.made set when a folder was created (the caller removes it, src/clone-cleanup.js).
@@ -657,7 +659,8 @@ const APP = {
   that doesn't exist yet.
 - `DESCRIPTORS`, `OPS`, `WORKTREE_OPS` and `BARE_OK` stay exactly as they are (`src/ops.js:741-761`),
   so `test/bare.test.js` and `test/ipc-contract.test.js` don't change for them.
-- `cloneCheck(target, req, hooks)` re-runs `nameError`, and `parseCloneUrl` for a typed source. It
+- `cloneCheck(target, req, hooks)` re-runs `nameError`, and `parseCloneUrl` for the typed network URL
+  (remotes only). It
   picks `{source, parent, name}` explicitly. `hooks` is `{onProgress, onMade}`: main-side functions,
   never from the page.
 - What clone gets for free:
@@ -674,7 +677,7 @@ const APP = {
 ### 6.2 `src/clone-service.js` (Electron-free use cases)
 
 ```js
-createCloneService({ runner, opening, prefs, cleanup, pickFolder, home, log })
+createCloneService({ runner, opening, prefs, cleanup, pickFolder, log })
   -> {
     defaults(session) -> {parent: {display, chars}, running: {opId, target} | null, last}
     pickParent(session) -> {display, chars} | null
@@ -686,7 +689,8 @@ CloneOutcome = {status: 'done' | 'checkout-failed', target: display, submodules,
                 opened: RepoInfo | null, reason?: 'declined' | 'stale' | 'closed', openError?, message?}
 ```
 
-- **Parent**: `prefs.lastParent()` (a stored path that is still a directory), else `home()`.
+- **Parent**: `prefs.lastParent()` (a stored path that is still a directory), else none: the form
+  asks for a folder (§15).
   - `pickParent` shows main's folder dialog (`properties: ['openDirectory', 'createDirectory']`,
     `defaultPath`: the current parent, title "Choose where to clone"), the same way `pickFolder` does
     (`main.js:249-253`). A chosen folder is saved **at once** as `lastParent`: the last folder the
@@ -843,8 +847,9 @@ of them adjusted:
   if needed."
 - **`UNSAFE`**: today the detail is about restoring files, which is only true of undo's reversal and
   a discard's backup record (`:198-205`). It becomes a per-op table: undo / discard keep today's
-  text; for clone (git ignoring its kill), "Git is still stopping. Quitting now leaves a partial
-  folder, which is removed the next time Pasta Lite starts."
+  text; for clone (git ignoring its kill), "Git is still stopping. Quitting now may leave a partial
+  folder: the next start removes it if its download hadn't finished, and otherwise leaves it for
+  you to check." (§15: resume() removes only with evidence of failure.)
 
 The wording is chosen from the op names `run()` already collects (`opNames`, `src/quit-guard.js:32`).
 `test/quit-guard.test.js` covers both.
@@ -1004,7 +1009,7 @@ it by hand."
 
 | State | Owner | Lifetime |
 |---|---|---|
-| The parent folder | main: `clone.json` `lastParent` (else home); the page holds its display to send back | across launches |
+| The parent folder | main: `clone.json` `lastParent` (none until picked); the page holds its display to send back | across launches |
 | URL, name, touched flag | the form (DOM fields), passed to Back | the dialog |
 | The running clone | the runner and the service's per-session entry (`opId`, target display); the page's progress modal | until settled; survives a page reload |
 | Progress | events → the progress modal only (never `Store`: a start-screen tab has no store state, and nothing else needs it) | until settled |
@@ -1020,15 +1025,15 @@ dialog is the expected behaviour).
 
 | Threat | Mitigation |
 |---|---|
-| The page names a folder to write into | It can't: the parent is main's (native dialog, stored preference, home), and the page sends one segment, which main checks with `nameError` (§4.3). The page only echoes main's display, for the `stale` check |
+| The page names a folder to write into | It can't: the parent is main's (native dialog, stored preference; no default), and the page sends one segment, which main checks with `nameError` (§4.3). The page only echoes main's display, for the `stale` check |
 | **The page names a local repository to read** (clone a private repo, then open and read it) | There is no local source: local paths, `file://` with any host, UNC, `\\?\` / `\\.\` device paths, drive-relative `C:repo` are refused (§5.1 step 2), and the main side has no other way in (remotes only, §15) |
 | NTLM hash leak through a UNC source (Windows) | UNC and `//server/share` are refused |
 | Argument injection through the URL | validated before git (a leading `-`, a host starting with `-`, `INVISIBLE` characters); always after `--`; git itself also blocks `-`-prefixed hosts and paths (§3.2 case 16) |
-| Command-running transports (`ext::`, `fd::`, `<helper>::`, an `insteadOf` rewrite to one) | refused by `parseCloneUrl`; `-c protocol.allow=never` with five allowed transports on the command line, which beats every config file; `protocol.ext.allow=never` is already in `GLOBAL_ARGS` |
+| Command-running transports (`ext::`, `fd::`, `<helper>::`, an `insteadOf` rewrite to one) | refused by `parseCloneUrl`; `-c protocol.allow=never` with four allowed transports on the command line (file never, §15), which beats every config file; `protocol.ext.allow=never` is already in `GLOBAL_ARGS` |
 | Weakening git's submodule hardening (CVE-2022-39253) | `protocol.file.allow` stays `user`: our `-c` values reach child gits through `GIT_CONFIG_PARAMETERS`, and `always` would let a submodule clone use `file`. Also `--no-recurse-submodules`. The local-clone symlink fix itself is in git ≥ 2.38.1, and the app requires 2.51 (`src/gitcheck.js:14`) |
 | A hostile repository runs code at clone time | no hooks travel with a clone; filter drivers can only come from the user's own config; `core.fsmonitor=false` (`GLOBAL_ARGS`); opening goes through the trust check (`src/repo-trust.js`), as for any open |
 | A hostile repository redirects Git LFS (`.lfsconfig` `lfs.url`) | **accepted, outside our control**: git-lfs's own HTTP client ignores `protocol.*.allow`, so smudge requests (with whatever credentials the user's helper gives that host) can go to a host the repository names (§3.3). It only happens for users who installed git-lfs globally, and a terminal clone does the same. SECURITY.md says so |
-| **A renderer-chosen network destination** | **accepted risk.** Everywhere else a page can only make git contact remotes already in a repo's config (`fetch` / `push` take only configured remote names, `src/ops.js:530-554`, `remoteName` in `src/op-validators.js:105-109`), and the CSP blocks the page's own network access (`default-src 'none'`, `renderer/index.html:5`). Clone is the one place a compromised page can make git connect to a host it chooses (https, http, ssh, git), and a URL or DNS name can carry data the page already has. This is the feature itself, and it only matters once the renderer is compromised. The limits: five transports, no helpers, no local sources, no credentials in the URL. SECURITY.md's scope section gets a note |
+| **A renderer-chosen network destination** | **accepted risk.** Everywhere else a page can only make git contact remotes already in a repo's config (`fetch` / `push` take only configured remote names, `src/ops.js:530-554`, `remoteName` in `src/op-validators.js:105-109`), and the CSP blocks the page's own network access (`default-src 'none'`, `renderer/index.html:5`). Clone is the one place a compromised page can make git connect to a host it chooses (https, http, ssh, git), and a URL or DNS name can carry data the page already has. This is the feature itself, and it only matters once the renderer is compromised. The limits: four transports, no helpers, no local sources, no credentials in the URL. SECURITY.md's scope section gets a note |
 | Path traversal / Windows aliases in the name | one segment only; `.`, `..`, `.git` aliases (`GIT~1`, trailing dots or spaces), device names and `<>:"\|?*` refused (`src/path-names.js`) |
 | Deleting something that isn't ours | only the folder we created, after an identity check right before removal (§4.3), again at the next launch; no cleanup for a target we couldn't create |
 | Credentials in logs | `summarizeArgs` counts everything after `--` (the source and target are never in a git command record); `app:clone` and the runner's op record log only `{name, kind, code, exitCode}` (`logError`, `src/ipc-errors.js:87-94`; §6.3); coercer refusals never quote values; the logger redacts every record (`src/log.js`) |
@@ -1151,7 +1156,7 @@ kind pass on macOS, Ubuntu and Windows CI.
    - `openRepo` throwing → `openError`
 4. `src/clone-service.js` (new): §6.2. Tests in `test/clone-service.test.js`, with fakes (runner,
    opening, prefs, cleanup, pickFolder) as `test/repo-opening.test.js` does:
-   - the default parent (last used, else home) and `stale` on a display mismatch
+   - the parent (last picked, else none) and `stale` on a display mismatch
    - `in-progress` for a second clone, and for a target still being removed
    - progress events to the right session only
    - `defaults().running` after a "reload"
@@ -1167,7 +1172,7 @@ kind pass on macOS, Ubuntu and Windows CI.
 9. `main/smoke.js`: smoke support (§10 C5): seed `clone.json` `lastParent` in the throwaway
    userData from `PL_SMOKE_CLONE_PARENT`, which also answers "Choose where to clone".
    In a smoke run with no seed, the parent default is refused (kind `not-found`); it never falls
-   back to the real home folder.
+   back to the real home folder (there is no home default at all now, §15).
 
 *Done when* the IPC, service, opening and quit-guard tests pass. The menu item does nothing visible
 until C4: merge C3 and C4 together, or add the menu item in C4.
@@ -1241,7 +1246,7 @@ No test touches the network. Remotes are bare repos over `file://` or local path
 - **Progress**:
   - frames for another opId are ignored
   - the phase text and the bar update
-  - "Waiting…" after 30 s of fake time with no frame, with the auth hint for a URL source only
+  - "Waiting…" after 30 s of fake time with no frame, with the auth hint until a first frame came
 - **Cancel**:
   - the button calls `api.app.cancel(opId)` and disables itself
   - Esc and a backdrop click while running do nothing
@@ -1313,7 +1318,8 @@ macOS (M) and Windows 11 (W). Each item is run on both unless marked otherwise.
 
 1. **Shortcut: ⇧⌘N / Ctrl+Shift+N.** No collision with `KEYS`, `VIEW_KEYS` or the main
    accelerators (checked, §6.7). ⌘N stays free for Init.
-2. **Default parent: the last used parent, else the home folder.** There is no recent-list
+2. **Default parent: the last used parent; none before the first pick** (first "else the home
+   folder", changed after the security review, §15). There is no recent-list
    heuristic.
 3. **An existing empty target folder is refused in the MVP** (`exists`). Supporting it later needs a
    cleanup that removes only what git wrote inside a folder we don't own.
@@ -1442,9 +1448,7 @@ Recorded while building C1–C5; none changes a decision of §1.2 or §13.
   closes §12's last row.
 - A new clone's folder replaces every pending entry for the same path, and the identity check also
   compares the folder's birth time (`birthtimeNs`), so a reused inode never makes `resume()` delete
-  a later folder. Where the file system keeps no birth time (0) or reports the ctime in its place,
-  dev and inode decide alone: a directory's ctime moves with every entry git writes, so it can't
-  stand in for a birth time.
+  a later folder. (Refined after CI, below: the birth time is now always compared once recorded.)
 - `app:cloneDefaults` also returns `last`, how this tab's last clone ended (with what
   `errorView` needs). A reattached page reports that, and only that: never another tab's `changed`
   event; attaching again stops the earlier poll loop.
@@ -1475,6 +1479,41 @@ by the app), so `protocol.file.allow` stays `user`. The smoke script, which reli
 serves its fixtures over a local smart-HTTP server (`git http-backend` behind Node's `http` on
 127.0.0.1) and types that URL: the app's URL rules and transport allowlist apply as for any remote,
 and nothing in the app is relaxed for smoke runs.
+
+**Second review, security review and CI (on PR #9).**
+- **resume() removes only with evidence of failure.** An entry is `state: 'failed'` once its
+  clone failed and its removal began (written before `rm`); resume() removes those. An unmarked
+  entry is a clone whose outcome is unknown (a crash, or a quit while git ran): it is removed only
+  when its fetch never finished (no `.git`, or no ref behind `HEAD`, read with fs, no git run in
+  it); otherwise it is left as it is, logged, and dropped from the list. A folder the recent list
+  or a saved tab names (at or above it) is never removed. `forget` (a clone that succeeded) is
+  remembered for the run, applied by every later write, and retried with backoff. resume() re-reads
+  the list for each entry, skips one that changed meanwhile, and never re-adds while resuming.
+  `persisted()` covers a removal from the moment it is asked for (its mark may still be pending).
+  The quit dialog's UNSAFE text says the next start removes the partial folder only if its download
+  hadn't finished.
+- **The birth time is always compared once recorded**, and recorded whenever stat gives a non-zero
+  one (statx on Linux, APFS, NTFS), a fresh folder's too: ext4 reuses an inode at once, and the
+  earlier "birth equal to ctime means none" rule let a replacement folder pass as ours. On a file
+  system that mirrors the ctime into the birth time, our own folder then reads as another one
+  after git writes into it, so it is kept: the safe side, together with the failure marker.
+- **No local clone through an scp-like URL.** git treats `host:path` as a local path when such a
+  folder exists relative to its cwd. Fixed three ways: `protocol.file.allow=never` in the app's
+  argv (the tests pass `localFixtures` for their local fixtures), ':' refused in folder names on
+  every platform, and git runs in the new target folder, not the parent.
+- **No dot-folders, no home default.** A name may not start with '.' (a clone into `~/.config`
+  made its `git/config` the user's global git config, whose `core.hooksPath` then ran hooks);
+  `deriveName` drops leading dots. There is no default parent: until the user picks one, the form
+  asks and Clone stays disabled. The home folder itself is a parent only when the user picked it in
+  main's dialog (the only way a parent is ever set): that is their explicit choice.
+- A tab that closes while the clone is in its checks gets no clone (checked with no await before
+  `runner.run`). An unexpected error before the runner is logged (name, code, stack frames; never
+  the message, which could quote the URL). `last` is dropped when the tab closes
+  (`sessionClosed`, through the tabs controller's `onTabClosed`) and keeps a checkout failure's
+  message, so a reloaded page offers Open Anyway. A reattached view reports the outcome even when
+  another dialog forced it shut, and closes the view it replaces.
+- The runner's busy / changed events for app ops (`ops.APP_OPS`: clone) aren't sent to the pages
+  (their `repo` is the target's absolute path); the watchers and the strip still get them.
 
 **Not done in this build.**
 - The manual QA of §11.3 (macOS and Windows 11), including row 6, which decides §13 Q5's BatchMode

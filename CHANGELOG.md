@@ -8,25 +8,7 @@ minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-### Added
-
-- **Linux builds (alpha):** an x64 AppImage and Debian/Ubuntu `.deb`, built in CI and attached
-  to draft releases with SHA256 checksums and signed build provenance (`gh attestation verify`).
-  Both use the system git (2.51 or newer); the `.deb` declares that dependency. Linux still needs
-  more hands-on testing across desktop environments.
-- The branch switcher searches remote branches too: typing lists the matching remote branches no
-  local branch tracks (picking one checks out a local tracking branch). The first query also
-  fetches every remote in the background (skipped within a minute of the last successful fetch or
-  pull), so the list includes branches pushed since then; the switcher notes the fetch while it
-  runs and when it fails, and picking a branch meanwhile cancels it.
-
-### Security
-
-- Electron 44.9.3 (from 44.4.5): fixes pointer lock permission requests being attributed to the
-  wrong frame (GHSA-x562-297c-g43g) and stops trusting the compromised eMudhra intermediate
-  certificates (GHSA-jr5w-w6x2-84p9).
-
-## [0.3.0] - 2026-10-13
+## [0.3.0] - 2026-10-24
 
 ### Added
 
@@ -45,6 +27,11 @@ minor versions may contain breaking changes.
   out (a path too long for Windows, say) can still be opened. Quitting or closing the tab
   during a clone asks first. URLs with a password, an access token as the user name, or a query
   string are refused before git runs, so no secret is saved in the repository's settings.
+- The branch switcher searches remote branches too: typing lists the matching remote branches no
+  local branch tracks (picking one checks out a local tracking branch). The first query also
+  fetches every remote in the background (skipped within a minute of the last successful fetch or
+  pull), so the list includes branches pushed since then; the switcher notes the fetch while it
+  runs and when it fails, and picking a branch meanwhile cancels it.
 - Image preview in the diff view: PNG, JPEG, GIF, WebP, AVIF, BMP, ICO and SVG files show before and
   after side by side, with dimensions, file size and the size change, on a checkerboard for
   transparency. Large images load on request; formats that can't be shown say so.
@@ -69,6 +56,10 @@ minor versions may contain breaking changes.
   builds them from the tag and attaches them to a draft release. Alpha means the app works in
   testing on Windows 11 but has had little real use there: expect rough edges, and please report
   what you find. CI now runs the whole test suite on Windows too.
+- **Linux builds (alpha):** an x64 AppImage and Debian/Ubuntu `.deb`, built in CI and attached
+  to draft releases with SHA256 checksums and signed build provenance (`gh attestation verify`).
+  Both use the system git (2.51 or newer); the `.deb` declares that dependency. Linux still needs
+  more hands-on testing across desktop environments.
 
 ### Changed
 
@@ -148,6 +139,9 @@ Hardening against repositories from elsewhere (a downloaded or unzipped folder w
   and the `--inspect` flags, loads its code only from its `app.asar` and checks that archive
   against the hash embedded in the signed app. Interactive rebase no longer runs the app as its
   editor: git runs a fixed shell command instead.
+- Electron 44.9.3 (from 44.4.5): fixes pointer lock permission requests being attributed to the
+  wrong frame (GHSA-x562-297c-g43g) and stops trusting the compromised eMudhra intermediate
+  certificates (GHSA-jr5w-w6x2-84p9).
 - `npm run lint` runs ESLint from exact-pinned devDependencies locked in `package-lock.json`
   instead of fetching its dependencies with `npx`.
 
@@ -156,6 +150,10 @@ Hardening against repositories from elsewhere (a downloaded or unzipped folder w
 - On Windows, Git Credential Manager's sign-in window over HTTPS hasn't been checked by hand with
   the askpass change under Fixed; its automated checks pass (docs/plans/ssh-remote-errors.md §13,
   W12).
+- On Ubuntu 24.04 and newer, the Linux AppImage may not start: the system's restriction on user
+  namespaces blocks Chromium's sandbox for programs it hasn't been told about. Install the `.deb`
+  instead, which sets up the sandbox and an AppArmor profile for the app. Don't turn the sandbox
+  off with `--no-sandbox`.
 
 ## [0.2.1] - 2026-10-04
 

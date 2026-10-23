@@ -37,7 +37,7 @@ your system `git`, so your existing SSH keys, credential helper and git config j
 
 **Branches**
 - Create, check out and delete branches, and check out remote branches as tracking branches.
-- A branch switcher in the toolbar with a search field.
+- A branch switcher in the toolbar with a search field that also finds remote branches, fetching them on the first query.
 - Uncommitted changes that would block a checkout are stashed and re-applied for you.
 
 **Remotes**

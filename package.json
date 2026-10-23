@@ -20,6 +20,7 @@
   "license": "Apache-2.0",
   "author": "Alexey Zhuravlev (https://github.com/SilverClash)",
   "main": "main.js",
+  "desktopName": "io.github.silverclash.pastalite.desktop",
   "private": true,
   "scripts": {
     "start": "electron .",
@@ -29,10 +30,11 @@
     "changelog:check": "node scripts/changelog-pr-check.js",
     "changelog:section": "node scripts/changelog-section.js",
     "release:check": "node scripts/release-check.js",
-    "dist:mac": "electron-builder --mac",
-    "dist:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac -c.mac.identity=null -c.mac.forceCodeSigning=false -c.mac.notarize=false",
+    "dist:mac": "install-electron && electron-builder --mac",
+    "dist:mac:unsigned": "install-electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac -c.mac.identity=null -c.mac.forceCodeSigning=false -c.mac.notarize=false",
     "verify:mac": "sh scripts/verify-mac-build.sh",
-    "dist:win": "electron-builder --win"
+    "dist:win": "install-electron && electron-builder --win",
+    "dist:linux": "install-electron && electron-builder --linux"
   },
   "engines": {
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
@@ -83,6 +85,7 @@
     ],
     "npmRebuild": false,
     "publish": null,
+    "beforePack": "scripts/check-extra-resources.js",
     "afterPack": "scripts/mac-adhoc-sign.js",
     "electronFuses": {
       "runAsNode": false,
@@ -139,6 +142,41 @@
       ],
       "icon": "assets/icon.ico",
       "artifactName": "Pasta-Lite-${version}-win-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Development",
+      "icon": "assets/icon.icns",
+      "executableName": "pasta-lite",
+      "executableArgs": ["%F"],
+      "syncDesktopName": true,
+      "artifactName": "Pasta-Lite-${version}-linux-${arch}.${ext}",
+      "maintainer": "Alexey Zhuravlev <info@zhuravlev.biz>"
+    },
+    "deb": {
+      "depends": [
+        "git (>= 1:2.51.0)",
+        "libasound2",
+        "libgbm1",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ]
     },
     "nsis": {
       "oneClick": false,

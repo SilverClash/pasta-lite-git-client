@@ -1,0 +1,213 @@
+name: linux
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A PR's newer push cancels its older run. Called from release.yml (or run by hand), every run is a
+# group of its own: one named after github.workflow would be the caller's, i.e. release.yml's group.
+concurrency:
+  group: linux-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # The packages release.yml attaches. Only npm ci and electron-builder run here, with a read-only
+  # token: no extra apt sources (the git PPA and Xvfb are the smoke job's, after the build).
+  # Ubuntu 22.04, not ubuntu-latest: the oldest runner keeps the AppImage's glibc baseline low, and
+  # its unprivileged user namespaces let the smoke job keep Chromium's sandbox on (24.04 restricts
+  # them through AppArmor).
+  package:
+    name: Linux x64 packages
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No npm cache: a release is built from what npm ci downloads (as release.yml's Windows job).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # The newest patch release of that major, not the runner image's cached one: Node security
+          # fixes ship as patch releases.
+          check-latest: true
+
+      # dist:linux installs development Electron first: packaging copies its license files
+      # (scripts/check-extra-resources.js stops the build without them).
+      - run: npm ci
+      - run: npm run dist:linux -- --publish never
+
+      - name: Inspect the Debian package
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --field dist/*.deb Depends | grep -F 'git (>= 1:2.51.0)'
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          version=$(node -p "require('../package.json').version")
+          files=(Pasta-Lite-*-linux-x86_64.AppImage Pasta-Lite-*-linux-amd64.deb)
+          # The AppImage and the .deb (package.json build.linux.target).
+          if [ "${#files[@]}" -ne 2 ]; then
+            echo "::error::Expected 2 Linux artifacts in dist/, found ${#files[@]}: ${files[*]}"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > "Pasta-Lite-$version-SHA256SUMS-linux.txt"
+          cat "Pasta-Lite-$version-SHA256SUMS-linux.txt"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            dist/Pasta-Lite-*-linux-x86_64.AppImage
+            dist/Pasta-Lite-*-linux-amd64.deb
+            dist/Pasta-Lite-*-SHA256SUMS-linux.txt
+          if-no-files-found: error
+
+  # The package job's files, checked and installed as a user would, then started. This job adds the
+  # git PPA (the app needs git >= 2.51, src/gitcheck.js) and runs the app; nothing it does reaches
+  # the release's files.
+  smoke:
+    name: Install and smoke-test the packages
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      # For scripts/demo-repo.js and development Electron (the smoke harness below).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # The newest patch release of that major, not the runner image's cached one: Node security
+          # fixes ship as patch releases.
+          check-latest: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: dist
+
+      - name: Checksums match
+        working-directory: dist
+        run: sha256sum -c Pasta-Lite-*-SHA256SUMS-linux.txt
+
+      - name: Install git, Xvfb and the GTK bindings
+        run: |
+          sudo add-apt-repository -y ppa:git-core/ppa
+          sudo apt-get update
+          sudo apt-get install -y git xvfb python3-gi gir1.2-gtk-3.0
+          git --version
+
+      # Resolve the package's icon through GTK, not just by checking that a PNG exists: hicolor
+      # ignores sizes missing from index.theme (including a lone 1024px PNG). From the extracted
+      # .deb, so no other icon of that name can answer.
+      - name: Check launcher icon lookup
+        run: |
+          dpkg-deb --extract dist/*.deb "$RUNNER_TEMP/pasta-deb"
+          /usr/bin/python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import gi
+          gi.require_version('Gtk', '3.0')
+          from gi.repository import Gtk
+          icons = Path(os.environ['RUNNER_TEMP']) / 'pasta-deb/usr/share/icons'
+          theme = Gtk.IconTheme.new()
+          theme.set_search_path([str(icons), '/usr/share/icons'])
+          theme.set_custom_theme('hicolor')
+          for size in (16, 32, 48, 64, 128, 256, 512):
+              icon = theme.lookup_icon('pasta-lite', size, 0)
+              assert icon, f'Launcher icon missing at size {size}'
+              resolved = Path(icon.get_filename())
+              assert icons in resolved.parents, f'Unexpected icon: {resolved}'
+              print(f'{size}px: {resolved}')
+          PY
+
+      # apt resolves the package's Depends (git >= 2.51, the desktop libraries) and runs its install
+      # script: the /usr/bin/pasta-lite link, the chrome-sandbox mode, the AppArmor profile where
+      # AppArmor supports it.
+      - name: Install the .deb
+        run: |
+          sudo apt-get install -y ./dist/Pasta-Lite-*-linux-amd64.deb
+          command -v pasta-lite
+          grep -E '^(Exec|Icon|StartupWMClass)=' /usr/share/applications/io.github.silverclash.pastalite.desktop
+
+      # The installed binary itself (fuses flipped, sandbox on; a packaged build ignores --smoke),
+      # with a fresh home: still running when timeout stops it (status 124), having found git.
+      - name: Start the installed app
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: '1'
+        run: |
+          home="$RUNNER_TEMP/pasta-home"
+          mkdir -p "$home"
+          status=0
+          HOME="$home" XDG_CONFIG_HOME="$home/.config" xvfb-run -a timeout --kill-after=10 20 pasta-lite || status=$?
+          log="$home/.config/Pasta Lite/logs/main.log"
+          cat "$log" || true
+          if [ "$status" -ne 124 ]; then
+            echo "::error::pasta-lite exited with status $status before the 20 s timeout"
+            exit 1
+          fi
+          grep -F 'git found' "$log"
+
+      # The installed app.asar under development Electron, which enables the smoke harness:
+      # disposable user data, and the demo never touches a user's repositories.
+      - name: Smoke-test the installed app's code
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: '1'
+        run: |
+          npm ci
+          npx install-electron
+          asar='/opt/Pasta Lite Git client/resources/app.asar'
+          node scripts/demo-repo.js "$RUNNER_TEMP/pasta-demo"
+          xvfb-run -a node_modules/.bin/electron "$asar" --smoke "$RUNNER_TEMP/linux-start.png"
+          PL_SMOKE_WATCH=1 xvfb-run -a node_modules/.bin/electron "$asar" --smoke "$RUNNER_TEMP/pasta-demo" "$RUNNER_TEMP/linux-repo.png"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: linux-smoke
+          path: ${{ runner.temp }}/linux-*.png
+          if-no-files-found: ignore
+
+  # On a tag: signed build provenance for the packages (gh attestation verify, README.md), so a
+  # download can be traced to this workflow and commit, not only matched against the SHA256SUMS
+  # file next to it on the release page. Its own job: only it gets the OIDC token, and it runs
+  # nothing from the repo.
+  attest:
+    name: Attest the packages' provenance
+    needs: [package, smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: dist
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/Pasta-Lite-*-linux-x86_64.AppImage
+            dist/Pasta-Lite-*-linux-amd64.deb

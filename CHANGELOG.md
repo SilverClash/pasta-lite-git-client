@@ -10,6 +10,10 @@ minor versions may contain breaking changes.
 
 ### Added
 
+- **Linux builds (alpha):** an x64 AppImage and Debian/Ubuntu `.deb`, built in CI and attached
+  to draft releases with SHA256 checksums and signed build provenance (`gh attestation verify`).
+  Both use the system git (2.51 or newer); the `.deb` declares that dependency. Linux still needs
+  more hands-on testing across desktop environments.
 - The branch switcher searches remote branches too: typing lists the matching remote branches no
   local branch tracks (picking one checks out a local tracking branch). The first query also
   fetches every remote in the background (skipped within a minute of the last successful fetch or

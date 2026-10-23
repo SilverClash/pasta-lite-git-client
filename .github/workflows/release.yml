@@ -85,8 +85,11 @@ jobs:
           # fixes ship as patch releases.
           check-latest: true
 
-      # Keep the Electron binary download: the build copies its LICENSE files (build.extraResources).
       - run: npm ci
+
+      # npm ci doesn't download Electron 44's binary, whose folder has the license files the build
+      # copies (build.extraResources; scripts/check-extra-resources.js stops the build without them).
+      - run: npx install-electron
 
       # The check job has made sure that, on a tag, package.json's version is the tag's.
       - run: npx electron-builder --win --publish never
@@ -121,6 +124,19 @@ jobs:
             dist/Pasta-Lite-*-SHA256SUMS-windows.txt
           if-no-files-found: error
 
+  # Linux: the AppImage and .deb, built, installed and smoke-tested by linux.yml (also run on PRs).
+  # The write permissions are the ceiling for its jobs: only its attest job, on a tag, takes them
+  # (build provenance); the jobs that build and run the packages keep a read-only token.
+  linux:
+    name: linux packages
+    needs: check
+    uses: ./.github/workflows/linux.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
   # On a tag, attach the files to that tag's release, creating it as a draft prerelease if it
   # doesn't exist yet, with the tag's CHANGELOG.md section as its notes (the check job's
   # release-notes artifact). The notes end in a marker line: a later run (the tag pushed again
@@ -132,7 +148,7 @@ jobs:
   # No checkout: gh works on the repository named by GH_REPO, and nothing from the repo runs here.
   publish:
     name: attach to the release
-    needs: [check, build]
+    needs: [check, build, linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -142,6 +158,11 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
           path: dist
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -156,7 +177,7 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           err="$RUNNER_TEMP/release-view.err"
-          files=(dist/Pasta-Lite-*-setup.exe dist/Pasta-Lite-*-win-*.zip dist/Pasta-Lite-*-SHA256SUMS-windows.txt)
+          files=(dist/Pasta-Lite-*-setup.exe dist/Pasta-Lite-*-win-*.zip dist/Pasta-Lite-*-SHA256SUMS-windows.txt dist/Pasta-Lite-*-linux-x86_64.AppImage dist/Pasta-Lite-*-linux-amd64.deb dist/Pasta-Lite-*-SHA256SUMS-linux.txt)
           # The changelog's section, then what the release's files need said, then the marker that
           # says this workflow wrote the notes (an HTML comment: the release page doesn't show it).
           marker='<!-- notes from CHANGELOG.md -->'
@@ -164,7 +185,7 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           {
             cat notes/release-notes.md
-            printf '\n---\n\n%s\n' "The Windows builds are alpha: they work in testing, but expect rough edges, and please report what you find. They aren't code-signed: check them against the SHA256SUMS file. Earlier releases: [CHANGELOG.md](https://github.com/$GH_REPO/blob/$tag/CHANGELOG.md)."
+            printf '\n---\n\n%s\n' "The Windows and Linux builds are alpha: expect rough edges, and please report what you find. They aren't code-signed: check them against the platform's SHA256SUMS file. Linux requires system git 2.51 or newer. Earlier releases: [CHANGELOG.md](https://github.com/$GH_REPO/blob/$tag/CHANGELOG.md)."
           } > "$plain"
           { cat "$plain"; printf '\n%s\n' "$marker"; } > "$notes"
           # Create the draft only on a real "not found": any other failure (network, auth, rate

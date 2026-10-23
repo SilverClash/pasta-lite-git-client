@@ -494,3 +494,14 @@ describe('main/app-id.js', () => {
     assert.equal(APP_ID, require('../package.json').build.appId);
   });
 });
+
+describe('package.json desktopName', () => {
+  // Linux: Electron takes the window's Wayland app_id / X11 WM_CLASS from package.json's
+  // desktopName, and electron-builder names the installed .desktop file after it
+  // (build.linux.syncDesktopName). The launcher and dock match the running window to the entry by it.
+  test("is the appId's .desktop file, and names the installed entry", () => {
+    const pkg = require('../package.json');
+    assert.equal(pkg.desktopName, `${pkg.build.appId}.desktop`);
+    assert.equal(pkg.build.linux.syncDesktopName, true);
+  });
+});
